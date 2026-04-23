@@ -6,7 +6,7 @@ log() {
     local message="$1"
     local level="$2"
 
-    if [ "$level" == "" ]; then
+    if [ "$level" = "" ]; then
         level="info"
     fi
 
