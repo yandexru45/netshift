@@ -132,6 +132,26 @@ function createSectionContent(section) {
   o.depends({ connection_type: "proxy", proxy_config_type: "subscription" });
 
   o = section.option(
+    form.Flag,
+    "subscription_decode_base64",
+    _("Decode Base64"),
+    _("Automatically decode subscription response from base64 if encoded"),
+  );
+  o.default = "1";
+  o.rmempty = false;
+  o.depends({ connection_type: "proxy", proxy_config_type: "subscription" });
+
+  o = section.option(
+    form.Flag,
+    "subscription_send_hwid",
+    _("Send HWID"),
+    _("Send hardware ID and device information headers (X-HWID, X-Device-OS, X-Device-Model, X-Ver-OS)"),
+  );
+  o.default = "1";
+  o.rmempty = false;
+  o.depends({ connection_type: "proxy", proxy_config_type: "subscription" });
+
+  o = section.option(
     form.DynamicList,
     "selector_proxy_links",
     _("Selector Proxy Links"),
