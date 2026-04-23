@@ -225,6 +225,22 @@ download_subscription_into_cache() {
         fi
     fi
 
+    # Check if the file is valid JSON, if not - try to convert from text links
+    if ! validate_subscription_file "$tmpfile"; then
+        log "Subscription is not in sing-box JSON format, attempting to convert from proxy links" "info"
+
+        local converted_file="${tmpfile}.converted"
+        if convert_proxy_links_to_singbox_json "$tmpfile" "$converted_file" "$section"; then
+            mv "$converted_file" "$tmpfile"
+            log "Successfully converted proxy links to sing-box JSON for section '$section'" "info"
+        else
+            log "Failed to convert subscription for section '$section' - not a valid JSON and not a valid proxy links list" "error"
+            rm -f "$tmpfile" "$converted_file"
+            return 1
+        fi
+    fi
+
+    # Validate again after potential conversion
     if ! validate_subscription_file "$tmpfile"; then
         log "Downloaded subscription for section '$section' is invalid" "error"
         rm -f "$tmpfile"
