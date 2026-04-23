@@ -120,6 +120,8 @@ export namespace Podkop {
     subscription_url: string;
     subscription_update_interval?: string;
     subscription_group_by_countries?: '0' | '1';
+    subscription_decode_base64?: '0' | '1';
+    subscription_send_hwid?: '0' | '1';
   }
 
   export interface ConfigVpnSection {
