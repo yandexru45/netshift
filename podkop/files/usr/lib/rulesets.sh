@@ -164,7 +164,7 @@ decompile_binary_ruleset() {
 
     log "Decompiling $binary_filepath to $output_filepath" "debug"
     sing-box rule-set decompile "$binary_filepath" -o "$output_filepath"
-    if [[ $? -ne 0 ]]; then
+    if [ $? -ne 0 ]; then
         log "Decompilation command failed for $binary_filepath" "error"
         return 1
     fi
