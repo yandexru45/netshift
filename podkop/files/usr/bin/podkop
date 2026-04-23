@@ -174,10 +174,12 @@ wait_for_subscription_connectivity() {
     local attempts="${4:-12}"
     local wait="${5:-5}"
     local timeout="${6:-5}"
-    local attempt
+    local attempt send_hwid
+
+    config_get send_hwid "$section" "subscription_send_hwid" "1"
 
     for attempt in $(seq 1 "$attempts"); do
-        if check_subscription_connectivity "$subscription_url" "$service_proxy_address" 1 0 "$timeout"; then
+        if check_subscription_connectivity "$subscription_url" "$service_proxy_address" 1 0 "$timeout" "$send_hwid"; then
             log "Subscription connectivity check passed for section '$section'" "info"
             return 0
         fi
@@ -196,14 +198,31 @@ download_subscription_into_cache() {
     local subscription_json_path="$3"
     local subscription_url_cache_path="$4"
     local service_proxy_address="$5"
-    local tmpfile
+    local tmpfile decode_base64 send_hwid
+
+    config_get decode_base64 "$section" "subscription_decode_base64" "1"
+    config_get send_hwid "$section" "subscription_send_hwid" "1"
 
     mkdir -p "$TMP_SUBSCRIPTION_FOLDER"
     tmpfile="$(mktemp "$TMP_SUBSCRIPTION_FOLDER/${section}.download.XXXXXX")" || return 1
 
-    if ! download_subscription "$subscription_url" "$tmpfile" "$service_proxy_address" 3 2 10; then
+    if ! download_subscription "$subscription_url" "$tmpfile" "$service_proxy_address" 3 2 10 "$send_hwid"; then
         rm -f "$tmpfile"
         return 1
+    fi
+
+    if [ "$decode_base64" = "1" ]; then
+        local content
+        content="$(cat "$tmpfile")"
+        if is_base64 "$content"; then
+            log "Decoding base64 subscription for section '$section'" "debug"
+            if ! echo "$content" | base64 -d > "${tmpfile}.decoded" 2>/dev/null; then
+                log "Failed to decode base64 subscription for section '$section'" "error"
+                rm -f "$tmpfile" "${tmpfile}.decoded"
+                return 1
+            fi
+            mv "${tmpfile}.decoded" "$tmpfile"
+        fi
     fi
 
     if ! validate_subscription_file "$tmpfile"; then
