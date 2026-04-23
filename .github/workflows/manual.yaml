@@ -1,0 +1,176 @@
+name: Manual Build Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (leave empty for auto)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  preparation:
+    name: Setup build version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5.0.0
+        with:
+          fetch-depth: 0
+      - id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION=$(git describe --tags --exact-match 2>/dev/null || echo "0.$(date +%d%m%Y)")
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building version: $VERSION"
+
+  build:
+    name: Build ${{ matrix.package_type }} packages
+    runs-on: ubuntu-latest
+    needs: preparation
+    strategy:
+      matrix:
+        include:
+          - { package_type: ipk }
+          - { package_type: apk }
+    steps:
+      - uses: actions/checkout@v5.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Build ${{ matrix.package_type }}
+        uses: docker/build-push-action@v6.18.0
+        with:
+          file: ./Dockerfile-${{ matrix.package_type }}
+          context: .
+          tags: podkop:ci-${{ matrix.package_type }}
+          build-args: |
+            PODKOP_VERSION=${{ needs.preparation.outputs.version }}
+
+      - name: Create ${{ matrix.package_type }} Docker container
+        run: docker create --name ${{ matrix.package_type }} podkop:ci-${{ matrix.package_type }}
+
+      - name: Copy files from ${{ matrix.package_type }} Docker container
+        run: |
+          mkdir -p ./bin/${{ matrix.package_type }}
+          docker cp ${{ matrix.package_type }}:/builder/bin/packages/x86_64/utilities/. ./bin/${{ matrix.package_type }}/
+          docker cp ${{ matrix.package_type }}:/builder/bin/packages/x86_64/luci/. ./bin/${{ matrix.package_type }}/
+
+      - name: Fix naming difference for IPK packages (replace _ with -)
+        if: matrix.package_type == 'ipk'
+        shell: bash
+        run: |
+          for f in ./bin/${{ matrix.package_type }}/*.${{ matrix.package_type }}; do
+            [ -e "$f" ] || continue
+            base=$(basename "$f")
+            newname=$(echo "$base" | sed 's/_/-/g')
+            mv "$f" "./bin/${{ matrix.package_type }}/$newname"
+          done
+
+      - name: Filter and prepare packages
+        shell: bash
+        run: |
+          VERSION="${{ needs.preparation.outputs.version }}"
+          mkdir -p ./filtered-bin/${{ matrix.package_type }}
+
+          # Copy podkop package
+          cp ./bin/${{ matrix.package_type }}/podkop-*.${{ matrix.package_type }} ./filtered-bin/${{ matrix.package_type }}/
+
+          # Copy luci-app-podkop package
+          cp ./bin/${{ matrix.package_type }}/luci-app-podkop-*.${{ matrix.package_type }} ./filtered-bin/${{ matrix.package_type }}/
+
+          # Copy luci-i18n-podkop-ru package
+          cp ./bin/${{ matrix.package_type }}/luci-i18n-podkop-ru-*.${{ matrix.package_type }} ./filtered-bin/${{ matrix.package_type }}/
+
+          echo "Packages in filtered-bin/${{ matrix.package_type }}:"
+          ls -lh ./filtered-bin/${{ matrix.package_type }}/
+
+      - name: Create archive
+        shell: bash
+        run: |
+          VERSION="${{ needs.preparation.outputs.version }}"
+          cd ./filtered-bin/${{ matrix.package_type }}
+
+          if [ "${{ matrix.package_type }}" = "apk" ]; then
+            ARCHIVE_NAME="podkop-${VERSION}-apk.tar.gz"
+          else
+            ARCHIVE_NAME="podkop-${VERSION}-ipk.tar.gz"
+          fi
+
+          tar -czf "../${ARCHIVE_NAME}" *.${{{ matrix.package_type }}}
+          cd ..
+
+          echo "Created archive: ${ARCHIVE_NAME}"
+          ls -lh "${ARCHIVE_NAME}"
+
+      - name: Remove Docker container
+        run: docker rm ${{ matrix.package_type }}
+
+      - name: Upload archive artifact
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: podkop-${{ needs.preparation.outputs.version }}-${{ matrix.package_type }}
+          path: ./filtered-bin/podkop-${{ needs.preparation.outputs.version }}-${{ matrix.package_type }}.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Upload individual packages
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: packages-${{ needs.preparation.outputs.version }}-${{ matrix.package_type }}
+          path: ./filtered-bin/${{ matrix.package_type }}/*.${{ matrix.package_type }}
+          retention-days: 90
+          if-no-files-found: error
+
+  summary:
+    name: Build Summary
+    runs-on: ubuntu-latest
+    needs: [preparation, build]
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Display build summary
+        run: |
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ needs.preparation.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Archives:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          for archive in ./artifacts/podkop-*/*.tar.gz; do
+            if [ -f "$archive" ]; then
+              name=$(basename "$archive")
+              size=$(du -h "$archive" | cut -f1)
+              echo "- \`$name\` ($size)" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Individual Packages:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          for pkg_dir in ./artifacts/packages-*/; do
+            if [ -d "$pkg_dir" ]; then
+              pkg_type=$(basename "$pkg_dir" | sed 's/packages-.*-//')
+              echo "#### $pkg_type packages:" >> $GITHUB_STEP_SUMMARY
+              for pkg in "$pkg_dir"/*; do
+                if [ -f "$pkg" ]; then
+                  name=$(basename "$pkg")
+                  size=$(du -h "$pkg" | cut -f1)
+                  echo "- \`$name\` ($size)" >> $GITHUB_STEP_SUMMARY
+                fi
+              done
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
