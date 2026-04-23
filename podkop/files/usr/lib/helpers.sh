@@ -545,6 +545,67 @@ check_subscription_connectivity() {
     return 1
 }
 
+# Converts a text file with proxy URLs (one per line) to sing-box JSON format
+# Arguments:
+#   $1 - input file path (text file with ss://, vless://, trojan://, hysteria2:// URLs)
+#   $2 - output file path (will contain sing-box JSON)
+#   $3 - section name (for generating outbound tags)
+# Returns:
+#   0 on success, 1 on failure
+convert_proxy_links_to_singbox_json() {
+    local input_file="$1"
+    local output_file="$2"
+    local section="$3"
+
+    [ -s "$input_file" ] || return 1
+
+    local tmpconfig outbound_count line_num url scheme
+    tmpconfig='{"outbounds":[]}'
+    outbound_count=0
+    line_num=0
+
+    while IFS= read -r url || [ -n "$url" ]; do
+        line_num=$((line_num + 1))
+
+        # Skip empty lines and comments
+        [ -z "$url" ] && continue
+        echo "$url" | grep -q '^[[:space:]]*#' && continue
+        echo "$url" | grep -q '^[[:space:]]*$' && continue
+
+        # Get scheme to check if it's a supported proxy URL
+        scheme="$(echo "$url" | sed -n 's|^\([a-z0-9]*\)://.*|\1|p')"
+
+        case "$scheme" in
+            ss|vless|trojan|hysteria2|hy2|socks4|socks4a|socks5)
+                # Use sing_box_cf_add_proxy_outbound to parse and add the outbound
+                local temp_section="${section}_${outbound_count}"
+
+                if tmpconfig=$(sing_box_cf_add_proxy_outbound "$tmpconfig" "$temp_section" "$url" "0" 2>/dev/null); then
+                    outbound_count=$((outbound_count + 1))
+                    log "Converted proxy link #$line_num ($scheme)" "debug"
+                else
+                    log "Failed to parse proxy link #$line_num: $url" "warn"
+                fi
+                ;;
+            vmess)
+                log "VMess protocol is not supported yet, skipping line #$line_num" "warn"
+                ;;
+            *)
+                log "Unknown or unsupported protocol '$scheme' on line #$line_num, skipping" "debug"
+                ;;
+        esac
+    done < "$input_file"
+
+    if [ "$outbound_count" -eq 0 ]; then
+        log "No valid proxy links found in subscription" "error"
+        return 1
+    fi
+
+    echo "$tmpconfig" > "$output_file"
+    log "Converted $outbound_count proxy links to sing-box JSON format" "info"
+    return 0
+}
+
 validate_subscription_file() {
     local filepath="$1"
 
