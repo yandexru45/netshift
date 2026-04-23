@@ -90,7 +90,7 @@ sing_box_cf_add_proxy_outbound() {
             "$username" \
             "$password" \
             "" \
-            "$([ "$udp_over_tcp" == "1" ] && echo 2)" # if udp_over_tcp is enabled, enable version 2
+            "$([ "$udp_over_tcp" = "1" ] && echo 2)" # if udp_over_tcp is enabled, enable version 2
         )"
         ;;
     vless)
@@ -133,7 +133,7 @@ sing_box_cf_add_proxy_outbound() {
                 "$method" \
                 "$password" \
                 "" \
-                "$([ "$udp_over_tcp" == "1" ] && echo 2)" # if udp_over_tcp is enabled, enable version 2
+                "$([ "$udp_over_tcp" = "1" ] && echo 2)" # if udp_over_tcp is enabled, enable version 2
         )
         ;;
     trojan)
@@ -200,8 +200,8 @@ _add_outbound_security() {
                 "$config" \
                 "$outbound_tag" \
                 "$sni" \
-                "$([ "$insecure" == "1" ] && echo true)" \
-                "$([ "$alpn" == "[]" ] && echo null || echo "$alpn")" \
+                "$([ "$insecure" = "1" ] && echo true)" \
+                "$([ "$alpn" = "[]" ] && echo null || echo "$alpn")" \
                 "$fingerprint" \
                 "$public_key" \
                 "$short_id"
@@ -225,7 +225,15 @@ _get_insecure_query_param_from_url() {
         insecure=$(url_get_query_param "$url" "insecure")
     fi
 
-    echo "$insecure"
+    # Normalize to "1" or empty
+    case "$insecure" in
+        1|true|True|TRUE|yes|Yes|YES)
+            echo "1"
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
 }
 
 _add_outbound_transport() {
