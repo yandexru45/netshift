@@ -104,7 +104,7 @@ jobs:
             ARCHIVE_NAME="podkop-${VERSION}-ipk.tar.gz"
           fi
 
-          tar -czf "../${ARCHIVE_NAME}" *.${{{ matrix.package_type }}}
+          tar -czf "../${ARCHIVE_NAME}" *.${{ matrix.package_type }}
           cd ..
 
           echo "Created archive: ${ARCHIVE_NAME}"
