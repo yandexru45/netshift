@@ -416,53 +416,6 @@ sing_box_cf_add_subscription_outbounds() {
 
     log "Found $outbounds_count proxy outbounds in subscription" "info"
 
-    # Helper function to check if server should be blocked based on country
-    local should_block_server() {
-        local server_name="$1"
-        local blocked_list="$2"
-
-        if [ -z "$blocked_list" ]; then
-            return 1  # Don't block if no countries specified
-        fi
-
-        # Extract country flag from server name using jq
-        local country_flag
-        country_flag=$(printf '%s' "$server_name" | jq -Rr '
-            def is_regional_indicator: . >= 127462 and . <= 127487;
-            def extract_country_flag:
-                (. | explode) as $codepoints
-                | if ($codepoints | length) >= 2
-                    and ($codepoints[0] | is_regional_indicator)
-                    and ($codepoints[1] | is_regional_indicator)
-                  then ($codepoints[0:2] | implode)
-                  else ""
-                  end;
-            extract_country_flag
-        ' 2>/dev/null)
-
-        if [ -z "$country_flag" ]; then
-            return 1  # Don't block if no country flag found
-        fi
-
-        # Convert flag to ISO code
-        local iso_code
-        iso_code=$(printf '%s' "$country_flag" | jq -Rr '
-            def is_regional_indicator: . >= 127462 and . <= 127487;
-            (. | explode) as $codepoints
-            | if ($codepoints | length) == 2
-                and ($codepoints[0] | is_regional_indicator)
-                and ($codepoints[1] | is_regional_indicator)
-              then ([$codepoints[0] - 127462 + 65, $codepoints[1] - 127462 + 65] | implode)
-              else ""
-              end
-        ' 2>/dev/null)
-
-        # Check if country is in blocked list (support both emoji and ISO codes)
-        echo "$blocked_list" | grep -qE "(^|[[:space:],])($country_flag|$iso_code)([[:space:],]|$)" && return 0
-
-        return 1
-    }
-
     local i=1
     local added_count=0
     local skipped_by_country=0
@@ -487,11 +440,44 @@ sing_box_cf_add_subscription_outbounds() {
         display_name=$(echo "$outbound_json" | jq -r '.remark // .tag // "server-'"$i"'"' 2>/dev/null)
 
         # Check if server should be blocked by country
-        if [ -n "$blocked_countries" ] && should_block_server "$display_name" "$blocked_countries"; then
-            log "Skip server from blocked country: '$display_name'" "debug"
-            skipped_by_country=$((skipped_by_country + 1))
-            i=$((i + 1))
-            continue
+        if [ -n "$blocked_countries" ]; then
+            # Extract country flag from server name using jq
+            local country_flag
+            country_flag=$(printf '%s' "$display_name" | jq -Rr '
+                def is_regional_indicator: . >= 127462 and . <= 127487;
+                def extract_country_flag:
+                    (. | explode) as $codepoints
+                    | if ($codepoints | length) >= 2
+                        and ($codepoints[0] | is_regional_indicator)
+                        and ($codepoints[1] | is_regional_indicator)
+                      then ($codepoints[0:2] | implode)
+                      else ""
+                      end;
+                extract_country_flag
+            ' 2>/dev/null)
+
+            if [ -n "$country_flag" ]; then
+                # Convert flag to ISO code
+                local iso_code
+                iso_code=$(printf '%s' "$country_flag" | jq -Rr '
+                    def is_regional_indicator: . >= 127462 and . <= 127487;
+                    (. | explode) as $codepoints
+                    | if ($codepoints | length) == 2
+                        and ($codepoints[0] | is_regional_indicator)
+                        and ($codepoints[1] | is_regional_indicator)
+                      then ([$codepoints[0] - 127462 + 65, $codepoints[1] - 127462 + 65] | implode)
+                      else ""
+                      end
+                ' 2>/dev/null)
+
+                # Check if country is in blocked list (support both emoji and ISO codes)
+                if echo "$blocked_countries" | grep -qE "(^|[[:space:],])($country_flag|$iso_code)([[:space:],]|$)"; then
+                    log "Skip server from blocked country: '$display_name'" "debug"
+                    skipped_by_country=$((skipped_by_country + 1))
+                    i=$((i + 1))
+                    continue
+                fi
+            fi
         fi
 
         outbound_type=$(echo "$outbound_json" | jq -r '.type // ""' 2>/dev/null)
