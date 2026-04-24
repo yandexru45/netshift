@@ -1,3 +1,8 @@
+#!/bin/sh
+# Примечание: Для работы этого скрипта в OpenWrt может потребоваться bash,
+# если используются специфические расширения, не поддерживаемые ash.
+# Однако основные исправления сделаны для совместимости.
+
 PODKOP_LIB="/usr/lib/podkop"
 . "$PODKOP_LIB/helpers.sh"
 . "$PODKOP_LIB/sing_box_config_manager.sh"
@@ -9,8 +14,8 @@ sing_box_cf_add_dns_server() {
     local server="$4"
     local domain_resolver="$5"
     local detour="$6"
-
     local server_address server_port
+
     server_address=$(url_get_host "$server")
     server_port=$(url_get_port "$server")
 
@@ -18,20 +23,20 @@ sing_box_cf_add_dns_server() {
     udp)
         [ -z "$server_port" ] && server_port=53
         config=$(sing_box_cm_add_udp_dns_server "$config" "$tag" "$server_address" "$server_port" "$domain_resolver" \
-            "$detour")
+             "$detour")
         ;;
     dot)
         [ -z "$server_port" ] && server_port=853
         config=$(sing_box_cm_add_tls_dns_server "$config" "$tag" "$server_address" "$server_port" "$domain_resolver" \
-            "$detour")
+             "$detour")
         ;;
     doh)
         [ -z "$server_port" ] && server_port=443
         local path headers
         path=$(url_get_path "$server")
-        headers="" # TODO(ampetelin): implement it if necessary
+        headers=" " # TODO(ampetelin): implement it if necessary
         config=$(sing_box_cm_add_https_dns_server "$config" "$tag" "$server_address" "$server_port" "$path" "$headers" \
-            "$domain_resolver" "$detour")
+             "$domain_resolver" "$detour")
         ;;
     *)
         log "Unsupported DNS server type: $type. Aborted." "fatal"
@@ -50,7 +55,7 @@ sing_box_cf_add_mixed_inbound_and_route_rule() {
     local outbound="$5"
 
     config=$(sing_box_cm_add_mixed_inbound "$config" "$tag" "$listen_address" "$listen_port")
-    config=$(sing_box_cm_add_route_rule "$config" "" "$tag" "$outbound")
+    config=$(sing_box_cm_add_route_rule "$config" " " "$tag" "$outbound")
 
     echo "$config"
 }
@@ -66,10 +71,10 @@ sing_box_cf_add_proxy_outbound() {
 
     local scheme
     scheme="$(url_get_scheme "$url")"
-    case "$scheme" in
-    socks4 | socks4a | socks5)
-        local tag host port version userinfo username password udp_over_tcp
 
+    case "$scheme" in
+    socks4|socks4a|socks5)
+        local tag host port version userinfo username password
         tag=$(get_outbound_tag_by_section "$section")
         host=$(url_get_host "$url")
         port=$(url_get_port "$url")
@@ -82,15 +87,15 @@ sing_box_cf_add_proxy_outbound() {
             fi
         fi
         config="$(sing_box_cm_add_socks_outbound \
-            "$config" \
-            "$tag" \
-            "$host" \
-            "$port" \
-            "$version" \
-            "$username" \
-            "$password" \
-            "" \
-            "$([ "$udp_over_tcp" == "1" ] && echo 2)" # if udp_over_tcp is enabled, enable version 2
+             "$config" \
+             "$tag" \
+             "$host" \
+             "$port" \
+             "$version" \
+             "$username" \
+             "$password" \
+             " " \
+             "$([ "$udp_over_tcp" = "1" ] && echo 2)" # if udp_over_tcp is enabled, enable version 2
         )"
         ;;
     vless)
@@ -102,13 +107,12 @@ sing_box_cf_add_proxy_outbound() {
         flow=$(url_get_query_param "$url" "flow")
         packet_encoding=$(url_get_query_param "$url" "packetEncoding")
 
-        config=$(sing_box_cm_add_vless_outbound "$config" "$tag" "$host" "$port" "$uuid" "$flow" "" "$packet_encoding")
+        config=$(sing_box_cm_add_vless_outbound "$config" "$tag" "$host" "$port" "$uuid" "$flow" " " "$packet_encoding")
         config=$(_add_outbound_security "$config" "$tag" "$url")
         config=$(_add_outbound_transport "$config" "$tag" "$url")
         ;;
     ss)
-        local userinfo tag host port method password udp_over_tcp
-
+        local userinfo tag host port method password plugin plugin_opts
         userinfo=$(url_get_userinfo "$url")
         if ! is_shadowsocks_userinfo_format "$userinfo"; then
             userinfo=$(base64_decode "$userinfo")
@@ -123,32 +127,37 @@ sing_box_cf_add_proxy_outbound() {
         port=$(url_get_port "$url")
         method="${userinfo%%:*}"
         password="${userinfo#*:}"
+        plugin=$(url_get_query_param "$url" "plugin")
+        plugin_opts=$(url_get_query_param "$url" "plugin-opts")
 
         config=$(
             sing_box_cm_add_shadowsocks_outbound \
-                "$config" \
-                "$tag" \
-                "$host" \
-                "$port" \
-                "$method" \
-                "$password" \
-                "" \
-                "$([ "$udp_over_tcp" == "1" ] && echo 2)" # if udp_over_tcp is enabled, enable version 2
+                 "$config" \
+                 "$tag" \
+                 "$host" \
+                 "$port" \
+                 "$method" \
+                 "$password" \
+                 " " \
+                 "$([ "$udp_over_tcp" = "1" ] && echo 2)" \
+                 "$plugin" \
+                 "$plugin_opts"
         )
         ;;
     trojan)
-        local tag host port password
+        local tag host port password network
         tag=$(get_outbound_tag_by_section "$section")
         host=$(url_get_host "$url")
         port=$(url_get_port "$url")
         password=$(url_get_userinfo "$url")
+        network=$(url_get_query_param "$url" "network")
 
-        config=$(sing_box_cm_add_trojan_outbound "$config" "$tag" "$host" "$port" "$password")
+        config=$(sing_box_cm_add_trojan_outbound "$config" "$tag" "$host" "$port" "$password" "$network")
         config=$(_add_outbound_security "$config" "$tag" "$url")
         config=$(_add_outbound_transport "$config" "$tag" "$url")
         ;;
-    hysteria2 | hy2)
-        local tag host port password obfuscator_type obfuscator_password upload_mbps download_mbps
+    hysteria2|hy2)
+        local tag host port password obfuscator_type obfuscator_password upload_mbps download_mbps network salamander
         tag=$(get_outbound_tag_by_section "$section")
         host=$(url_get_host "$url")
         port="$(url_get_port "$url")"
@@ -157,9 +166,33 @@ sing_box_cf_add_proxy_outbound() {
         obfuscator_password=$(url_get_query_param "$url" "obfs-password")
         upload_mbps=$(url_get_query_param "$url" "upmbps")
         download_mbps=$(url_get_query_param "$url" "downmbps")
+        network=$(url_get_query_param "$url" "network")
+        salamander=$(url_get_query_param "$url" "salamander")
+
+        # If salamander is specified, use it as obfuscator
+        if [ -n "$salamander" ]; then
+            obfuscator_type="salamander"
+            obfuscator_password="$salamander"
+        fi
 
         config=$(sing_box_cm_add_hysteria2_outbound "$config" "$tag" "$host" "$port" "$password" "$obfuscator_type" \
-            "$obfuscator_password" "$upload_mbps" "$download_mbps")
+             "$obfuscator_password" "$upload_mbps" "$download_mbps" "$network")
+        config=$(_add_outbound_security "$config" "$tag" "$url")
+        ;;
+    hysteria)
+        local tag host port auth obfuscator protocol upload_mbps download_mbps network
+        tag=$(get_outbound_tag_by_section "$section")
+        host=$(url_get_host "$url")
+        port="$(url_get_port "$url")"
+        auth=$(url_get_userinfo "$url")
+        obfuscator=$(url_get_query_param "$url" "obfs")
+        protocol=$(url_get_query_param "$url" "protocol")
+        upload_mbps=$(url_get_query_param "$url" "upmbps")
+        download_mbps=$(url_get_query_param "$url" "downmbps")
+        network=$(url_get_query_param "$url" "network")
+
+        config=$(sing_box_cm_add_hysteria_outbound "$config" "$tag" "$host" "$port" "$auth" "$obfuscator" \
+             "$protocol" "$upload_mbps" "$download_mbps" "$network")
         config=$(_add_outbound_security "$config" "$tag" "$url")
         ;;
     *)
@@ -175,8 +208,8 @@ _add_outbound_security() {
     local config="$1"
     local outbound_tag="$2"
     local url="$3"
-
     local security scheme
+
     security=$(url_get_query_param "$url" "security")
     if [ -z "$security" ]; then
         scheme="$(url_get_scheme "$url")"
@@ -186,7 +219,7 @@ _add_outbound_security() {
     fi
 
     case "$security" in
-    tls | reality)
+    tls|reality)
         local sni insecure alpn fingerprint public_key short_id
         sni=$(url_get_query_param "$url" "sni")
         insecure=$(_get_insecure_query_param_from_url "$url")
@@ -197,14 +230,14 @@ _add_outbound_security() {
 
         config=$(
             sing_box_cm_set_tls_for_outbound \
-                "$config" \
-                "$outbound_tag" \
-                "$sni" \
-                "$([ "$insecure" == "1" ] && echo true)" \
-                "$([ "$alpn" == "[]" ] && echo null || echo "$alpn")" \
-                "$fingerprint" \
-                "$public_key" \
-                "$short_id"
+                 "$config" \
+                 "$outbound_tag" \
+                 "$sni" \
+                 "$([ "$insecure" = "1" ] && echo true)" \
+                 "$([ "$alpn" = "[]" ] && echo null || echo "$alpn")" \
+                 "$fingerprint" \
+                 "$public_key" \
+                 "$short_id"
         )
         ;;
     none) ;;
@@ -218,25 +251,33 @@ _add_outbound_security() {
 
 _get_insecure_query_param_from_url() {
     local url="$1"
-
     local insecure
+
     insecure=$(url_get_query_param "$url" "allowInsecure")
     if [ -z "$insecure" ]; then
         insecure=$(url_get_query_param "$url" "insecure")
     fi
 
-    echo "$insecure"
+    # Normalize to "1" or empty
+    case "$insecure" in
+        1|true|True|TRUE|yes|Yes|YES)
+            echo "1"
+            ;;
+        *)
+            echo " "
+            ;;
+    esac
 }
 
 _add_outbound_transport() {
     local config="$1"
     local outbound_tag="$2"
     local url="$3"
-
     local transport
+
     transport=$(url_get_query_param "$url" "type")
     case "$transport" in
-    tcp | raw) ;;
+    tcp|raw) ;;
     ws)
         local ws_path ws_host ws_early_data
         ws_path=$(url_get_query_param "$url" "path")
@@ -268,10 +309,9 @@ sing_box_cf_add_json_outbound() {
     local config="$1"
     local section="$2"
     local json_outbound="$3"
-
     local tag
-    tag=$(get_outbound_tag_by_section "$section")
 
+    tag=$(get_outbound_tag_by_section "$section")
     config=$(sing_box_cm_add_raw_outbound "$config" "$tag" "$json_outbound")
 
     echo "$config"
@@ -281,10 +321,9 @@ sing_box_cf_add_interface_outbound() {
     local config="$1"
     local section="$2"
     local interface_name="$3"
-
     local tag
-    tag=$(get_outbound_tag_by_section "$section")
 
+    tag=$(get_outbound_tag_by_section "$section")
     config=$(sing_box_cm_add_interface_outbound "$config" "$tag" "$interface_name")
 
     echo "$config"
@@ -295,6 +334,7 @@ sing_box_cf_proxy_domain() {
     local inbound="$2"
     local domain="$3"
     local outbound="$4"
+    local tag
 
     tag="$(gen_id)"
     config=$(sing_box_cm_add_route_rule "$config" "$tag" "$inbound" "$outbound")
@@ -307,6 +347,7 @@ sing_box_cf_override_domain_port() {
     local config="$1"
     local domain="$2"
     local port="$3"
+    local tag
 
     tag="$(gen_id)"
     config=$(sing_box_cm_add_options_route_rule "$config" "$tag")
@@ -321,6 +362,7 @@ sing_box_cf_add_single_key_reject_rule() {
     local inbound="$2"
     local key="$3"
     local value="$4"
+    local tag
 
     tag="$(gen_id)"
     config=$(sing_box_cm_add_reject_route_rule "$config" "$tag" "$inbound")
@@ -347,10 +389,11 @@ sing_box_cf_add_subscription_outbounds() {
     local config="$1"
     local section="$2"
     local subscription_json_path="$3"
+    local blocked_countries="${4:-}"
 
-    SUBSCRIPTION_OUTBOUND_TAGS=""
+    SUBSCRIPTION_OUTBOUND_TAGS=" "
     SUBSCRIPTION_OUTBOUND_TAGS_JSON="[]"
-    SUBSCRIPTION_OUTBOUND_NAMES=""
+    SUBSCRIPTION_OUTBOUND_NAMES=" "
     SING_BOX_CF_LAST_CONFIG="$config"
 
     if [ ! -f "$subscription_json_path" ]; then
@@ -380,6 +423,7 @@ sing_box_cf_add_subscription_outbounds() {
 
     local i=1
     local added_count=0
+    local skipped_by_country=0
     local outbound_json display_name outbound_tag outbound_type outbound_tls_enabled preferred_tag base_tag tag_suffix
 
     while [ "$i" -le "$outbounds_count" ]; do
@@ -400,7 +444,48 @@ sing_box_cf_add_subscription_outbounds() {
         # Get display name: prefer remark, then tag, then fallback
         display_name=$(echo "$outbound_json" | jq -r '.remark // .tag // "server-'"$i"'"' 2>/dev/null)
 
-        outbound_type=$(echo "$outbound_json" | jq -r '.type // ""' 2>/dev/null)
+        # Check if server should be blocked by country
+        if [ -n "$blocked_countries" ]; then
+            # Extract country flag from server name using jq
+            local country_flag
+            country_flag=$(printf '%s' "$display_name" | jq -Rr '
+                def is_regional_indicator: . >= 127462 and . <= 127487;
+                def extract_country_flag:
+                    (. | explode) as $codepoints
+                    | if ($codepoints | length) >= 2
+                        and ($codepoints[0] | is_regional_indicator)
+                        and ($codepoints[1] | is_regional_indicator)
+                      then ($codepoints[0:2] | implode)
+                      else " "
+                      end;
+                extract_country_flag
+            ' 2>/dev/null)
+
+            if [ -n "$country_flag" ]; then
+                # Convert flag to ISO code
+                local iso_code
+                iso_code=$(printf '%s' "$country_flag" | jq -Rr '
+                    def is_regional_indicator: . >= 127462 and . <= 127487;
+                    (. | explode) as $codepoints
+                    | if ($codepoints | length) == 2
+                        and ($codepoints[0] | is_regional_indicator)
+                         and ($codepoints[1] | is_regional_indicator)
+                      then ([$codepoints[0] - 127462 + 65, $codepoints[1] - 127462 + 65] | implode)
+                      else " "
+                      end
+                ' 2>/dev/null)
+
+                # Check if country is in blocked list (support both emoji and ISO codes)
+                if echo "$blocked_countries" | grep -qE "(^|[[:space:],])($country_flag|$iso_code)([[:space:],]|$)"; then
+                    log "Skip server from blocked country: '$display_name'" "debug"
+                    skipped_by_country=$((skipped_by_country + 1))
+                    i=$((i + 1))
+                    continue
+                fi
+            fi
+        fi
+
+        outbound_type=$(echo "$outbound_json" | jq -r '.type // " "' 2>/dev/null)
         outbound_tls_enabled=$(echo "$outbound_json" | jq -r '.tls.enabled // false' 2>/dev/null)
 
         # sing-box does not support top-level tls field for shadowsocks outbound.
@@ -419,8 +504,10 @@ sing_box_cf_add_subscription_outbounds() {
         base_tag="$preferred_tag"
         outbound_tag="$base_tag"
         tag_suffix=1
+
+        # Проверка на существование тега в конфиге
         while printf '%s' "$config" | jq -e --arg tag "$outbound_tag" '.outbounds[]? | select(.tag == $tag)' > /dev/null 2>&1; do
-            outbound_tag="${base_tag}-$tag_suffix"
+            outbound_tag="${base_tag}-${tag_suffix}"
             tag_suffix=$((tag_suffix + 1))
         done
 
@@ -473,6 +560,10 @@ sing_box_cf_add_subscription_outbounds() {
         added_count=$((added_count + 1))
         i=$((i + 1))
     done
+
+    if [ "$skipped_by_country" -gt 0 ]; then
+        log "Skipped $skipped_by_country servers from blocked countries for section '$section'" "info"
+    fi
 
     log "Added $added_count subscription outbounds for section '$section'" "info"
     SING_BOX_CF_LAST_CONFIG="$config"

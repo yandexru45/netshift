@@ -174,10 +174,12 @@ wait_for_subscription_connectivity() {
     local attempts="${4:-12}"
     local wait="${5:-5}"
     local timeout="${6:-5}"
-    local attempt
+    local attempt send_hwid
+
+    config_get send_hwid "$section" "subscription_send_hwid" "1"
 
     for attempt in $(seq 1 "$attempts"); do
-        if check_subscription_connectivity "$subscription_url" "$service_proxy_address" 1 0 "$timeout"; then
+        if check_subscription_connectivity "$subscription_url" "$service_proxy_address" 1 0 "$timeout" "$send_hwid"; then
             log "Subscription connectivity check passed for section '$section'" "info"
             return 0
         fi
@@ -196,16 +198,49 @@ download_subscription_into_cache() {
     local subscription_json_path="$3"
     local subscription_url_cache_path="$4"
     local service_proxy_address="$5"
-    local tmpfile
+    local tmpfile decode_base64 send_hwid
+
+    config_get decode_base64 "$section" "subscription_decode_base64" "1"
+    config_get send_hwid "$section" "subscription_send_hwid" "1"
 
     mkdir -p "$TMP_SUBSCRIPTION_FOLDER"
     tmpfile="$(mktemp "$TMP_SUBSCRIPTION_FOLDER/${section}.download.XXXXXX")" || return 1
 
-    if ! download_subscription "$subscription_url" "$tmpfile" "$service_proxy_address" 3 2 10; then
+    if ! download_subscription "$subscription_url" "$tmpfile" "$service_proxy_address" 3 2 10 "$send_hwid"; then
         rm -f "$tmpfile"
         return 1
     fi
 
+    if [ "$decode_base64" = "1" ]; then
+        local content
+        content="$(cat "$tmpfile")"
+        if is_base64 "$content"; then
+            log "Decoding base64 subscription for section '$section'" "debug"
+            if ! echo "$content" | base64 -d > "${tmpfile}.decoded" 2>/dev/null; then
+                log "Failed to decode base64 subscription for section '$section'" "error"
+                rm -f "$tmpfile" "${tmpfile}.decoded"
+                return 1
+            fi
+            mv "${tmpfile}.decoded" "$tmpfile"
+        fi
+    fi
+
+    # Check if the file is valid JSON, if not - try to convert from text links
+    if ! validate_subscription_file "$tmpfile"; then
+        log "Subscription is not in sing-box JSON format, attempting to convert from proxy links" "info"
+
+        local converted_file="${tmpfile}.converted"
+        if convert_proxy_links_to_singbox_json "$tmpfile" "$converted_file" "$section"; then
+            mv "$converted_file" "$tmpfile"
+            log "Successfully converted proxy links to sing-box JSON for section '$section'" "info"
+        else
+            log "Failed to convert subscription for section '$section' - not a valid JSON and not a valid proxy links list" "error"
+            rm -f "$tmpfile" "$converted_file"
+            return 1
+        fi
+    fi
+
+    # Validate again after potential conversion
     if ! validate_subscription_file "$tmpfile"; then
         log "Downloaded subscription for section '$section' is invalid" "error"
         rm -f "$tmpfile"
@@ -626,7 +661,7 @@ dnsmasq_configure() {
     current_servers="$(uci_get "dhcp" "@dnsmasq[0]" "server")"
     if [ -n "$current_servers" ]; then
         for server in $(uci_get "dhcp" "@dnsmasq[0]" "server"); do
-            if ! [ "$server" == "$SB_DNS_INBOUND_ADDRESS" ]; then
+            if ! [ "$server" = "$SB_DNS_INBOUND_ADDRESS" ]; then
                 uci_add_list "dhcp" "@dnsmasq[0]" "podkop_server" "$server"
             fi
         done
@@ -1238,13 +1273,14 @@ configure_outbound_handler() {
             local subscription_url subscription_json_path urltest_tag selector_tag \
                 urltest_outbounds selector_outbounds urltest_check_interval urltest_tolerance \
                 urltest_testing_url subscription_group_by_countries subscription_group_by_countries_raw \
-                subscription_outbound_tags_json
+                subscription_blocked_countries subscription_outbound_tags_json
 
             config_get subscription_url "$section" "subscription_url"
             config_get urltest_check_interval "$section" "urltest_check_interval" "3m"
             config_get urltest_tolerance "$section" "urltest_tolerance" 50
             config_get urltest_testing_url "$section" "urltest_testing_url" "https://www.gstatic.com/generate_204"
             config_get subscription_group_by_countries_raw "$section" "subscription_group_by_countries" ""
+            config_get subscription_blocked_countries "$section" "subscription_blocked_countries" ""
             if [ -z "$subscription_group_by_countries_raw" ]; then
                 # Backward-compatible alias in case custom builds used another key
                 config_get subscription_group_by_countries_raw "$section" "group_by_countries" ""
@@ -1312,7 +1348,7 @@ configure_outbound_handler() {
             fi
 
             # Parse subscription outbounds
-            if ! sing_box_cf_add_subscription_outbounds "$config" "$section" "$subscription_json_path" > /dev/null; then
+            if ! sing_box_cf_add_subscription_outbounds "$config" "$section" "$subscription_json_path" "$subscription_blocked_countries" > /dev/null; then
                 log "No proxy outbounds found in subscription for section '$section'. Aborted." "fatal"
                 exit 1
             fi
@@ -2374,7 +2410,7 @@ check_proxy() {
         if echo "$response" | grep -q "^<html\|403 Forbidden"; then
             continue
         fi
-        if [[ $response =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        if echo "$response" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
             ip=$(echo "$response" | sed -n 's/^[0-9]\+\.[0-9]\+\.[0-9]\+\.\([0-9]\+\)$/X.X.X.\1/p')
             nolog "$ip - should match proxy IP"
             return 0

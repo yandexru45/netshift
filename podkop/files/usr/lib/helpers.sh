@@ -1,15 +1,13 @@
 # Check if string is valid IPv4
 is_ipv4() {
     local ip="$1"
-    local regex="^((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.?\b){4}$"
-    [[ "$ip" =~ $regex ]]
+    echo "$ip" | grep -qE '^((25[0-5]|(2[0-4]|1[0-9]|[1-9]?[0-9]))\.){3}(25[0-5]|(2[0-4]|1[0-9]|[1-9]?[0-9]))$'
 }
 
 # Check if string is valid IPv4 with CIDR mask
 is_ipv4_cidr() {
     local ip="$1"
-    local regex="^((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.?\b){4}(\/(3[0-2]|2[0-9]|1[0-9]|[0-9]))$"
-    [[ "$ip" =~ $regex ]]
+    echo "$ip" | grep -qE '^((25[0-5]|(2[0-4]|1[0-9]|[1-9]?[0-9]))\.){3}(25[0-5]|(2[0-4]|1[0-9]|[1-9]?[0-9]))/(3[0-2]|[12]?[0-9])$'
 }
 
 is_ipv4_ip_or_ipv4_cidr() {
@@ -18,9 +16,7 @@ is_ipv4_ip_or_ipv4_cidr() {
 
 is_domain() {
     local str="$1"
-    local regex='^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$'
-
-    [[ "$str" =~ $regex ]]
+    echo "$str" | grep -qE '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$'
 }
 
 is_domain_suffix() {
@@ -43,9 +39,7 @@ is_base64() {
 # Checks if the given string looks like a Shadowsocks userinfo
 is_shadowsocks_userinfo_format() {
     local str="$1"
-    local regex='^[^:]+:[^:]+(:[^:]+)?$'
-
-    [[ "$str" =~ $regex ]]
+    echo "$str" | grep -qE '^[^:]+:[^:]+(:[^:]+)?$'
 }
 
 # Compares the current package version with the required minimum
@@ -63,7 +57,7 @@ is_min_package_version() {
 file_exists() {
     local filepath="$1"
 
-    if [[ -f "$filepath" ]]; then
+    if [ -f "$filepath" ]; then
         return 0
     else
         return 1
@@ -156,7 +150,10 @@ url_get_port() {
     url="${url#*@}"
     url="${url%%[/?#]*}"
 
-    [[ "$url" == *:* ]] && echo "${url#*:}" || echo ""
+    case "$url" in
+        *:*) echo "${url#*:}" ;;
+        *) echo "" ;;
+    esac
 }
 
 # Extracts the path from a URL (without query or fragment; returns "/" if empty)
@@ -277,7 +274,7 @@ download_to_file() {
 convert_crlf_to_lf() {
     local filepath="$1"
 
-    if grep -q $'\r' "$filepath"; then
+    if grep -q "$(printf '\r')" "$filepath"; then
         log "File '$filepath' contains CRLF line endings. Converting to LF..." "debug"
         local tmpfile
         tmpfile=$(mktemp)
@@ -418,20 +415,35 @@ download_subscription() {
     local retries="${4:-3}"
     local wait="${5:-2}"
     local timeout="${6:-10}"
+    local send_hwid="${7:-1}"
 
     local sb_version device_model kernel_version hwid
     sb_version="$(get_sing_box_version)"
-    device_model="$(get_device_model)"
-    kernel_version="$(get_kernel_version)"
-    hwid="$(generate_hwid)"
+
+    if [ "$send_hwid" = "1" ]; then
+        device_model="$(get_device_model)"
+        kernel_version="$(get_kernel_version)"
+        hwid="$(generate_hwid)"
+    fi
 
     local tmpfile
     tmpfile="${filepath}.part.$$"
     rm -f "$tmpfile"
 
     for attempt in $(seq 1 "$retries"); do
-        if [ -n "$http_proxy_address" ]; then
-            http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
+        if [ "$send_hwid" = "1" ]; then
+            if [ -n "$http_proxy_address" ]; then
+                http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
+                    wget -T "$timeout" -O "$tmpfile" \
+                        --header "User-Agent: singbox/$sb_version" \
+                        --header "X-HWID: $hwid" \
+                        --header "X-Device-OS: OpenWrt Linux" \
+                        --header "X-Device-Model: $device_model" \
+                        --header "X-Ver-OS: $kernel_version" \
+                        --header "Accept-Language: ru-RU,en,*" \
+                        --header "X-Device-Locale: EN" \
+                        "$url"
+            else
                 wget -T "$timeout" -O "$tmpfile" \
                     --header "User-Agent: singbox/$sb_version" \
                     --header "X-HWID: $hwid" \
@@ -441,16 +453,18 @@ download_subscription() {
                     --header "Accept-Language: ru-RU,en,*" \
                     --header "X-Device-Locale: EN" \
                     "$url"
+            fi
         else
-            wget -T "$timeout" -O "$tmpfile" \
-                --header "User-Agent: singbox/$sb_version" \
-                --header "X-HWID: $hwid" \
-                --header "X-Device-OS: OpenWrt Linux" \
-                --header "X-Device-Model: $device_model" \
-                --header "X-Ver-OS: $kernel_version" \
-                --header "Accept-Language: ru-RU,en,*" \
-                --header "X-Device-Locale: EN" \
-                "$url"
+            if [ -n "$http_proxy_address" ]; then
+                http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
+                    wget -T "$timeout" -O "$tmpfile" \
+                        --header "User-Agent: singbox/$sb_version" \
+                        "$url"
+            else
+                wget -T "$timeout" -O "$tmpfile" \
+                    --header "User-Agent: singbox/$sb_version" \
+                    "$url"
+            fi
         fi
 
         if [ $? -eq 0 ] && [ -s "$tmpfile" ]; then
@@ -473,17 +487,32 @@ check_subscription_connectivity() {
     local retries="${3:-3}"
     local wait="${4:-2}"
     local timeout="${5:-5}"
+    local send_hwid="${6:-1}"
 
     local sb_version device_model kernel_version hwid
     sb_version="$(get_sing_box_version)"
-    device_model="$(get_device_model)"
-    kernel_version="$(get_kernel_version)"
-    hwid="$(generate_hwid)"
+
+    if [ "$send_hwid" = "1" ]; then
+        device_model="$(get_device_model)"
+        kernel_version="$(get_kernel_version)"
+        hwid="$(generate_hwid)"
+    fi
 
     local attempt
     for attempt in $(seq 1 "$retries"); do
-        if [ -n "$http_proxy_address" ]; then
-            http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
+        if [ "$send_hwid" = "1" ]; then
+            if [ -n "$http_proxy_address" ]; then
+                http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
+                    wget -q -T "$timeout" -O /dev/null \
+                        --header "User-Agent: singbox/$sb_version" \
+                        --header "X-HWID: $hwid" \
+                        --header "X-Device-OS: OpenWrt Linux" \
+                        --header "X-Device-Model: $device_model" \
+                        --header "X-Ver-OS: $kernel_version" \
+                        --header "Accept-Language: ru-RU,en,*" \
+                        --header "X-Device-Locale: EN" \
+                        "$url" && return 0
+            else
                 wget -q -T "$timeout" -O /dev/null \
                     --header "User-Agent: singbox/$sb_version" \
                     --header "X-HWID: $hwid" \
@@ -493,22 +522,85 @@ check_subscription_connectivity() {
                     --header "Accept-Language: ru-RU,en,*" \
                     --header "X-Device-Locale: EN" \
                     "$url" && return 0
+            fi
         else
-            wget -q -T "$timeout" -O /dev/null \
-                --header "User-Agent: singbox/$sb_version" \
-                --header "X-HWID: $hwid" \
-                --header "X-Device-OS: OpenWrt Linux" \
-                --header "X-Device-Model: $device_model" \
-                --header "X-Ver-OS: $kernel_version" \
-                --header "Accept-Language: ru-RU,en,*" \
-                --header "X-Device-Locale: EN" \
-                "$url" && return 0
+            if [ -n "$http_proxy_address" ]; then
+                http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
+                    wget -q -T "$timeout" -O /dev/null \
+                        --header "User-Agent: singbox/$sb_version" \
+                        "$url" && return 0
+            else
+                wget -q -T "$timeout" -O /dev/null \
+                    --header "User-Agent: singbox/$sb_version" \
+                    "$url" && return 0
+            fi
         fi
 
         [ "$attempt" -lt "$retries" ] && sleep "$wait"
     done
 
     return 1
+}
+
+# Converts a text file with proxy URLs (one per line) to sing-box JSON format
+# Arguments:
+#   $1 - input file path (text file with ss://, vless://, trojan://, hysteria2:// URLs)
+#   $2 - output file path (will contain sing-box JSON)
+#   $3 - section name (for generating outbound tags)
+# Returns:
+#   0 on success, 1 on failure
+convert_proxy_links_to_singbox_json() {
+    local input_file="$1"
+    local output_file="$2"
+    local section="$3"
+
+    [ -s "$input_file" ] || return 1
+
+    local tmpconfig outbound_count line_num url scheme
+    tmpconfig='{"outbounds":[]}'
+    outbound_count=0
+    line_num=0
+
+    while IFS= read -r url || [ -n "$url" ]; do
+        line_num=$((line_num + 1))
+
+        # Skip empty lines and comments
+        [ -z "$url" ] && continue
+        echo "$url" | grep -q '^[[:space:]]*#' && continue
+        echo "$url" | grep -q '^[[:space:]]*$' && continue
+
+        # Get scheme to check if it's a supported proxy URL
+        scheme="$(echo "$url" | sed -n 's|^\([a-z0-9]*\)://.*|\1|p')"
+
+        case "$scheme" in
+            ss|vless|trojan|hysteria2|hy2|socks4|socks4a|socks5)
+                # Use sing_box_cf_add_proxy_outbound to parse and add the outbound
+                local temp_section="${section}_${outbound_count}"
+
+                if tmpconfig=$(sing_box_cf_add_proxy_outbound "$tmpconfig" "$temp_section" "$url" "0" 2>/dev/null); then
+                    outbound_count=$((outbound_count + 1))
+                    log "Converted proxy link #$line_num ($scheme)" "debug"
+                else
+                    log "Failed to parse proxy link #$line_num: $url" "warn"
+                fi
+                ;;
+            vmess)
+                log "VMess protocol is not supported yet, skipping line #$line_num" "warn"
+                ;;
+            *)
+                log "Unknown or unsupported protocol '$scheme' on line #$line_num, skipping" "debug"
+                ;;
+        esac
+    done < "$input_file"
+
+    if [ "$outbound_count" -eq 0 ]; then
+        log "No valid proxy links found in subscription" "error"
+        return 1
+    fi
+
+    echo "$tmpconfig" > "$output_file"
+    log "Converted $outbound_count proxy links to sing-box JSON format" "info"
+    return 0
 }
 
 validate_subscription_file() {
