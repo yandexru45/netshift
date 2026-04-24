@@ -1273,13 +1273,14 @@ configure_outbound_handler() {
             local subscription_url subscription_json_path urltest_tag selector_tag \
                 urltest_outbounds selector_outbounds urltest_check_interval urltest_tolerance \
                 urltest_testing_url subscription_group_by_countries subscription_group_by_countries_raw \
-                subscription_outbound_tags_json
+                subscription_blocked_countries subscription_outbound_tags_json
 
             config_get subscription_url "$section" "subscription_url"
             config_get urltest_check_interval "$section" "urltest_check_interval" "3m"
             config_get urltest_tolerance "$section" "urltest_tolerance" 50
             config_get urltest_testing_url "$section" "urltest_testing_url" "https://www.gstatic.com/generate_204"
             config_get subscription_group_by_countries_raw "$section" "subscription_group_by_countries" ""
+            config_get subscription_blocked_countries "$section" "subscription_blocked_countries" ""
             if [ -z "$subscription_group_by_countries_raw" ]; then
                 # Backward-compatible alias in case custom builds used another key
                 config_get subscription_group_by_countries_raw "$section" "group_by_countries" ""
@@ -1347,7 +1348,7 @@ configure_outbound_handler() {
             fi
 
             # Parse subscription outbounds
-            if ! sing_box_cf_add_subscription_outbounds "$config" "$section" "$subscription_json_path" > /dev/null; then
+            if ! sing_box_cf_add_subscription_outbounds "$config" "$section" "$subscription_json_path" "$subscription_blocked_countries" > /dev/null; then
                 log "No proxy outbounds found in subscription for section '$section'. Aborted." "fatal"
                 exit 1
             fi

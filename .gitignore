@@ -1,4 +1,111 @@
+# IDE
 .idea
-fe-app-podkop/node_modules
-fe-app-podkop/.env
+.vscode
+*.swp
+*.swo
+*~
+.project
+.settings
+.classpath
+
+# OS
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Build artifacts
+bin/
+*.ipk
+*.apk
+*.deb
+*.rpm
+
+# Frontend
+fe-app-podkop/node_modules
+fe-app-podkop/dist
+fe-app-podkop/.env
+fe-app-podkop/.env.local
+fe-app-podkop/yarn-error.log
+fe-app-podkop/npm-debug.log*
+fe-app-podkop/pnpm-debug.log*
+fe-app-podkop/.pnp
+fe-app-podkop/.pnp.js
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+*.cache
+.cache/
+
+# Docker
+.dockerignore
+
+# Build logs
+build.log
+compile.log
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Lock files (optional - uncomment if you want to ignore them)
+# fe-app-podkop/yarn.lock
+# fe-app-podkop/package-lock.json
+
+# Local development
+.env
+.env.local
+.env.*.local
+
+# Claude Code
+.claude/
+
+# Git
+*.orig
+*.rej
+*.patch
+
+# Compiled files
+*.o
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Archives
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.rar
+*.7z
+
+# OpenWrt SDK artifacts
+staging_dir/
+build_dir/
+tmp/
+dl/
+feeds/
+
+# Private keys
+*.pem
+*.key
+private-key.pem
+
+# Backup configs
+*.conf.bak
+*.config.bak
+*-070
+

@@ -723,6 +723,63 @@ sing_box_cm_add_hysteria2_outbound() {
 }
 
 #######################################
+# Add a Hysteria (v1) outbound to a sing-box JSON configuration.
+# Arguments:
+#   config: string (JSON), sing-box configuration to modify
+#   tag: string, identifier for the new outbound
+#   server_address: string, server hostname or IP
+#   server_port: number, server port
+#   auth: string, authentication string
+#   obfuscator: string, obfuscation password (optional)
+#   protocol: string, protocol type: udp, wechat-video, faketcp (default: udp)
+#   upload_mbps: number, upload bandwidth in Mbps (optional)
+#   download_mbps: number, download bandwidth in Mbps (optional)
+#   network: string, network type: tcp, udp, or both (optional)
+# Outputs:
+#   Writes updated JSON configuration to stdout
+# Example:
+#   CONFIG=$(sing_box_cm_add_hysteria_outbound "$CONFIG" "hysteria-out" "example.com" 443 "supersecret" \
+#       "obfs-pass" "udp" "50" "200" "udp")
+#######################################
+sing_box_cm_add_hysteria_outbound() {
+    local config="$1"
+    local tag="$2"
+    local server_address="$3"
+    local server_port="$4"
+    local auth="$5"
+    local obfuscator="$6"
+    local protocol="$7"
+    local upload_mbps="$8"
+    local download_mbps="$9"
+    local network="${10}"
+
+    echo "$config" | jq \
+        --arg tag "$tag" \
+        --arg server_address "$server_address" \
+        --arg server_port "$server_port" \
+        --arg auth "$auth" \
+        --arg obfuscator "$obfuscator" \
+        --arg protocol "$protocol" \
+        --arg upload_mbps "$upload_mbps" \
+        --arg download_mbps "$download_mbps" \
+        --arg network "$network" \
+        '.outbounds += [(
+        {
+          type: "hysteria",
+          tag: $tag,
+          server: $server_address,
+          server_port: ($server_port | tonumber),
+          auth_str: $auth
+        }
+        + (if $obfuscator != "" then {obfs: $obfuscator} else {} end)
+        + (if $protocol != "" then {protocol: $protocol} else {protocol: "udp"} end)
+        + (if $upload_mbps != "" then {up_mbps: ($upload_mbps | tonumber)} else {} end)
+        + (if $download_mbps != "" then {down_mbps: ($download_mbps | tonumber)} else {} end)
+        + (if $network != "" then {network: $network} else {} end)
+    )]'
+}
+
+#######################################
 # Set gRPC transport settings for an outbound in a sing-box JSON configuration.
 # Arguments:
 #   config: string (JSON), sing-box configuration to modify
