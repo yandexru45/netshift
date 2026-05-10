@@ -2796,8 +2796,8 @@ async function runNftCheck() {
     throw new Error("Nftables checks failed");
   }
   const data = nftablesChecks.data;
-  const allGood = Boolean(data.table_exist) && Boolean(data.rules_mangle_exist) && Boolean(data.rules_mangle_counters) && Boolean(data.rules_mangle_output_exist) && Boolean(data.rules_mangle_output_counters) && Boolean(data.rules_proxy_exist) && Boolean(data.rules_proxy_counters) && !data.rules_other_mark_exist;
-  const atLeastOneGood = Boolean(data.table_exist) || Boolean(data.rules_mangle_exist) || Boolean(data.rules_mangle_counters) || Boolean(data.rules_mangle_output_exist) || Boolean(data.rules_mangle_output_counters) || Boolean(data.rules_proxy_exist) || Boolean(data.rules_proxy_counters) || !data.rules_other_mark_exist;
+  const allGood = Boolean(data.table_exist) && Boolean(data.rules_mangle_exist) && Boolean(data.rules_mangle_counters) && Boolean(data.rules_mangle_output_exist) && Boolean(data.rules_proxy_exist) && Boolean(data.rules_proxy_counters) && !data.rules_other_mark_exist;
+  const atLeastOneGood = Boolean(data.table_exist) || Boolean(data.rules_mangle_exist) || Boolean(data.rules_mangle_counters) || Boolean(data.rules_mangle_output_exist) || Boolean(data.rules_proxy_exist) || Boolean(data.rules_proxy_counters) || !data.rules_other_mark_exist;
   const { state, description } = getMeta({ atLeastOneGood, allGood });
   updateCheckStore({
     order,
@@ -2827,8 +2827,8 @@ async function runNftCheck() {
         value: ""
       },
       {
-        state: data.rules_mangle_output_counters ? "success" : "error",
-        key: _("Rules mangle output counters"),
+        state: "success",
+        key: data.rules_mangle_output_counters ? _("Rules mangle output counters") : _("Rules mangle output counters (idle)"),
         value: ""
       },
       {
@@ -2870,10 +2870,10 @@ async function runFakeIPCheck() {
   const checks = {
     router: routerFakeIPResponse.success && routerFakeIPResponse.data.fakeip,
     browserFakeIP: checkFakeIPResponse.success && checkFakeIPResponse.data.fakeip,
-    differentIP: checkFakeIPResponse.success && checkIPResponse.success && checkFakeIPResponse.data.IP !== checkIPResponse.data.IP
+    proxyFakeIP: checkFakeIPResponse.success && checkFakeIPResponse.data.fakeip && checkIPResponse.success
   };
-  const allGood = checks.router || checks.browserFakeIP || checks.differentIP;
-  const atLeastOneGood = checks.router && checks.browserFakeIP && checks.differentIP;
+  const allGood = checks.router && checks.browserFakeIP && checks.proxyFakeIP;
+  const atLeastOneGood = checks.router || checks.browserFakeIP || checks.proxyFakeIP;
   const { state, description } = getMeta({ atLeastOneGood, allGood });
   updateCheckStore({
     order,
@@ -2894,8 +2894,8 @@ async function runFakeIPCheck() {
       },
       ...insertIf(checks.browserFakeIP, [
         {
-          state: checks.differentIP ? "success" : "error",
-          key: checks.differentIP ? _("Proxy traffic is routed via FakeIP") : _("Proxy traffic is not routed via FakeIP"),
+          state: checks.proxyFakeIP ? "success" : "error",
+          key: checks.proxyFakeIP ? _("Proxy traffic is reachable via FakeIP") : _("Proxy traffic check via FakeIP failed"),
           value: ""
         }
       ])

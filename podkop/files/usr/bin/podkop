@@ -3129,7 +3129,15 @@ check_sing_box() {
 }
 
 check_fakeip() {
-    curl -m 3 -s "https://$FAKEIP_TEST_DOMAIN/check" | jq .
+    local fakeip_address
+
+    fakeip_address="$(dig +short @"$SB_DNS_INBOUND_ADDRESS" "$FAKEIP_TEST_DOMAIN" 2> /dev/null | sed -n '1p')"
+    if echo "$fakeip_address" | grep -q '^198\.18\.'; then
+        jq -n --arg ip "$fakeip_address" '{fakeip: true, IP: $ip}'
+        return 0
+    fi
+
+    jq -n --arg ip "$fakeip_address" '{fakeip: false, IP: $ip}'
 }
 
 #######################################

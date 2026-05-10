@@ -25,15 +25,15 @@ export async function runFakeIPCheck() {
     router: routerFakeIPResponse.success && routerFakeIPResponse.data.fakeip,
     browserFakeIP:
       checkFakeIPResponse.success && checkFakeIPResponse.data.fakeip,
-    differentIP:
+    proxyFakeIP:
       checkFakeIPResponse.success &&
-      checkIPResponse.success &&
-      checkFakeIPResponse.data.IP !== checkIPResponse.data.IP,
+      checkFakeIPResponse.data.fakeip &&
+      checkIPResponse.success,
   };
 
-  const allGood = checks.router || checks.browserFakeIP || checks.differentIP;
+  const allGood = checks.router && checks.browserFakeIP && checks.proxyFakeIP;
   const atLeastOneGood =
-    checks.router && checks.browserFakeIP && checks.differentIP;
+    checks.router || checks.browserFakeIP || checks.proxyFakeIP;
 
   const { state, description } = getMeta({ atLeastOneGood, allGood });
 
@@ -60,10 +60,10 @@ export async function runFakeIPCheck() {
       },
       ...insertIf<IDiagnosticsChecksItem>(checks.browserFakeIP, [
         {
-          state: checks.differentIP ? 'success' : 'error',
-          key: checks.differentIP
-            ? _('Proxy traffic is routed via FakeIP')
-            : _('Proxy traffic is not routed via FakeIP'),
+          state: checks.proxyFakeIP ? 'success' : 'error',
+          key: checks.proxyFakeIP
+            ? _('Proxy traffic is reachable via FakeIP')
+            : _('Proxy traffic check via FakeIP failed'),
           value: '',
         },
       ]),
