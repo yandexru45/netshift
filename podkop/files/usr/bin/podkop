@@ -777,7 +777,7 @@ dnsmasq_configure() {
     current_servers="$(uci_get "dhcp" "@dnsmasq[0]" "server")"
     if [ -n "$current_servers" ]; then
         for server in $(uci_get "dhcp" "@dnsmasq[0]" "server"); do
-            if ! [ "$server" == "$SB_DNS_INBOUND_ADDRESS" ]; then
+            if ! [ "$server" = "$SB_DNS_INBOUND_ADDRESS" ]; then
                 uci_add_list "dhcp" "@dnsmasq[0]" "podkop_server" "$server"
             fi
         done
@@ -2517,7 +2517,7 @@ nft_list_all_traffic_from_ip() {
 
 # Diagnotics
 check_proxy() {
-    local sing_box_config_path
+    local sing_box_config_path check_config_path config_dir first_outbound_section outbound_tag response ip
     config_get sing_box_config_path "settings" "config_path"
 
     if ! command -v sing-box > /dev/null 2>&1; then
@@ -2564,18 +2564,55 @@ check_proxy() {
 
     nolog "Checking proxy connection..."
 
+    first_outbound_section="$(get_first_outbound_section)"
+    if [ -z "$first_outbound_section" ]; then
+        nolog "No outbound section configured"
+        return 1
+    fi
+
+    outbound_tag="$(get_outbound_tag_by_section "$first_outbound_section")"
+    config_dir="${sing_box_config_path%/*}"
+    [ "$config_dir" = "$sing_box_config_path" ] && config_dir="."
+
+    check_config_path="$(mktemp /tmp/podkop-check-proxy.XXXXXX)" || {
+        nolog "Failed to create temporary sing-box configuration"
+        return 1
+    }
+
+    if ! jq 'if .experimental.cache_file then .experimental.cache_file.enabled = false else . end' \
+        "$sing_box_config_path" > "$check_config_path"; then
+        rm -f "$check_config_path"
+        nolog "Failed to prepare temporary sing-box configuration"
+        return 1
+    fi
+
+    if ! jq -e --arg tag "$outbound_tag" '.outbounds[]? | select(.tag == $tag)' \
+        "$check_config_path" > /dev/null; then
+        rm -f "$check_config_path"
+        nolog "Outbound '$outbound_tag' not found in sing-box configuration"
+        return 1
+    fi
+
     for attempt in $(seq 1 5); do
-        response=$(sing-box tools fetch ifconfig.me -D /etc/sing-box 2> /dev/null)
+        response=$(sing-box tools fetch -D "$config_dir" -c "$check_config_path" --outbound "$outbound_tag" ifconfig.me 2> /dev/null)
         if echo "$response" | grep -q "^<html\|403 Forbidden"; then
+            if [ "$attempt" -eq 5 ]; then
+                nolog "Failed to get valid IP address after 5 attempts"
+                nolog "Error response: $response"
+                rm -f "$check_config_path"
+                return 1
+            fi
             continue
         fi
-        if [[ $response =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        if echo "$response" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
             ip=$(echo "$response" | sed -n 's/^[0-9]\+\.[0-9]\+\.[0-9]\+\.\([0-9]\+\)$/X.X.X.\1/p')
             nolog "$ip - should match proxy IP"
+            rm -f "$check_config_path"
             return 0
-        elif echo "$response" | grep -q "^[0-9a-fA-F:]*::[0-9a-fA-F:]*$\|^[0-9a-fA-F:]\+$"; then
+        elif echo "$response" | grep -Eq '^([0-9a-fA-F]*:)[0-9a-fA-F:]+$'; then
             ip=$(echo "$response" | sed 's/\([0-9a-fA-F]\+:[0-9a-fA-F]\+:[0-9a-fA-F]\+\):.*/\1:XXXX:XXXX:XXXX/')
             nolog "$ip - should match proxy IP"
+            rm -f "$check_config_path"
             return 0
         fi
         if [ $attempt -eq 5 ]; then
@@ -2585,9 +2622,13 @@ check_proxy() {
             else
                 nolog "Error response: $response"
             fi
+            rm -f "$check_config_path"
             return 1
         fi
     done
+
+    rm -f "$check_config_path"
+    return 1
 }
 
 check_nft() {
