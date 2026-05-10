@@ -3421,7 +3421,7 @@ global_check() {
         if [ "$rules_mangle_output_counters" -eq 1 ]; then
             print_global "вњ… Rules mangle output counters"
         else
-            print_global "вљ пёЏ  Rules mangle output counters"
+            print_global "вњ… Rules mangle output counters (idle)"
         fi
 
         if [ "$rules_proxy_exist" -eq 1 ]; then
@@ -3525,21 +3525,10 @@ global_check() {
     print_global "в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ"
     print_global "рџҐё FakeIP status"
 
-    local fakeip_check_json
-    fakeip_check_json=$(check_fakeip)
-
-    if [ -n "$fakeip_check_json" ]; then
-        local fakeip_status
-
-        fakeip_status=$(echo "$fakeip_check_json" | jq -r '.fakeip // false')
-
-        if [ "$fakeip_status" = "true" ]; then
-            print_global "вњ… Router DNS is routed through sing-box"
-        else
-            print_global "вљ пёЏ Router DNS is NOT routed through sing-box"
-        fi
+    if dnsmasq_is_configured_for_podkop; then
+        print_global "вњ… LAN DNS is routed through sing-box"
     else
-        print_global "вќЊ Failed to get FakeIP info"
+        print_global "вљ пёЏ LAN DNS is NOT routed through sing-box"
     fi
 
     local fakeip_address

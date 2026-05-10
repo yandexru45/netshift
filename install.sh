@@ -258,7 +258,11 @@ check_system() {
 
     # Check available space
     AVAILABLE_SPACE=$(df /overlay | awk 'NR==2 {print $4}')
-    REQUIRED_SPACE=15360 # 15MB in KB
+    REQUIRED_SPACE=15360 # 15MB in KB for first install
+
+    if command -v podkop > /dev/null 2>&1 || [ -f "/etc/init.d/podkop" ]; then
+        REQUIRED_SPACE=8192 # 8MB is enough for upgrades; packages are downloaded to /tmp
+    fi
 
     if [ "$AVAILABLE_SPACE" -lt "$REQUIRED_SPACE" ]; then
         msg "Error: Insufficient space in flash"
