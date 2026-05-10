@@ -2627,6 +2627,22 @@ check_proxy() {
         return 1
     fi
 
+    if jq -e --arg tag "$outbound_tag" \
+        '.outbounds[]? | select(.tag == $tag and (.type == "selector" or .type == "urltest"))' \
+        "$check_config_path" > /dev/null; then
+        outbound_tag="$(jq -r '
+            .outbounds[]?
+            | select(.type != "direct" and .type != "selector" and .type != "urltest")
+            | .tag
+        ' "$check_config_path" | sed -n '1p')"
+    fi
+
+    if [ -z "$outbound_tag" ]; then
+        rm -f "$check_config_path"
+        nolog "No testable proxy outbound found in sing-box configuration"
+        return 1
+    fi
+
     for attempt in $(seq 1 5); do
         response=$(sing_box_fetch_ifconfig_with_timeout "$config_dir" "$check_config_path" "$outbound_tag")
         if echo "$response" | grep -q "^<html\|403 Forbidden"; then
