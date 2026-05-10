@@ -494,7 +494,7 @@ monitor_sing_box() {
         sleep "$MONITOR_CHECK_INTERVAL"
 
         # Fast path: sing-box is alive
-        if pgrep -x sing-box > /dev/null 2>&1; then
+        if sing_box_process_exists; then
             crash_count=0
             backoff=0
             continue
@@ -551,6 +551,10 @@ monitor_sing_box() {
     done
 
     rm -f /var/run/podkop_monitor.pid
+}
+
+sing_box_process_exists() {
+    pgrep "sing-box" > /dev/null 2>&1 || pidof sing-box > /dev/null 2>&1
 }
 
 reload() {
