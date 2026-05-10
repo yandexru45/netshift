@@ -2516,6 +2516,40 @@ nft_list_all_traffic_from_ip() {
 }
 
 # Diagnotics
+sing_box_fetch_ifconfig_with_timeout() {
+    local config_dir="$1"
+    local config_path="$2"
+    local outbound_tag="$3"
+    local output_file fetch_pid seconds
+
+    output_file="$(mktemp /tmp/podkop-check-proxy-response.XXXXXX)" || return 1
+
+    sing-box tools fetch -D "$config_dir" -c "$config_path" --outbound "$outbound_tag" ifconfig.me \
+        > "$output_file" 2> /dev/null &
+    fetch_pid=$!
+    seconds=10
+
+    while [ "$seconds" -gt 0 ]; do
+        if ! kill -0 "$fetch_pid" 2> /dev/null; then
+            wait "$fetch_pid" 2> /dev/null
+            cat "$output_file"
+            rm -f "$output_file"
+            return 0
+        fi
+
+        sleep 1
+        seconds=$((seconds - 1))
+    done
+
+    if kill -0 "$fetch_pid" 2> /dev/null; then
+        kill "$fetch_pid" 2> /dev/null
+        wait "$fetch_pid" 2> /dev/null
+    fi
+
+    rm -f "$output_file"
+    return 1
+}
+
 check_proxy() {
     local sing_box_config_path check_config_path config_dir first_outbound_section outbound_tag response ip
     config_get sing_box_config_path "settings" "config_path"
@@ -2594,7 +2628,7 @@ check_proxy() {
     fi
 
     for attempt in $(seq 1 5); do
-        response=$(sing-box tools fetch -D "$config_dir" -c "$check_config_path" --outbound "$outbound_tag" ifconfig.me 2> /dev/null)
+        response=$(sing_box_fetch_ifconfig_with_timeout "$config_dir" "$check_config_path" "$outbound_tag")
         if echo "$response" | grep -q "^<html\|403 Forbidden"; then
             if [ "$attempt" -eq 5 ]; then
                 nolog "Failed to get valid IP address after 5 attempts"
