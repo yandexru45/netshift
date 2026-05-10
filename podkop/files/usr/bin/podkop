@@ -425,10 +425,16 @@ stop_main() {
     if ip rule list | grep -q "podkop"; then
         ip rule del fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105
     fi
+    if ip -6 rule list | grep -q "podkop"; then
+        ip -6 rule del fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105
+    fi
 
     log "Flush ip route"
     if ip route list table "$RT_TABLE_NAME" > /dev/null 2>&1; then
         ip route flush table "$RT_TABLE_NAME"
+    fi
+    if ip -6 route list table "$RT_TABLE_NAME" > /dev/null 2>&1; then
+        ip -6 route flush table "$RT_TABLE_NAME"
     fi
 
     log "Stop sing-box"
@@ -613,11 +619,25 @@ route_table_rule_mark() {
         log "Route for tproxy exists" "debug"
     fi
 
+    if ! ip -6 route list table "$RT_TABLE_NAME" 2> /dev/null | grep -q "local ::/0 dev lo"; then
+        log "Added IPv6 route for tproxy" "debug"
+        ip -6 route add local ::/0 dev lo table "$RT_TABLE_NAME"
+    else
+        log "IPv6 route for tproxy exists" "debug"
+    fi
+
     if ! ip rule list | grep -q "from all fwmark $NFT_FAKEIP_MARK/$NFT_FAKEIP_MARK lookup $RT_TABLE_NAME"; then
         log "Create marking rule" "debug"
         ip -4 rule add fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105
     else
         log "Marking rule exist" "debug"
+    fi
+
+    if ! ip -6 rule list | grep -q "from all fwmark $NFT_FAKEIP_MARK/$NFT_FAKEIP_MARK lookup $RT_TABLE_NAME"; then
+        log "Create IPv6 marking rule" "debug"
+        ip -6 rule add fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105
+    else
+        log "IPv6 marking rule exist" "debug"
     fi
 }
 
@@ -654,6 +674,15 @@ create_nft_rules() {
         240.0.0.0-255.255.255.255
     }'
 
+    log "Create localv6 set"
+    nft_create_ipv6_set "$NFT_TABLE_NAME" "$NFT_LOCALV6_SET_NAME"
+    nft add element inet "$NFT_TABLE_NAME" localv6 '{
+        ::1,
+        fc00::/7,
+        fe80::/10,
+        ff00::/8
+    }'
+
     log "Create interface set"
     nft_init_interfaces_set
 
@@ -665,15 +694,19 @@ create_nft_rules() {
     # Catch-all: route all LAN traffic through sing-box (except local addresses)
     # sing-box handles all routing decisions at its level via route rules and rulesets
     nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "@$NFT_LOCALV4_SET_NAME" return
+    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip6 daddr "@$NFT_LOCALV6_SET_NAME" return
     nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
     nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
 
     # TProxy: redirect marked packets to sing-box TProxy inbound
     nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto tcp tproxy ip to 127.0.0.1:1602 counter
     nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto udp tproxy ip to 127.0.0.1:1602 counter
+    nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto tcp tproxy ip6 to ::1:1603 counter
+    nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto udp tproxy ip6 to ::1:1603 counter
 
     # Router's own outbound traffic: local traffic bypasses, marked outbound bypasses
     nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "@$NFT_LOCALV4_SET_NAME" return
+    nft add rule inet "$NFT_TABLE_NAME" mangle_output ip6 daddr "@$NFT_LOCALV6_SET_NAME" return
     nft add rule inet "$NFT_TABLE_NAME" mangle_output meta mark "$NFT_OUTBOUND_MARK" counter return
     nft add rule inet "$NFT_TABLE_NAME" mangle_output meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
     nft add rule inet "$NFT_TABLE_NAME" mangle_output meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
@@ -1151,7 +1184,14 @@ sing_box_configure_inbounds() {
             "$config" "$SB_TPROXY_INBOUND_TAG" "$SB_TPROXY_INBOUND_ADDRESS" "$SB_TPROXY_INBOUND_PORT" true true
     )
     config=$(
+        sing_box_cm_add_tproxy_inbound \
+            "$config" "${SB_TPROXY_INBOUND_TAG}-v6" "$SB_TPROXY_INBOUND_ADDRESS_V6" "$SB_TPROXY_INBOUND_PORT_V6" true true
+    )
+    config=$(
         sing_box_cm_add_direct_inbound "$config" "$SB_DNS_INBOUND_TAG" "$SB_DNS_INBOUND_ADDRESS" "$SB_DNS_INBOUND_PORT"
+    )
+    config=$(
+        sing_box_cm_add_direct_inbound "$config" "${SB_DNS_INBOUND_TAG}-v6" "$SB_DNS_INBOUND_ADDRESS_V6" "$SB_DNS_INBOUND_PORT_V6"
     )
 }
 
@@ -1538,13 +1578,21 @@ configure_outbound_handler() {
 
 sing_box_configure_dns() {
     log "Configure the DNS section of a sing-box JSON configuration"
-    config=$(sing_box_cm_configure_dns "$config" "$SB_DNS_SERVER_TAG" "ipv4_only" true)
+    config=$(sing_box_cm_configure_dns "$config" "$SB_DNS_SERVER_TAG" "prefer_ipv4" true)
 
     log "Adding DNS Servers" "debug"
     local dns_type dns_server bootstrap_dns_server dns_domain_resolver dns_server_address
     config_get dns_type "settings" "dns_type" "doh"
     config_get dns_server "settings" "dns_server" "1.1.1.1"
     config_get bootstrap_dns_server "settings" "bootstrap_dns_server" "77.88.8.8"
+
+    # Self-protection: warn if block_doh is enabled but upstream DNS uses DoH
+    local block_doh
+    config_get_bool block_doh "settings" "block_doh" 0
+    if [ "$block_doh" -eq 1 ] && [ "$dns_type" = "doh" ]; then
+        log "DoH blocking is enabled but upstream DNS type is 'doh'. Your own DNS queries will be blocked!" "warn"
+        log "Switch dns_type to 'udp' or 'dot' in podkop settings to avoid self-blocking." "warn"
+    fi
 
     dns_server_address="$(url_get_host "$dns_server")"
     if ! is_ipv4 "$dns_server_address"; then
@@ -1553,12 +1601,16 @@ sing_box_configure_dns() {
 
     config=$(sing_box_cm_add_udp_dns_server "$config" "$SB_BOOTSTRAP_SERVER_TAG" "$bootstrap_dns_server" 53)
     config=$(sing_box_cf_add_dns_server "$config" "$dns_type" "$SB_DNS_SERVER_TAG" "$dns_server" "$dns_domain_resolver")
-    config=$(sing_box_cm_add_fakeip_dns_server "$config" "$SB_FAKEIP_DNS_SERVER_TAG" "$SB_FAKEIP_INET4_RANGE")
+    config=$(sing_box_cm_add_fakeip_dns_server "$config" "$SB_FAKEIP_DNS_SERVER_TAG" "$SB_FAKEIP_INET4_RANGE" "$SB_FAKEIP_INET6_RANGE")
 
     log "Adding DNS Rules"
     local rewrite_ttl service_domains
     config_get rewrite_ttl "settings" "dns_rewrite_ttl" "60"
 
+    if [ "$block_doh" -eq 1 ]; then
+        # Block DoH at DNS level: reject HTTPS record type queries and canary domains
+        log "DoH blocking enabled: adding DNS-level DoH block rules" "info"
+    fi
     config=$(sing_box_cm_add_dns_reject_rule "$config" "query_type" "HTTPS")
     config=$(sing_box_cm_add_dns_reject_rule "$config" "domain_suffix" '"use-application-dns.net"')
     config=$(sing_box_cm_add_dns_route_rule "$config" "$SB_FAKEIP_DNS_SERVER_TAG" "$SB_FAKEIP_DNS_RULE_TAG")
@@ -1570,17 +1622,26 @@ sing_box_configure_dns() {
 sing_box_configure_route() {
     log "Configure the route section of a sing-box JSON configuration"
 
+    # Determine route final: global proxy section overrides direct-out
+    local route_final="$SB_DIRECT_OUTBOUND_TAG"
+    local global_proxy_section
+    global_proxy_section="$(get_global_proxy_section)"
+    if [ -n "$global_proxy_section" ]; then
+        route_final="$(get_outbound_tag_by_section "$global_proxy_section")"
+        log "Global proxy mode enabled: routing all unmatched traffic through section '$global_proxy_section' (outbound: $route_final)" "info"
+    fi
+
     local output_network_interface
     config_get output_network_interface "settings" "output_network_interface"
     if [ -z "$output_network_interface" ]; then
-        config=$(sing_box_cm_configure_route "$config" "$SB_DIRECT_OUTBOUND_TAG" true "$SB_DNS_SERVER_TAG")
+        config=$(sing_box_cm_configure_route "$config" "$route_final" true "$SB_DNS_SERVER_TAG")
     else
-        config=$(sing_box_cm_configure_route "$config" "$SB_DIRECT_OUTBOUND_TAG" false "$SB_DNS_SERVER_TAG" \
+        config=$(sing_box_cm_configure_route "$config" "$route_final" false "$SB_DNS_SERVER_TAG" \
             "$output_network_interface")
     fi
 
     local sniff_inbounds
-    sniff_inbounds=$(comma_string_to_json_array "$SB_TPROXY_INBOUND_TAG,$SB_DNS_INBOUND_TAG")
+    sniff_inbounds=$(comma_string_to_json_array "$SB_TPROXY_INBOUND_TAG,${SB_TPROXY_INBOUND_TAG}-v6,$SB_DNS_INBOUND_TAG,${SB_DNS_INBOUND_TAG}-v6")
     config=$(sing_box_cm_sniff_route_rule "$config" "inbound" "$sniff_inbounds")
 
     config=$(sing_box_cm_add_hijack_dns_route_rule "$config" "protocol" "dns")
@@ -1589,6 +1650,15 @@ sing_box_configure_route() {
     config_get_bool disable_quic "settings" "disable_quic" 0
     if [ "$disable_quic" -eq 1 ]; then
         config=$(sing_box_cf_add_single_key_reject_rule "$config" "$SB_TPROXY_INBOUND_TAG" "protocol" "quic")
+    fi
+
+    # DoH blocking at route level: reject direct connections to known DoH server IPs
+    local block_doh
+    config_get_bool block_doh "settings" "block_doh" 0
+    if [ "$block_doh" -eq 1 ]; then
+        log "DoH blocking enabled: adding route-level DoH IP block rules" "info"
+        config=$(sing_box_cm_add_doh_block_route_rule "$config" "$SB_DOH_BLOCK_RULE_TAG" "$SB_TPROXY_INBOUND_TAG" \
+            "$DOH_BLOCK_IPV4_CIDRS")
     fi
 
     local first_outbound_section
@@ -2306,6 +2376,24 @@ get_first_outbound_section() {
     echo "$first_section"
 }
 
+_determine_global_proxy_section() {
+    local section="$1"
+    local global_proxy
+
+    config_get_bool global_proxy "$section" "global_proxy" 0
+    if [ "$global_proxy" -eq 1 ] && section_has_configured_outbound "$section"; then
+        [ -z "$global_section" ] && global_section="$section"
+    fi
+}
+
+get_global_proxy_section() {
+    local global_section=""
+
+    config_foreach _determine_global_proxy_section "section"
+
+    echo "$global_section"
+}
+
 get_sections_by_connection_type() {
     local connection_type="$1"
 
@@ -2362,7 +2450,7 @@ get_service_listen_address() {
     network_get_ipaddr service_listen_address "$interface"
 
     if [ -z "$service_listen_address" ]; then
-        log "Failed to determine the listening IP address. Please open an issue to report this problem: https://github.com/yandexru45/podkop-evolution/issues" "error"
+        log "Failed to determine the listening IP address. Please open an issue to report this problem: https://github.com/spgsroot/podkop-evolution/issues" "error"
         return 1
     fi
 
@@ -2635,7 +2723,7 @@ get_system_info() {
 
     podkop_version="$PODKOP_VERSION"
 
-    podkop_latest_version=$(curl -m 3 -s https://api.github.com/repos/yandexru45/podkop-evolution/releases/latest | grep '"tag_name":' | cut -d'"' -f4)
+    podkop_latest_version=$(curl -m 3 -s https://api.github.com/repos/spgsroot/podkop-evolution/releases/latest | grep '"tag_name":' | cut -d'"' -f4)
     [ -z "$podkop_latest_version" ] && podkop_latest_version="unknown"
 
     if [ -f /www/luci-static/resources/view/podkop/main.js ]; then

@@ -83,6 +83,9 @@ export const DNS_SERVER_OPTIONS = {
   'unfiltered.adguard-dns.com':
     'unfiltered.adguard-dns.com (AdGuard Unfiltered)',
   'family.adguard-dns.com': 'family.adguard-dns.com (AdGuard Family)',
+  '2001:4860:4860::8888': '2001:4860:4860::8888 (Google IPv6)',
+  '2606:4700:4700::1111': '2606:4700:4700::1111 (Cloudflare IPv6)',
+  '2620:fe::fe': '2620:fe::fe (Quad9 IPv6)',
 };
 export const BOOTSTRAP_DNS_SERVER_OPTIONS = {
   '77.88.8.8': '77.88.8.8 (Yandex DNS)',
@@ -93,6 +96,8 @@ export const BOOTSTRAP_DNS_SERVER_OPTIONS = {
   '8.8.4.4': '8.8.4.4 (Google DNS)',
   '9.9.9.9': '9.9.9.9 (Quad9 DNS)',
   '9.9.9.11': '9.9.9.11 (Quad9 DNS)',
+  '2001:4860:4860::8888': '2001:4860:4860::8888 (Google DNS IPv6)',
+  '2606:4700:4700::1111': '2606:4700:4700::1111 (Cloudflare DNS IPv6)',
 };
 
 export const DIAGNOSTICS_UPDATE_INTERVAL = 10000; // 10 seconds

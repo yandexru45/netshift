@@ -1,7 +1,12 @@
 #!/bin/sh
 # shellcheck shell=dash
 
-REPO="https://api.github.com/repos/yandexru45/podkop-evolution/releases/latest"
+REPO_OWNER="spgsroot"
+REPO_NAME="podkop-evolution"
+GITHUB_REPO="$REPO_OWNER/$REPO_NAME"
+RELEASE_API="https://api.github.com/repos/$GITHUB_REPO/releases/latest"
+RELEASE_PAGE="https://github.com/$GITHUB_REPO/releases/latest"
+RAW_BASE="https://raw.githubusercontent.com/$GITHUB_REPO/refs/heads/main"
 DOWNLOAD_DIR="/tmp/podkop"
 COUNT=3
 
@@ -14,6 +19,10 @@ mkdir -p "$DOWNLOAD_DIR"
 
 msg() {
     printf "\033[32;1m%s\033[0m\n" "$1"
+}
+
+err() {
+    printf "\033[31;1m%s\033[0m\n" "$1" >&2
 }
 
 pkg_is_installed () {
@@ -66,7 +75,7 @@ update_config() {
     printf "\033[48;5;196m\033[1m║ ! Обнаружена старая версия podkop.                                   ║\033[0m\n"
     printf "\033[48;5;196m\033[1m║ Если продолжите обновление, вам потребуется настроить Podkop заново. ║\033[0m\n"
     printf "\033[48;5;196m\033[1m║ Старая конфигурация будет сохранена в /etc/config/podkop-070         ║\033[0m\n"
-    printf "\033[48;5;196m\033[1m║ Подробности: https://github.com/yandexru45/podkop-evolution         ║\033[0m\n"
+    printf "\033[48;5;196m\033[1m║ Подробности: https://github.com/spgsroot/podkop-evolution           ║\033[0m\n"
     printf "\033[48;5;196m\033[1m║ Точно хотите продолжить?                                             ║\033[0m\n"
     printf "\033[48;5;196m\033[1m╚══════════════════════════════════════════════════════════════════════╝\033[0m\n"
 
@@ -76,7 +85,7 @@ update_config() {
     printf "\033[48;5;196m\033[1m║ ! Detected old podkop version.                                       ║\033[0m\n"
     printf "\033[48;5;196m\033[1m║ If you continue the update, you will need to RECONFIGURE podkop.     ║\033[0m\n"
     printf "\033[48;5;196m\033[1m║ Your old configuration will be saved to /etc/config/podkop-070       ║\033[0m\n"
-    printf "\033[48;5;196m\033[1m║ Details: https://github.com/yandexru45/podkop-evolution              ║\033[0m\n"
+    printf "\033[48;5;196m\033[1m║ Details: https://github.com/spgsroot/podkop-evolution                ║\033[0m\n"
     printf "\033[48;5;196m\033[1m║ Are you sure you want to continue?                                   ║\033[0m\n"
     printf "\033[48;5;196m\033[1m╚══════════════════════════════════════════════════════════════════════╝\033[0m\n"
 
@@ -88,7 +97,7 @@ update_config() {
 
             yes|y|Y)
                 mv /etc/config/podkop /etc/config/podkop-070
-                wget -O /etc/config/podkop https://raw.githubusercontent.com/yandexru45/podkop-evolution/refs/heads/main/podkop/files/etc/config/podkop
+                wget -O /etc/config/podkop "$RAW_BASE/podkop/files/etc/config/podkop"
                 msg "Podkop config has been reset to default. Your old config saved in /etc/config/podkop-070"
                 break
                 ;;
@@ -114,13 +123,34 @@ main() {
         msg "Installing podkop..."
     fi
 
+    release_json="$DOWNLOAD_DIR/latest-release.json"
+    msg "Fetching latest release metadata from $GITHUB_REPO..."
     if command -v curl >/dev/null 2>&1; then
-        check_response=$(curl -s "https://api.github.com/repos/yandexru45/podkop-evolution/releases/latest")
-
-        if echo "$check_response" | grep -q 'API rate limit '; then
-            msg "You've reached the GitHub rate limit. Repeat in five minutes."
+        if ! curl -fsSL "$RELEASE_API" -o "$release_json"; then
+            err "Failed to fetch latest release metadata from GitHub."
+            err "Check releases manually: $RELEASE_PAGE"
             exit 1
         fi
+    else
+        if ! wget -q -O "$release_json" "$RELEASE_API"; then
+            err "Failed to fetch latest release metadata from GitHub."
+            err "Check releases manually: $RELEASE_PAGE"
+            exit 1
+        fi
+    fi
+
+    if grep -q 'API rate limit' "$release_json"; then
+        err "You've reached the GitHub API rate limit. Repeat later or download packages manually: $RELEASE_PAGE"
+        exit 1
+    fi
+
+    release_tag=$(grep '"tag_name":' "$release_json" | head -n 1 | cut -d'"' -f4)
+    if [ -n "$release_tag" ]; then
+        msg "Latest release: $release_tag"
+    else
+        err "Latest release was not found or response is invalid."
+        err "Create a GitHub release first: $RELEASE_PAGE"
+        exit 1
     fi
 
     local grep_url_pattern
@@ -130,7 +160,7 @@ main() {
         grep_url_pattern='https://[^"[:space:]]*\.ipk'
     fi
 
-    wget -qO- "$REPO" | grep -o "$grep_url_pattern" | while read -r url; do
+    grep '"browser_download_url":' "$release_json" | grep -o "$grep_url_pattern" | while read -r url; do
         filename=$(basename "$url")
         filepath="$DOWNLOAD_DIR/$filename"
 
@@ -155,7 +185,9 @@ main() {
 
     # Check if any files were downloaded
     if ! ls "$DOWNLOAD_DIR"/*podkop* >/dev/null 2>&1; then
-        msg "No packages were downloaded successfully"
+        err "No podkop packages were downloaded successfully for this package manager."
+        err "Expected package extension: $([ "$PKG_IS_APK" -eq 1 ] && echo apk || echo ipk)"
+        err "Release page: $RELEASE_PAGE"
         exit 1
     fi
 
@@ -258,7 +290,7 @@ check_system() {
                 [ "$major" -eq 0 ] && [ "$minor" -gt 7 ] ||
                 [ "$major" -eq 0 ] && [ "$minor" -eq 7 ] && [ "$patch" -ge 0 ]; then
                 msg "Podkop version >= 0.7.0"
-                break
+                return 0
             else
                 msg "Podkop version < 0.7.0"
                 update_config

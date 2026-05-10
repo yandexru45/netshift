@@ -12,6 +12,35 @@ is_ipv4_cidr() {
     [[ "$ip" =~ $regex ]]
 }
 
+# Check if string is valid IPv6 (including bracket notation [::1])
+is_ipv6() {
+    local ip="$1"
+    # Strip brackets if present
+    ip="${ip#[}"
+    ip="${ip%]}"
+    # Must have 2-7 colons and consist of hex digits and colons
+    echo "$ip" | grep -qE '^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$'
+}
+
+# Check if string is valid IPv6 with CIDR mask
+is_ipv6_cidr() {
+    local ip="$1"
+    case "$ip" in
+    */*)
+        local addr mask
+        addr="${ip%/*}"
+        mask="${ip#*/}"
+        is_ipv6 "$addr" && [ "$mask" -ge 0 ] 2>/dev/null && [ "$mask" -le 128 ] 2>/dev/null
+        ;;
+    *) return 1 ;;
+    esac
+}
+
+# Check if string is any valid IP (IPv4 or IPv6)
+is_ip() {
+    is_ipv4 "$1" || is_ipv6 "$1"
+}
+
 is_ipv4_ip_or_ipv4_cidr() {
     is_ipv4 "$1" || is_ipv4_cidr "$1"
 }
@@ -145,7 +174,12 @@ url_get_host() {
     url="${url#*@}"
     url="${url%%[/?#]*}"
 
-    echo "${url%%:*}"
+    # Handle IPv6 bracket notation: [::1], [::1]:443
+    case "$url" in
+    \[*\]) echo "${url%\]*}" | sed 's/^\[//' ;;
+    \[*\]*) echo "${url%\]*}" | sed 's/^\[//' ;;
+    *) echo "${url%%:*}" ;;
+    esac
 }
 
 # Extracts the port number from a URL
@@ -156,7 +190,11 @@ url_get_port() {
     url="${url#*@}"
     url="${url%%[/?#]*}"
 
-    [[ "$url" == *:* ]] && echo "${url#*:}" || echo ""
+    case "$url" in
+    \[*\]:*) echo "${url##*]:}" ;;
+    *:*) echo "${url#*:}" ;;
+    *) echo "" ;;
+    esac
 }
 
 # Extracts the path from a URL (without query or fragment; returns "/" if empty)

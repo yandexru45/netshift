@@ -1,0 +1,36 @@
+# Podkop Evolution — .dockerignore for Docker builds
+# Speed up build context by excluding unnecessary files
+
+# Dependencies
+node_modules/
+fe-app-podkop/node_modules/
+fe-app-podkop/.yarn/
+
+# Build artifacts
+fe-app-podkop/dist/
+*.ipk
+*.apk
+
+# Git
+.git/
+.gitattributes
+.gitignore
+.github/
+
+# Documentation
+*.md
+!README.md
+agent/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tests (excluded from build, mounted separately)
+tests/test-results/

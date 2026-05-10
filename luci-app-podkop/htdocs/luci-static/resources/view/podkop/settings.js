@@ -408,6 +408,20 @@ function createSettingsContent(section) {
   o.rmempty = false;
 
   o = section.option(
+    form.Flag,
+    "block_doh",
+    _("Block DoH Servers"),
+    _(
+      "Block direct connections to known public DNS-over-HTTPS (DoH) servers. " +
+      "This prevents applications from bypassing the router's DNS filtering by using their own encrypted DNS. " +
+      "Affects Cloudflare, Google, Quad9, OpenDNS, AdGuard, and Yandex public DoH servers. " +
+      "Note: if your upstream DNS type is set to 'DoH', enable this only after switching to UDP or DoT."
+    ),
+  );
+  o.default = "0";
+  o.rmempty = false;
+
+  o = section.option(
     form.DynamicList,
     "routing_excluded_ips",
     _("Routing Excluded IPs"),
