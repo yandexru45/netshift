@@ -2520,34 +2520,29 @@ sing_box_fetch_ifconfig_with_timeout() {
     local config_dir="$1"
     local config_path="$2"
     local outbound_tag="$3"
-    local output_file fetch_pid seconds
+    local output_file fetch_pid watchdog_pid fetch_status
 
     output_file="$(mktemp /tmp/podkop-check-proxy-response.XXXXXX)" || return 1
 
     sing-box tools fetch -D "$config_dir" -c "$config_path" --outbound "$outbound_tag" ifconfig.me \
         > "$output_file" 2> /dev/null &
     fetch_pid=$!
-    seconds=10
 
-    while [ "$seconds" -gt 0 ]; do
-        if ! kill -0 "$fetch_pid" 2> /dev/null; then
-            wait "$fetch_pid" 2> /dev/null
-            cat "$output_file"
-            rm -f "$output_file"
-            return 0
-        fi
-
-        sleep 1
-        seconds=$((seconds - 1))
-    done
-
-    if kill -0 "$fetch_pid" 2> /dev/null; then
+    (
+        sleep 20
         kill "$fetch_pid" 2> /dev/null
-        wait "$fetch_pid" 2> /dev/null
-    fi
+    ) &
+    watchdog_pid=$!
 
+    wait "$fetch_pid" 2> /dev/null
+    fetch_status=$?
+
+    kill "$watchdog_pid" 2> /dev/null
+    wait "$watchdog_pid" 2> /dev/null
+
+    cat "$output_file"
     rm -f "$output_file"
-    return 1
+    return "$fetch_status"
 }
 
 check_proxy() {
@@ -2613,7 +2608,12 @@ check_proxy() {
         return 1
     }
 
-    if ! jq 'if .experimental.cache_file then .experimental.cache_file.enabled = false else . end' \
+    if ! jq '
+        if .experimental.cache_file then .experimental.cache_file.enabled = false else . end
+        | .dns.rules = []
+        | .route.rules = []
+        | .route.rule_set = []
+    ' \
         "$sing_box_config_path" > "$check_config_path"; then
         rm -f "$check_config_path"
         nolog "Failed to prepare temporary sing-box configuration"
