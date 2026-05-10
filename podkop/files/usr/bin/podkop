@@ -422,20 +422,12 @@ stop_main() {
     fi
 
     log "Flush ip rule"
-    if ip rule list | grep -q "podkop"; then
-        ip rule del fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105
-    fi
-    if ip -6 rule list | grep -q "podkop"; then
-        ip -6 rule del fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105
-    fi
+    ip -4 rule del fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105 2>/dev/null
+    ip -6 rule del fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105 2>/dev/null
 
     log "Flush ip route"
-    if ip route list table "$RT_TABLE_NAME" > /dev/null 2>&1; then
-        ip route flush table "$RT_TABLE_NAME"
-    fi
-    if ip -6 route list table "$RT_TABLE_NAME" > /dev/null 2>&1; then
-        ip -6 route flush table "$RT_TABLE_NAME"
-    fi
+    ip -4 route flush table "$RT_TABLE_NAME" 2>/dev/null
+    ip -6 route flush table "$RT_TABLE_NAME" 2>/dev/null
 
     log "Stop sing-box"
     /etc/init.d/sing-box stop
@@ -545,11 +537,12 @@ monitor_sing_box() {
         fi
 
         log "Attempting sing-box recovery restart" "warn"
+        stop_main
         start_main
         if [ $? -eq 0 ]; then
             config_get_bool dont_touch_dhcp "settings" "dont_touch_dhcp" 0
             if [ "$dont_touch_dhcp" -eq 0 ]; then
-                dnsmasq_configure
+                dnsmasq_configure force
             fi
             log "Podkop recovered successfully after sing-box crash" "info"
         else
@@ -612,33 +605,33 @@ br_netfilter_disable() {
 route_table_rule_mark() {
     grep -q "105 $RT_TABLE_NAME" /etc/iproute2/rt_tables || echo "105 $RT_TABLE_NAME" >> /etc/iproute2/rt_tables
 
-    if ! ip route list table "$RT_TABLE_NAME" 2> /dev/null | grep -q "local default dev lo scope host"; then
-        log "Added route for tproxy" "debug"
-        ip route add local 0.0.0.0/0 dev lo table "$RT_TABLE_NAME"
-    else
-        log "Route for tproxy exists" "debug"
+    log "Configure IPv4 route for tproxy" "debug"
+    ip -4 route replace local 0.0.0.0/0 dev lo table "$RT_TABLE_NAME" 2>/dev/null || \
+        ip -4 route add local 0.0.0.0/0 dev lo table "$RT_TABLE_NAME" 2>/dev/null
+
+    if podkop_ipv6_enabled; then
+        log "Configure IPv6 route for tproxy" "debug"
+        ip -6 route replace local ::/0 dev lo table "$RT_TABLE_NAME" 2>/dev/null || \
+            ip -6 route add local ::/0 dev lo table "$RT_TABLE_NAME" 2>/dev/null
     fi
 
-    if ! ip -6 route list table "$RT_TABLE_NAME" 2> /dev/null | grep -q "local ::/0 dev lo"; then
-        log "Added IPv6 route for tproxy" "debug"
-        ip -6 route add local ::/0 dev lo table "$RT_TABLE_NAME"
-    else
-        log "IPv6 route for tproxy exists" "debug"
-    fi
+    log "Configure IPv4 marking rule" "debug"
+    ip -4 rule del fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105 2>/dev/null
+    ip -4 rule add fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105 2>/dev/null
 
-    if ! ip rule list | grep -q "from all fwmark $NFT_FAKEIP_MARK/$NFT_FAKEIP_MARK lookup $RT_TABLE_NAME"; then
-        log "Create marking rule" "debug"
-        ip -4 rule add fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105
-    else
-        log "Marking rule exist" "debug"
+    if podkop_ipv6_enabled; then
+        log "Configure IPv6 marking rule" "debug"
+        ip -6 rule del fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105 2>/dev/null
+        ip -6 rule add fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105 2>/dev/null
     fi
+}
 
-    if ! ip -6 rule list | grep -q "from all fwmark $NFT_FAKEIP_MARK/$NFT_FAKEIP_MARK lookup $RT_TABLE_NAME"; then
-        log "Create IPv6 marking rule" "debug"
-        ip -6 rule add fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105
-    else
-        log "IPv6 marking rule exist" "debug"
-    fi
+podkop_ipv6_enabled() {
+    local enable_ipv6
+    config_get_bool enable_ipv6 "settings" "enable_ipv6" 0
+
+    [ "$enable_ipv6" -eq 1 ] || return 1
+    ip -6 addr show dev lo 2>/dev/null | grep -q '::1'
 }
 
 nft_init_interfaces_set() {
@@ -674,14 +667,16 @@ create_nft_rules() {
         240.0.0.0-255.255.255.255
     }'
 
-    log "Create localv6 set"
-    nft_create_ipv6_set "$NFT_TABLE_NAME" "$NFT_LOCALV6_SET_NAME"
-    nft add element inet "$NFT_TABLE_NAME" localv6 '{
-        ::1,
-        fc00::/7,
-        fe80::/10,
-        ff00::/8
-    }'
+    if podkop_ipv6_enabled; then
+        log "Create localv6 set"
+        nft_create_ipv6_set "$NFT_TABLE_NAME" "$NFT_LOCALV6_SET_NAME"
+        nft add element inet "$NFT_TABLE_NAME" localv6 '{
+            ::1,
+            fc00::/7,
+            fe80::/10,
+            ff00::/8
+        }'
+    fi
 
     log "Create interface set"
     nft_init_interfaces_set
@@ -694,22 +689,27 @@ create_nft_rules() {
     # Catch-all: route all LAN traffic through sing-box (except local addresses)
     # sing-box handles all routing decisions at its level via route rules and rulesets
     nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "@$NFT_LOCALV4_SET_NAME" return
-    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip6 daddr "@$NFT_LOCALV6_SET_NAME" return
+    if podkop_ipv6_enabled; then
+        nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip6 daddr "@$NFT_LOCALV6_SET_NAME" return
+    fi
     nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
     nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
 
     # TProxy: redirect marked packets to sing-box TProxy inbound
     nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto tcp tproxy ip to 127.0.0.1:1602 counter
     nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto udp tproxy ip to 127.0.0.1:1602 counter
-    nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto tcp tproxy ip6 to ::1:1603 counter
-    nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto udp tproxy ip6 to ::1:1603 counter
+    if podkop_ipv6_enabled; then
+        nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto tcp tproxy ip6 to ::1:1603 counter
+        nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto udp tproxy ip6 to ::1:1603 counter
+    fi
 
-    # Router's own outbound traffic: local traffic bypasses, marked outbound bypasses
+    # Router's own outbound traffic: bypass local and sing-box marked outbound traffic.
+    # Do not catch-all local output here: sing-box itself runs as root and would loop.
     nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "@$NFT_LOCALV4_SET_NAME" return
-    nft add rule inet "$NFT_TABLE_NAME" mangle_output ip6 daddr "@$NFT_LOCALV6_SET_NAME" return
+    if podkop_ipv6_enabled; then
+        nft add rule inet "$NFT_TABLE_NAME" mangle_output ip6 daddr "@$NFT_LOCALV6_SET_NAME" return
+    fi
     nft add rule inet "$NFT_TABLE_NAME" mangle_output meta mark "$NFT_OUTBOUND_MARK" counter return
-    nft add rule inet "$NFT_TABLE_NAME" mangle_output meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle_output meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
 
     local exclude_ntp
     config_get_bool exclude_ntp "settings" "exclude_ntp" "0"
@@ -731,9 +731,10 @@ backup_dnsmasq_config_option() {
 }
 
 dnsmasq_configure() {
-    local shutdown_correctly
+    local force shutdown_correctly
+    force="$1"
     config_get shutdown_correctly "settings" "shutdown_correctly"
-    if [ "$shutdown_correctly" -eq 0 ]; then
+    if [ "$force" != "force" ] && [ "$shutdown_correctly" -eq 0 ]; then
         log "Previous shutdown of podkop was not correct, reconfiguration of dnsmasq is not required"
         return 0
     fi
@@ -1184,15 +1185,17 @@ sing_box_configure_inbounds() {
             "$config" "$SB_TPROXY_INBOUND_TAG" "$SB_TPROXY_INBOUND_ADDRESS" "$SB_TPROXY_INBOUND_PORT" true true
     )
     config=$(
-        sing_box_cm_add_tproxy_inbound \
-            "$config" "${SB_TPROXY_INBOUND_TAG}-v6" "$SB_TPROXY_INBOUND_ADDRESS_V6" "$SB_TPROXY_INBOUND_PORT_V6" true true
-    )
-    config=$(
         sing_box_cm_add_direct_inbound "$config" "$SB_DNS_INBOUND_TAG" "$SB_DNS_INBOUND_ADDRESS" "$SB_DNS_INBOUND_PORT"
     )
-    config=$(
-        sing_box_cm_add_direct_inbound "$config" "${SB_DNS_INBOUND_TAG}-v6" "$SB_DNS_INBOUND_ADDRESS_V6" "$SB_DNS_INBOUND_PORT_V6"
-    )
+    if podkop_ipv6_enabled; then
+        config=$(
+            sing_box_cm_add_tproxy_inbound \
+                "$config" "${SB_TPROXY_INBOUND_TAG}-v6" "$SB_TPROXY_INBOUND_ADDRESS_V6" "$SB_TPROXY_INBOUND_PORT_V6" true true
+        )
+        config=$(
+            sing_box_cm_add_direct_inbound "$config" "${SB_DNS_INBOUND_TAG}-v6" "$SB_DNS_INBOUND_ADDRESS_V6" "$SB_DNS_INBOUND_PORT_V6"
+        )
+    fi
 }
 
 sing_box_configure_outbounds() {
@@ -1601,7 +1604,11 @@ sing_box_configure_dns() {
 
     config=$(sing_box_cm_add_udp_dns_server "$config" "$SB_BOOTSTRAP_SERVER_TAG" "$bootstrap_dns_server" 53)
     config=$(sing_box_cf_add_dns_server "$config" "$dns_type" "$SB_DNS_SERVER_TAG" "$dns_server" "$dns_domain_resolver")
-    config=$(sing_box_cm_add_fakeip_dns_server "$config" "$SB_FAKEIP_DNS_SERVER_TAG" "$SB_FAKEIP_INET4_RANGE" "$SB_FAKEIP_INET6_RANGE")
+    if podkop_ipv6_enabled; then
+        config=$(sing_box_cm_add_fakeip_dns_server "$config" "$SB_FAKEIP_DNS_SERVER_TAG" "$SB_FAKEIP_INET4_RANGE" "$SB_FAKEIP_INET6_RANGE")
+    else
+        config=$(sing_box_cm_add_fakeip_dns_server "$config" "$SB_FAKEIP_DNS_SERVER_TAG" "$SB_FAKEIP_INET4_RANGE" "")
+    fi
 
     log "Adding DNS Rules"
     local rewrite_ttl service_domains
@@ -1640,8 +1647,12 @@ sing_box_configure_route() {
             "$output_network_interface")
     fi
 
-    local sniff_inbounds
-    sniff_inbounds=$(comma_string_to_json_array "$SB_TPROXY_INBOUND_TAG,${SB_TPROXY_INBOUND_TAG}-v6,$SB_DNS_INBOUND_TAG,${SB_DNS_INBOUND_TAG}-v6")
+    local sniff_inbounds sniff_inbounds_csv
+    sniff_inbounds_csv="$SB_TPROXY_INBOUND_TAG,$SB_DNS_INBOUND_TAG"
+    if podkop_ipv6_enabled; then
+        sniff_inbounds_csv="$sniff_inbounds_csv,${SB_TPROXY_INBOUND_TAG}-v6,${SB_DNS_INBOUND_TAG}-v6"
+    fi
+    sniff_inbounds=$(comma_string_to_json_array "$sniff_inbounds_csv")
     config=$(sing_box_cm_sniff_route_rule "$config" "inbound" "$sniff_inbounds")
 
     config=$(sing_box_cm_add_hijack_dns_route_rule "$config" "protocol" "dns")
@@ -3002,18 +3013,7 @@ check_sing_box() {
         local version
         version=$(sing-box version 2> /dev/null | head -n 1 | awk '{print $3}')
         if [ -n "$version" ]; then
-            version=$(echo "$version" | sed 's/^v//')
-            local major
-            local minor
-            local patch
-            major=$(echo "$version" | cut -d. -f1)
-            minor=$(echo "$version" | cut -d. -f2)
-            patch=$(echo "$version" | cut -d. -f3)
-
-            # Compare version: must be >= 1.12.4
-            if [ "$major" -gt 1 ] ||
-                [ "$major" -eq 1 ] && [ "$minor" -gt 12 ] ||
-                [ "$major" -eq 1 ] && [ "$minor" -eq 12 ] && [ "$patch" -ge 4 ]; then
+            if is_min_package_version "$version" "$SB_REQUIRED_VERSION"; then
                 sing_box_version_ok=1
             fi
         fi

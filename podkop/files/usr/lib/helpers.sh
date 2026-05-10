@@ -79,13 +79,24 @@ is_shadowsocks_userinfo_format() {
 
 # Compares the current package version with the required minimum
 is_min_package_version() {
-    local current="$1"
-    local required="$2"
+    local current required
+    current="$(normalize_package_version "$1")"
+    required="$(normalize_package_version "$2")"
+
+    [ -n "$current" ] || return 1
+    [ -n "$required" ] || return 1
 
     local lowest
     lowest="$(printf '%s\n' "$current" "$required" | sort -V | head -n1)"
 
     [ "$lowest" = "$required" ]
+}
+
+normalize_package_version() {
+    local version="$1"
+
+    version="${version#v}"
+    printf '%s' "$version" | sed 's/[^0-9.].*$//'
 }
 
 # Checks if the given file exists
