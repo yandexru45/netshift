@@ -454,9 +454,25 @@ start() {
 
     uci_set "podkop" "settings" "shutdown_correctly" 0
     uci commit "podkop" && config_load "$PODKOP_CONFIG"
+
+    # Fork sing-box health monitor after successful startup
+    monitor_sing_box &
+    echo $! > /var/run/podkop_monitor.pid
+    log "Started sing-box health monitor with PID $!" "info"
 }
 
 stop() {
+    # Stop the monitor before anything else
+    if [ -f /var/run/podkop_monitor.pid ]; then
+        local monitor_pid
+        monitor_pid="$(cat /var/run/podkop_monitor.pid 2>/dev/null)"
+        if [ -n "$monitor_pid" ] && kill -0 "$monitor_pid" 2>/dev/null; then
+            kill "$monitor_pid" 2>/dev/null
+            log "Stopped sing-box health monitor" "info"
+        fi
+        rm -f /var/run/podkop_monitor.pid
+    fi
+
     local dont_touch_dhcp
     config_get_bool dont_touch_dhcp "settings" "dont_touch_dhcp" 0
     if [ "$dont_touch_dhcp" -eq 0 ]; then
@@ -467,6 +483,75 @@ stop() {
 
     uci_set "podkop" "settings" "shutdown_correctly" 1
     uci commit "podkop" && config_load "$PODKOP_CONFIG"
+}
+
+monitor_sing_box() {
+    local crash_count=0
+    local backoff=0
+
+    # Signal: create PID file for external management
+    echo $$ > /var/run/podkop_monitor.pid
+
+    while true; do
+        sleep "$MONITOR_CHECK_INTERVAL"
+
+        # Fast path: sing-box is alive
+        if pgrep -x sing-box > /dev/null 2>&1; then
+            crash_count=0
+            backoff=0
+            continue
+        fi
+
+        # Check if this is a clean shutdown
+        config_load "$PODKOP_CONFIG"
+        local shutdown_correctly
+        config_get shutdown_correctly "settings" "shutdown_correctly"
+        if [ "$shutdown_correctly" -eq 1 ]; then
+            log "sing-box shutdown detected, exiting monitor" "info"
+            break
+        fi
+
+        # sing-box died unexpectedly
+        crash_count=$((crash_count + 1))
+        log "sing-box process died unexpectedly (crash #$crash_count), restoring DNS" "warn"
+
+        # Immediately restore DNS so the network doesn't break
+        dnsmasq_restore
+
+        # Escalating backoff to prevent crash loops
+        if [ "$crash_count" -ge "$MONITOR_MAX_CRASHES" ]; then
+            log "sing-box crashed $crash_count times consecutively, giving up. DNS has been restored." "fatal"
+            break
+        fi
+
+        # Backoff: base * 2^(crash-1), capped at max
+        backoff=$((MONITOR_BACKOFF_BASE * (1 << (crash_count - 1))))
+        [ "$backoff" -gt "$MONITOR_BACKOFF_MAX" ] && backoff="$MONITOR_BACKOFF_MAX"
+        log "Waiting ${backoff}s before attempting sing-box restart" "warn"
+        sleep "$backoff"
+
+        # Check again if we've been told to stop
+        config_load "$PODKOP_CONFIG"
+        config_get shutdown_correctly "settings" "shutdown_correctly"
+        if [ "$shutdown_correctly" -eq 1 ]; then
+            log "Clean shutdown requested, exiting monitor" "info"
+            break
+        fi
+
+        log "Attempting sing-box recovery restart" "warn"
+        start_main
+        if [ $? -eq 0 ]; then
+            config_get_bool dont_touch_dhcp "settings" "dont_touch_dhcp" 0
+            if [ "$dont_touch_dhcp" -eq 0 ]; then
+                dnsmasq_configure
+            fi
+            log "Podkop recovered successfully after sing-box crash" "info"
+        else
+            log "Recovery restart failed, will retry" "error"
+        fi
+    done
+
+    rm -f /var/run/podkop_monitor.pid
 }
 
 reload() {
@@ -569,9 +654,6 @@ create_nft_rules() {
         240.0.0.0-255.255.255.255
     }'
 
-    log "Create common set"
-    nft_create_ipv4_set "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
-
     log "Create interface set"
     nft_init_interfaces_set
 
@@ -580,20 +662,21 @@ create_nft_rules() {
     nft add chain inet "$NFT_TABLE_NAME" mangle_output '{ type route hook output priority -150; policy accept; }'
     nft add chain inet "$NFT_TABLE_NAME" proxy '{ type filter hook prerouting priority -100; policy accept; }'
 
-    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "@$NFT_COMMON_SET_NAME" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "@$NFT_COMMON_SET_NAME" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "$SB_FAKEIP_INET4_RANGE" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "$SB_FAKEIP_INET4_RANGE" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
+    # Catch-all: route all LAN traffic through sing-box (except local addresses)
+    # sing-box handles all routing decisions at its level via route rules and rulesets
+    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "@$NFT_LOCALV4_SET_NAME" return
+    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
+    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
 
+    # TProxy: redirect marked packets to sing-box TProxy inbound
     nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto tcp tproxy ip to 127.0.0.1:1602 counter
     nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto udp tproxy ip to 127.0.0.1:1602 counter
 
+    # Router's own outbound traffic: local traffic bypasses, marked outbound bypasses
     nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "@$NFT_LOCALV4_SET_NAME" return
     nft add rule inet "$NFT_TABLE_NAME" mangle_output meta mark "$NFT_OUTBOUND_MARK" counter return
-    nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "@$NFT_COMMON_SET_NAME" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "@$NFT_COMMON_SET_NAME" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "$SB_FAKEIP_INET4_RANGE" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "$SB_FAKEIP_INET4_RANGE" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
+    nft add rule inet "$NFT_TABLE_NAME" mangle_output meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
+    nft add rule inet "$NFT_TABLE_NAME" mangle_output meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
 
     local exclude_ntp
     config_get_bool exclude_ntp "settings" "exclude_ntp" "0"
@@ -1756,7 +1839,6 @@ configure_user_subnet_list() {
     items="$(parse_domain_or_subnet_string_to_commas_string "$items" "subnets")"
     json_array="$(comma_string_to_json_array "$items")"
     patch_source_ruleset_rules "$ruleset_filepath" "ip_cidr" "$json_array"
-    nft_add_set_elements "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME" "$items"
 }
 
 configure_local_domain_lists() {
@@ -1799,7 +1881,6 @@ import_local_subnets_list_handler() {
     fi
 
     import_plain_subnet_list_to_local_source_ruleset_chunked "$local_subnet_list_filepath" "$ruleset_filepath"
-    nft_add_set_elements_from_file_chunked "$local_subnet_list_filepath" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
 }
 
 configure_remote_domain_or_subnet_list_handler() {
@@ -2012,14 +2093,6 @@ import_community_service_subnet_list_handler() {
         ;;
     "discord")
         URL=$SUBNETS_DISCORD
-        if ! nft list set inet "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME" > /dev/null 2>&1; then
-            nft_create_ipv4_set "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME"
-        fi
-        if ! nft list chain inet "$NFT_TABLE_NAME" mangle 2> /dev/null | \
-            grep -Fq "@$NFT_DISCORD_SET_NAME udp dport { 50000-65535 }"; then
-            nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr \
-                "@$NFT_DISCORD_SET_NAME" udp dport '{ 50000-65535 }' meta mark set "$NFT_FAKEIP_MARK" counter
-        fi
         ;;
     "roblox")
         URL=$SUBNETS_ROBLOX
@@ -2027,24 +2100,12 @@ import_community_service_subnet_list_handler() {
     *) return 0 ;;
     esac
 
-    local tmpfile http_proxy_address
-    tmpfile=$(mktemp)
-    http_proxy_address="$(get_service_proxy_address)"
-
-    download_to_file "$URL" "$tmpfile" "$http_proxy_address"
-
-    if [ $? -ne 0 ] || [ ! -s "$tmpfile" ]; then
-        log "Download $service list failed" "error"
-        return 1
-    fi
-
-    if [ "$service" = "discord" ]; then
-        nft_add_set_elements_from_file_chunked "$tmpfile" "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME"
-    else
-        nft_add_set_elements_from_file_chunked "$tmpfile" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
-    fi
-
-    rm -f "$tmpfile"
+    # Community subnet lists are handled via sing-box remote rulesets (.srs files).
+    # With full sing-box routing (all LAN traffic goes through TProxy → sing-box),
+    # nft sets are no longer needed for subnet-based filtering.
+    # The .srs rulesets downloaded by configure_community_list_handler() handle both
+    # domain and IP-based routing within sing-box.
+    log "Community service '$service' subnets are routed via sing-box rulesets, skipping nft import" "debug"
 }
 
 import_domains_from_remote_domain_lists() {
@@ -2150,7 +2211,8 @@ import_subnets_from_remote_json_file() {
     fi
 
     extract_ip_cidr_from_json_ruleset_to_file "$json_tmpfile" "$subnets_tmpfile"
-    nft_add_set_elements_from_file_chunked "$subnets_tmpfile" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
+    # Subnets are now routed via sing-box rulesets, no nft set population needed
+    log "Subnets from $url processed for sing-box routing" "debug"
     rm -f "$json_tmpfile" "$subnets_tmpfile"
 }
 
@@ -2176,7 +2238,8 @@ import_subnets_from_remote_srs_file() {
     fi
 
     extract_ip_cidr_from_json_ruleset_to_file "$json_tmpfile" "$subnets_tmpfile"
-    nft_add_set_elements_from_file_chunked "$subnets_tmpfile" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
+    # Subnets are now routed via sing-box rulesets, no nft set population needed
+    log "Subnets from $url processed for sing-box routing" "debug"
     rm -f "$binary_tmpfile" "$json_tmpfile" "$subnets_tmpfile"
 }
 
@@ -2200,7 +2263,6 @@ import_subnets_from_remote_plain_file() {
     ruleset_tag=$(get_ruleset_tag "$section" "remote" "subnets")
     ruleset_filepath="$TMP_RULESET_FOLDER/$ruleset_tag.json"
     import_plain_subnet_list_to_local_source_ruleset_chunked "$tmpfile" "$ruleset_filepath"
-    nft_add_set_elements_from_file_chunked "$tmpfile" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
 
     rm -f "$tmpfile"
 }
@@ -2435,7 +2497,7 @@ check_nft() {
 
     if [ "$found_hetzner" -eq 1 ] || [ "$found_ovh" -eq 1 ]; then
 
-        local sets="podkop_subnets podkop_domains interfaces podkop_discord_subnets localv4"
+        local sets="interfaces localv4"
 
         nolog "Sets statistics:"
         for set_name in $sets; do

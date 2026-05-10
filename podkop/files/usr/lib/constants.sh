@@ -18,14 +18,17 @@ RT_TABLE_NAME="podkop"
 ## nft
 NFT_TABLE_NAME="PodkopTable"
 NFT_LOCALV4_SET_NAME="localv4"
-NFT_COMMON_SET_NAME="podkop_subnets"
-NFT_DISCORD_SET_NAME="podkop_discord_subnets"
 NFT_INTERFACE_SET_NAME="interfaces"
 NFT_FAKEIP_MARK="0x00100000"
 NFT_OUTBOUND_MARK="0x00200000"
 
 ## sing-box
 SB_REQUIRED_VERSION="1.12.0"
+# Monitoring
+MONITOR_CHECK_INTERVAL=10        # seconds between sing-box health checks
+MONITOR_MAX_CRASHES=5            # max consecutive crashes before giving up
+MONITOR_BACKOFF_BASE=10          # base backoff seconds after each crash
+MONITOR_BACKOFF_MAX=300          # max backoff cap (5 minutes)
 # DNS
 SB_DNS_SERVER_TAG="dns-server"
 SB_FAKEIP_DNS_SERVER_TAG="fakeip-server"
