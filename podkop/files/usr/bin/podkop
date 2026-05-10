@@ -2545,6 +2545,31 @@ sing_box_fetch_ifconfig_with_timeout() {
     return "$fetch_status"
 }
 
+get_clash_selected_outbound_tag() {
+    local outbound_tag="$1"
+    local controller_address encoded_tag selected_tag i
+
+    controller_address="$(get_service_listen_address 2> /dev/null)"
+    [ -z "$controller_address" ] && controller_address="127.0.0.1"
+
+    i=0
+    while [ "$i" -lt 5 ]; do
+        encoded_tag="$(printf '%s' "$outbound_tag" | jq -sRr @uri 2> /dev/null)"
+        selected_tag="$(curl -m 3 -s "http://$controller_address:$SB_CLASH_API_CONTROLLER_PORT/proxies/$encoded_tag" \
+            | jq -r '.now // ""' 2> /dev/null)"
+
+        if [ -z "$selected_tag" ] || [ "$selected_tag" = "$outbound_tag" ]; then
+            echo "$outbound_tag"
+            return 0
+        fi
+
+        outbound_tag="$selected_tag"
+        i=$((i + 1))
+    done
+
+    echo "$outbound_tag"
+}
+
 check_proxy() {
     local sing_box_config_path check_config_path config_dir first_outbound_section outbound_tag response ip
     config_get sing_box_config_path "settings" "config_path"
@@ -2630,11 +2655,7 @@ check_proxy() {
     if jq -e --arg tag "$outbound_tag" \
         '.outbounds[]? | select(.tag == $tag and (.type == "selector" or .type == "urltest"))' \
         "$check_config_path" > /dev/null; then
-        outbound_tag="$(jq -r '
-            .outbounds[]?
-            | select(.type != "direct" and .type != "selector" and .type != "urltest")
-            | .tag
-        ' "$check_config_path" | sed -n '1p')"
+        outbound_tag="$(get_clash_selected_outbound_tag "$outbound_tag")"
     fi
 
     if [ -z "$outbound_tag" ]; then
