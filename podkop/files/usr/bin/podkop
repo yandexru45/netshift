@@ -1764,7 +1764,7 @@ configure_common_reject_route_rule() {
 }
 
 configure_common_direct_route_rule() {
-    local exclusion_sections exclusion_section_list_enabled
+    local exclusion_sections exclusion_section_list_enabled global_proxy global_proxy_direct_needed
     exclusion_sections="$(get_sections_by_connection_type "exclusion")"
     exclusion_section_list_enabled=0
 
@@ -1775,12 +1775,30 @@ configure_common_direct_route_rule() {
                 break
             fi
         done
-        if [ "$exclusion_section_list_enabled" -eq 1 ]; then
-            config=$(sing_box_cm_add_route_rule "$config" "$SB_EXCLUSION_RULE_TAG" "$SB_TPROXY_INBOUND_TAG" \
-                "$SB_DIRECT_OUTBOUND_TAG")
-        else
-            log "Exclusion sections does not have any enabled list, route rule is not required" "warn"
-        fi
+    fi
+
+    # Also check if any global_proxy section has enabled lists (they act as exclusions)
+    global_proxy_direct_needed=0
+    if [ "$exclusion_section_list_enabled" -eq 0 ]; then
+        local section
+        config_foreach _check_global_proxy_direct_needed "section"
+    fi
+
+    if [ "$exclusion_section_list_enabled" -eq 1 ] || [ "$global_proxy_direct_needed" -eq 1 ]; then
+        config=$(sing_box_cm_add_route_rule "$config" "$SB_EXCLUSION_RULE_TAG" "$SB_TPROXY_INBOUND_TAG" \
+            "$SB_DIRECT_OUTBOUND_TAG")
+    else
+        log "No direct exclusion rules required" "warn"
+    fi
+}
+
+_check_global_proxy_direct_needed() {
+    local section="$1"
+    local global_proxy
+
+    config_get_bool global_proxy "$section" "global_proxy" 0
+    if [ "$global_proxy" -eq 1 ] && section_has_enabled_lists "$section"; then
+        global_proxy_direct_needed=1
     fi
 }
 
@@ -1820,9 +1838,17 @@ configure_routing_for_section_lists() {
 
     case "$section_connection_type" in
     proxy | vpn)
-        route_rule_tag="$(gen_id)"
-        outbound_tag=$(get_outbound_tag_by_section "$section")
-        config=$(sing_box_cm_add_route_rule "$config" "$route_rule_tag" "$SB_TPROXY_INBOUND_TAG" "$outbound_tag")
+        local global_proxy
+        config_get_bool global_proxy "$section" "global_proxy" 0
+        if [ "$global_proxy" -eq 1 ]; then
+            # Global proxy: lists act as exclusions (direct-out)
+            route_rule_tag="$SB_EXCLUSION_RULE_TAG"
+        else
+            # Normal mode: lists are inclusions (proxy outbound)
+            route_rule_tag="$(gen_id)"
+            outbound_tag=$(get_outbound_tag_by_section "$section")
+            config=$(sing_box_cm_add_route_rule "$config" "$route_rule_tag" "$SB_TPROXY_INBOUND_TAG" "$outbound_tag")
+        fi
         ;;
     block)
         route_rule_tag="$SB_REJECT_RULE_TAG"
