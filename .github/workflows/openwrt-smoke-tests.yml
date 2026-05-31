@@ -6,8 +6,8 @@ on:
       - main
       - 'rc/**'
     paths:
-      - 'podkop/**'
-      - 'luci-app-podkop/**'
+      - 'padkap/**'
+      - 'luci-app-padkap/**'
       - 'tests/**'
       - 'install.sh'
       - 'Dockerfile-*'
@@ -18,8 +18,8 @@ on:
       - main
       - 'rc/**'
     paths:
-      - 'podkop/**'
-      - 'luci-app-podkop/**'
+      - 'padkap/**'
+      - 'luci-app-padkap/**'
       - 'tests/**'
       - 'install.sh'
       - 'Dockerfile-*'
@@ -44,10 +44,10 @@ jobs:
         uses: docker/setup-buildx-action@v3.11.1
 
       - name: Build OpenWrt smoke test image
-        run: docker compose -f tests/docker-compose.yml build podkop-test
+        run: docker compose -f tests/docker-compose.yml build padkap-test
 
       - name: Run OpenWrt smoke tests
-        run: docker compose -f tests/docker-compose.yml run --rm podkop-test all
+        run: docker compose -f tests/docker-compose.yml run --rm padkap-test all
 
       - name: Upload test logs on failure
         if: failure()

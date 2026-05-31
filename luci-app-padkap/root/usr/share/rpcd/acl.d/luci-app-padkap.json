@@ -1,0 +1,28 @@
+{
+  "luci-app-padkap": {
+    "description": "Grant UCI and RPC access to LuCI app padkap",
+    "read": {
+      "file": {
+        "/etc/init.d/padkap": [
+          "exec"
+        ],
+        "/usr/bin/padkap": [
+          "exec"
+        ]
+      },
+      "ubus": {
+        "service": [
+          "list"
+        ]
+      },
+      "uci": [
+        "padkap"
+      ]
+    },
+    "write": {
+      "uci": [
+        "padkap"
+      ]
+    }
+  }
+}

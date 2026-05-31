@@ -1,6 +1,6 @@
 ---
 name: ✨ Запрос новой функции
-description: Предложите новую функцию или улучшение для Podkop
+description: Предложите новую функцию или улучшение для Padkap
 title: "[FEATURE] "
 labels: ["enhancement", "needs-discussion"]
 assignees: []
@@ -11,8 +11,8 @@ body:
         Спасибо за предложение новой функции!
         
         Перед отправкой, пожалуйста:
-        - Проверьте [существующие запросы](https://github.com/itdoginfo/podkop/issues?q=is%3Aissue+label%3Aenhancement)
-        - Убедитесь, что функции не существует в [документации](https://podkop.net)
+        - Проверьте [существующие запросы](https://github.com/spgsroot/padkap-evolution/issues?q=is%3Aissue+label%3Aenhancement)
+        - Убедитесь, что функции не существует в [документации](https://github.com/spgsroot/padkap-evolution#readme)
 
   - type: textarea
     id: summary
@@ -40,7 +40,7 @@ body:
       label: 💡 Предлагаемое решение
       description: Четкое и краткое описание того, что вы хотите реализовать
       placeholder: |
-        Я хочу, чтобы Podkop мог [...]
+        Я хочу, чтобы Padkap мог [...]
         Предлагаю добавить функцию, которая [...]
         Можно было бы улучшить [...] путем [...]
     validations:

@@ -1,0 +1,14 @@
+{
+  "admin/services/padkap": {
+    "title": "Padkap",
+    "order": 42,
+    "action": {
+      "type": "view",
+      "path": "padkap/padkap"
+    },
+    "depends": {
+			"acl": [ "luci-app-padkap" ],
+			"uci": { "padkap": true }
+		}
+  }
+}

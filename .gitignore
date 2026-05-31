@@ -1,6 +1,6 @@
 .idea
-fe-app-podkop/node_modules
-fe-app-podkop/.env
+fe-app-padkap/node_modules
+fe-app-padkap/.env
 .DS_Store
 AGENTS.md
 agent/

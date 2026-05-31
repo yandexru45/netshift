@@ -11,8 +11,8 @@ body:
         Спасибо за создание отчета об ошибке!
         
         Перед отправкой, пожалуйста:
-        - Проверьте [существующие issues](https://github.com/itdoginfo/podkop/issues)
-        - Просмотрите [документацию](https://podkop.net)
+        - Проверьте [существующие issues](https://github.com/spgsroot/padkap-evolution/issues)
+        - Просмотрите [документацию](https://github.com/spgsroot/padkap-evolution#readme)
 
   - type: textarea
     id: description
@@ -52,10 +52,10 @@ body:
       description: |
         Информация о вашей системе (заполните всё применимое)
       value: |
-        - **OpenWrt версия**: 
-        - **Podkop версия**: 
-        - **Роутер модель**: 
-        - **Sing-box версия**: 
+        - **OpenWrt версия**: <укажите>
+        - **Padkap версия**: <укажите>
+        - **Роутер модель**: <укажите>
+        - **Sing-box версия**: <укажите>
       render: markdown
     validations:
       required: true
@@ -68,7 +68,7 @@ body:
         Релевантные части конфигурации (удалите чувствительную информацию!)
       placeholder: |
         Например:
-        - Содержимое /etc/config/podkop
+        - Содержимое /etc/config/padkap
         - Конфигурация sing-box (если релевантно)
         - Дополнительные конфиги, которые потребуются wireless/network/dhcp и т.д.
       render: shell

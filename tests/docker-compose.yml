@@ -1,24 +1,24 @@
 # ──────────────────────────────────────────────────────────────────
-# Podkop Evolution — Docker Compose Test Environment
+# Padkap Evolution — Docker Compose Test Environment
 #
 # Launch:
 #   docker compose -f tests/docker-compose.yml build
 #   docker compose -f tests/docker-compose.yml up
 #
 # Run specific test:
-#   docker compose -f tests/docker-compose.yml run --rm podkop-test <test-name>
+#   docker compose -f tests/docker-compose.yml run --rm padkap-test <test-name>
 #
 # Test names: all, deps, syntax, config, helpers, nft,
 #             dnsmasq, lifecycle, diagnostics, subscription
 # ──────────────────────────────────────────────────────────────────
 
 services:
-  podkop-test:
+  padkap-test:
     build:
       context: ..
       dockerfile: tests/Dockerfile
-    image: podkop-evolution:test
-    container_name: podkop-test
+    image: padkap-evolution:test
+    container_name: padkap-test
     hostname: OpenWrt
 
     # ── Kernel capabilities for nftables ────────────────────────
@@ -38,13 +38,13 @@ services:
 
     # ── Volumes (source code bind mount) ─────────────────────────
     volumes:
-      - ../podkop/files:/podkop/files:ro
+      - ../padkap/files:/padkap/files:ro
       - ./entrypoint.sh:/usr/local/bin/entrypoint.sh:ro
       - ./test-results:/tmp/test-results
 
     # ── Environment ──────────────────────────────────────────────
     environment:
-      - PODKOP_VERSION=test
+      - PADKAP_VERSION=test
       - TEST_SKIP_NETWORK=${TEST_SKIP_NETWORK:-0}
       - TEST_VERBOSE=${TEST_VERBOSE:-0}
 

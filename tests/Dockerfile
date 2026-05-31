@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 # ──────────────────────────────────────────────────────────────────
-# Podkop Evolution — OpenWrt Smoke Test Container
+# Padkap Evolution — OpenWrt Smoke Test Container
 #
 # Purpose:
-#   Run podkop in an OpenWrt rootfs container to verify functionality
+#   Run padkap in an OpenWrt rootfs container to verify functionality
 #   BEFORE deploying to a physical router.
 #
 # What this tests:
@@ -25,7 +25,7 @@
 #
 # Usage:
 #   docker compose -f tests/docker-compose.yml up --build
-#   docker compose -f tests/docker-compose.yml run --rm podkop-test
+#   docker compose -f tests/docker-compose.yml run --rm padkap-test
 # ──────────────────────────────────────────────────────────────────
 
 # ── Stage 1: Загрузка официального чистого rootfs ─────────────────
@@ -40,8 +40,8 @@ FROM scratch
 # Переносим настоящую систему OpenWrt
 COPY --from=builder /rootfs /
 
-LABEL org.opencontainers.image.title="Podkop Evolution Test"
-LABEL org.opencontainers.image.description="Official OpenWrt 24.10.6 rootfs for Podkop testing"
+LABEL org.opencontainers.image.title="Padkap Evolution Test"
+LABEL org.opencontainers.image.description="Official OpenWrt 24.10.6 rootfs for Padkap testing"
 
 # Для корректной работы opkg внутри пустого Docker нужна эта директория
 RUN mkdir -p /var/lock
@@ -57,20 +57,20 @@ RUN opkg update && \
         nftables \
     && rm -rf /var/opkg-lists/*
 
-# ── Create podkop directory structure ─────────────────────────────
-RUN mkdir -p /usr/lib/podkop \
+# ── Create padkap directory structure ─────────────────────────────
+RUN mkdir -p /usr/lib/padkap \
     /tmp/sing-box/rulesets \
     /tmp/sing-box/subscriptions \
     /var/run
 
-# ── Copy podkop source files ─────────────────────────────────────
+# ── Copy padkap source files ─────────────────────────────────────
 # All shell scripts, config, and init files are mounted at runtime
 # via docker-compose volumes. This image contains only the base OS
 # and dependencies. See docker-compose.yml for bind mounts.
 
-# ── Prepare a minimal /etc/config/podkop for testing ──────────────
+# ── Prepare a minimal /etc/config/padkap for testing ──────────────
 # (real config will be mounted by docker-compose or entrypoint)
-COPY podkop/files/etc/config/podkop /etc/config/podkop.test
+COPY padkap/files/etc/config/padkap /etc/config/padkap.test
 
 # ── Pre-create /lib/functions paths (OpenWrt UCI stubs) ───────────
 # The rootfs image may not include the full UCI subsystem.
@@ -80,6 +80,6 @@ COPY podkop/files/etc/config/podkop /etc/config/podkop.test
 COPY tests/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-WORKDIR /podkop
+WORKDIR /padkap
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["all"]

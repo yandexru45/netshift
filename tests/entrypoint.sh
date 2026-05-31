@@ -1,8 +1,8 @@
 #!/bin/sh
 # ──────────────────────────────────────────────────────────────────
-# Podkop Evolution — Smoke Test Suite Entrypoint
+# Padkap Evolution — Smoke Test Suite Entrypoint
 #
-# Runs validation tests against the podkop codebase in an OpenWrt
+# Runs validation tests against the padkap codebase in an OpenWrt
 # rootfs container. Designed for CI and pre-deployment verification.
 # ──────────────────────────────────────────────────────────────────
 
@@ -20,8 +20,8 @@ PASS=0
 FAIL=0
 SKIP=0
 RESULTS_DIR="${RESULTS_DIR:-/tmp/test-results}"
-PODKOP_SRC="${PODKOP_SRC:-/podkop/files}"
-PODKOP_LIB_DIR="${PODKOP_SRC}/usr/lib"
+PADKAP_SRC="${PADKAP_SRC:-/padkap/files}"
+PADKAP_LIB_DIR="${PADKAP_SRC}/usr/lib"
 
 mkdir -p "$RESULTS_DIR"
 
@@ -107,7 +107,7 @@ test_deps() {
 test_syntax() {
     header "Shell Syntax & Library Loading"
 
-    local lib="${PODKOP_LIB_DIR}"
+    local lib="${PADKAP_LIB_DIR}"
 
     # Test each library file for syntax errors
     for f in \
@@ -133,10 +133,10 @@ test_syntax() {
 
     # Test that libraries can be sourced (requires /lib/functions stubs).
     # Use a temp script to avoid fragile shell quoting.
-    local source_test="/tmp/podkop-source-test-$$.sh"
+    local source_test="/tmp/padkap-source-test-$$.sh"
     cat > "$source_test" << EOF
-PODKOP_LIB="$lib"
-PODKOP_CONFIG="/etc/config/podkop.test"
+PADKAP_LIB="$lib"
+PADKAP_CONFIG="/etc/config/padkap.test"
 mkdir -p /lib/config /lib/functions
 touch /etc/config/dhcp /etc/config/sing-box
 . "$lib/logging.sh" 2>/dev/null && echo "OK"
@@ -156,7 +156,7 @@ EOF
 test_config() {
     header "UCI Config Validation"
 
-    local config="${PODKOP_SRC}/etc/config/podkop"
+    local config="${PADKAP_SRC}/etc/config/padkap"
 
     if [ ! -r "$config" ]; then
         fail "Config file not found: $config"
@@ -199,7 +199,7 @@ test_config() {
 test_helpers() {
     header "Helper Functions"
 
-    local helpers="${PODKOP_LIB_DIR}/helpers.sh"
+    local helpers="${PADKAP_LIB_DIR}/helpers.sh"
 
     if [ ! -r "$helpers" ]; then
         fail "helpers.sh not found"
@@ -271,7 +271,7 @@ test_nft() {
     fi
 
     # Test basic nft operations
-    local test_table="podkop_test_$$"
+    local test_table="padkap_test_$$"
     if nft add table inet "$test_table" 2>/dev/null; then
         pass "nft table creation works"
         nft delete table inet "$test_table" 2>/dev/null
@@ -426,29 +426,29 @@ test_diagnostics() {
 test_jq_helpers() {
     header "jq Helper Functions"
 
-    local jq_helpers="${PODKOP_LIB_DIR}/helpers.jq"
+    local jq_helpers="${PADKAP_LIB_DIR}/helpers.jq"
 
     if [ ! -r "$jq_helpers" ]; then
         skip "helpers.jq not found"
         return
     fi
 
-    # Production scripts import helpers.jq from /usr/lib/podkop. In the test
-    # container sources are bind-mounted under /podkop/files, so provide the
+    # Production scripts import helpers.jq from /usr/lib/padkap. In the test
+    # container sources are bind-mounted under /padkap/files, so provide the
     # runtime path as a symlink for jq module resolution.
-    mkdir -p /usr/lib/podkop
-    ln -sf "$jq_helpers" /usr/lib/podkop/helpers.jq
+    mkdir -p /usr/lib/padkap
+    ln -sf "$jq_helpers" /usr/lib/padkap/helpers.jq
 
     # Test the extend_key_value function. Keep the jq program in a file instead
     # of a shell variable because BusyBox ash can choke on jq syntax like
     # `h::extend_key_value(.; ...)` during script parsing in some builds.
-    local jq_filter_file="/tmp/podkop-jq-filter-$$.jq"
+    local jq_filter_file="/tmp/padkap-jq-filter-$$.jq"
     cat > "$jq_filter_file" << 'JQEOF'
 import "helpers" as h;
 [1,2,3] | h::extend_key_value(.; [4,5])
 JQEOF
-    local jq_error_file="/tmp/podkop-jq-error-$$.log"
-    result=$(jq -n -L "/usr/lib/podkop" -f "$jq_filter_file" 2>"$jq_error_file" || true)
+    local jq_error_file="/tmp/padkap-jq-error-$$.log"
+    result=$(jq -n -L "/usr/lib/padkap" -f "$jq_filter_file" 2>"$jq_error_file" || true)
     rm -f "$jq_filter_file"
     
     if echo "$result" | jq -e '. | length == 5' > /dev/null 2>&1; then
@@ -536,7 +536,7 @@ test_subscription() {
 
     # Count proxy outbounds (exclude selector, urltest, direct, dns, block)
     local proxy_count
-    local proxy_filter_file="/tmp/podkop-proxy-filter-$$.jq"
+    local proxy_filter_file="/tmp/padkap-proxy-filter-$$.jq"
     cat > "$proxy_filter_file" << 'JQEOF'
 [.outbounds[] | select(.type != "selector" and .type != "urltest" and .type != "direct" and .type != "dns" and .type != "block")] | length
 JQEOF
@@ -551,7 +551,7 @@ JQEOF
 
     # Test filtering for subscription outbound tags
     local outbound_tags
-    local tags_filter_file="/tmp/podkop-tags-filter-$$.jq"
+    local tags_filter_file="/tmp/padkap-tags-filter-$$.jq"
     cat > "$tags_filter_file" << 'JQEOF'
 [.outbounds[] | select(.type != "selector" and .type != "urltest" and .type != "direct" and .type != "dns" and .type != "block") | .tag]
 JQEOF
@@ -567,7 +567,7 @@ JQEOF
     # Test country flag extraction from tags
     # Build tags with actual Unicode regional indicator flags
     local country_test
-    local flag_filter_file="/tmp/podkop-flag-filter-$$.jq"
+    local flag_filter_file="/tmp/padkap-flag-filter-$$.jq"
     cat > "$flag_filter_file" << 'JQEOF'
 def flag($l1; $l2): ([127462 + $l1, 127462 + $l2] | implode);
 [(flag(3; 4) + " Frankfurt"), (flag(20; 18) + " New York"), (flag(13; 11) + " Amsterdam"), (flag(9; 15) + " Tokyo"), "no-flag"]
@@ -576,7 +576,7 @@ JQEOF
     rm -f "$flag_filter_file"
 
     local grouping
-    local group_filter_file="/tmp/podkop-group-filter-$$.jq"
+    local group_filter_file="/tmp/padkap-group-filter-$$.jq"
     cat > "$group_filter_file" << 'JQEOF'
 def is_regional_indicator: . >= 127462 and . <= 127487;
 def extract_country_flag:
@@ -612,8 +612,8 @@ JQEOF
 # Main
 # ─────────────────────────────────────────────────────────────────
 main() {
-    printf "${BOLD}Podkop Evolution — Smoke Test Suite${NC}\n"
-    printf "Source: %s\n" "$PODKOP_SRC"
+    printf "${BOLD}Padkap Evolution — Smoke Test Suite${NC}\n"
+    printf "Source: %s\n" "$PADKAP_SRC"
     printf "OpenWrt: %s\n" "$(grep OPENWRT_RELEASE /etc/os-release 2>/dev/null | cut -d'"' -f2 || echo 'unknown')"
     printf "Kernel: %s\n" "$(uname -r 2>/dev/null || echo 'unknown')"
     printf "\n"

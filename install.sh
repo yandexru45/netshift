@@ -2,12 +2,12 @@
 # shellcheck shell=dash
 
 REPO_OWNER="spgsroot"
-REPO_NAME="podkop-evolution"
+REPO_NAME="padkap-evolution"
 GITHUB_REPO="$REPO_OWNER/$REPO_NAME"
 RELEASE_API="https://api.github.com/repos/$GITHUB_REPO/releases/latest"
 RELEASE_PAGE="https://github.com/$GITHUB_REPO/releases/latest"
 RAW_BASE="https://raw.githubusercontent.com/$GITHUB_REPO/refs/heads/main"
-DOWNLOAD_DIR="/tmp/podkop"
+DOWNLOAD_DIR="/tmp/padkap"
 COUNT=3
 
 # Cached flag to switch between ipk or apk package managers
@@ -72,20 +72,20 @@ pkg_install() {
 
 update_config() {
     printf "\033[48;5;196m\033[1m╔══════════════════════════════════════════════════════════════════════╗\033[0m\n"
-    printf "\033[48;5;196m\033[1m║ ! Обнаружена старая версия podkop.                                   ║\033[0m\n"
-    printf "\033[48;5;196m\033[1m║ Если продолжите обновление, вам потребуется настроить Podkop заново. ║\033[0m\n"
-    printf "\033[48;5;196m\033[1m║ Старая конфигурация будет сохранена в /etc/config/podkop-070         ║\033[0m\n"
-    printf "\033[48;5;196m\033[1m║ Подробности: https://github.com/spgsroot/podkop-evolution           ║\033[0m\n"
+    printf "\033[48;5;196m\033[1m║ ! Обнаружена старая версия padkap.                                   ║\033[0m\n"
+    printf "\033[48;5;196m\033[1m║ Если продолжите обновление, вам потребуется настроить Padkap заново. ║\033[0m\n"
+    printf "\033[48;5;196m\033[1m║ Старая конфигурация будет сохранена в /etc/config/padkap-070         ║\033[0m\n"
+    printf "\033[48;5;196m\033[1m║ Подробности: https://github.com/spgsroot/padkap-evolution           ║\033[0m\n"
     printf "\033[48;5;196m\033[1m║ Точно хотите продолжить?                                             ║\033[0m\n"
     printf "\033[48;5;196m\033[1m╚══════════════════════════════════════════════════════════════════════╝\033[0m\n"
 
     echo ""
 
     printf "\033[48;5;196m\033[1m╔══════════════════════════════════════════════════════════════════════╗\033[0m\n"
-    printf "\033[48;5;196m\033[1m║ ! Detected old podkop version.                                       ║\033[0m\n"
-    printf "\033[48;5;196m\033[1m║ If you continue the update, you will need to RECONFIGURE podkop.     ║\033[0m\n"
-    printf "\033[48;5;196m\033[1m║ Your old configuration will be saved to /etc/config/podkop-070       ║\033[0m\n"
-    printf "\033[48;5;196m\033[1m║ Details: https://github.com/spgsroot/podkop-evolution                ║\033[0m\n"
+    printf "\033[48;5;196m\033[1m║ ! Detected old padkap version.                                       ║\033[0m\n"
+    printf "\033[48;5;196m\033[1m║ If you continue the update, you will need to RECONFIGURE padkap.     ║\033[0m\n"
+    printf "\033[48;5;196m\033[1m║ Your old configuration will be saved to /etc/config/padkap-070       ║\033[0m\n"
+    printf "\033[48;5;196m\033[1m║ Details: https://github.com/spgsroot/padkap-evolution                ║\033[0m\n"
     printf "\033[48;5;196m\033[1m║ Are you sure you want to continue?                                   ║\033[0m\n"
     printf "\033[48;5;196m\033[1m╚══════════════════════════════════════════════════════════════════════╝\033[0m\n"
 
@@ -96,9 +96,9 @@ update_config() {
             case $CONFIG_UPDATE in
 
             yes|y|Y)
-                mv /etc/config/podkop /etc/config/podkop-070
-                wget -O /etc/config/podkop "$RAW_BASE/podkop/files/etc/config/podkop"
-                msg "Podkop config has been reset to default. Your old config saved in /etc/config/podkop-070"
+                mv /etc/config/padkap /etc/config/padkap-070
+                wget -O /etc/config/padkap "$RAW_BASE/padkap/files/etc/config/padkap"
+                msg "Padkap config has been reset to default. Your old config saved in /etc/config/padkap-070"
                 break
                 ;;
             *)
@@ -117,10 +117,10 @@ main() {
 
     pkg_list_update || { echo "Packages list update failed"; exit 1; }
 
-    if [ -f "/etc/init.d/podkop" ]; then
-        msg "Podkop is already installed. Upgrading..."
+    if [ -f "/etc/init.d/padkap" ]; then
+        msg "Padkap is already installed. Upgrading..."
     else
-        msg "Installing podkop..."
+        msg "Installing padkap..."
     fi
 
     release_json="$DOWNLOAD_DIR/latest-release.json"
@@ -184,14 +184,14 @@ main() {
     done
 
     # Check if any files were downloaded
-    if ! ls "$DOWNLOAD_DIR"/*podkop* >/dev/null 2>&1; then
-        err "No podkop packages were downloaded successfully for this package manager."
+    if ! ls "$DOWNLOAD_DIR"/*padkap* >/dev/null 2>&1; then
+        err "No padkap packages were downloaded successfully for this package manager."
         err "Expected package extension: $([ "$PKG_IS_APK" -eq 1 ] && echo apk || echo ipk)"
         err "Release page: $RELEASE_PAGE"
         exit 1
     fi
 
-    for pkg in podkop luci-app-podkop; do
+    for pkg in padkap luci-app-padkap; do
         file=""
         for f in "$DOWNLOAD_DIR"/"$pkg"*; do
             if [ -f "$f" ]; then
@@ -207,16 +207,16 @@ main() {
     done
 
     ru=""
-    for f in "$DOWNLOAD_DIR"/luci-i18n-podkop-ru*; do
+    for f in "$DOWNLOAD_DIR"/luci-i18n-padkap-ru*; do
         if [ -f "$f" ]; then
             ru=$(basename "$f")
             break
         fi
     done
     if [ -n "$ru" ]; then
-        if pkg_is_installed luci-i18n-podkop-ru; then
+        if pkg_is_installed luci-i18n-padkap-ru; then
                 msg "Upgrading Russian translation..."
-                pkg_remove luci-i18n-podkop*
+                pkg_remove luci-i18n-padkap*
                 pkg_install "$DOWNLOAD_DIR/$ru"
         else
             msg "Русский язык интерфейса ставим? y/n (Install the Russian interface language?)"
@@ -224,7 +224,7 @@ main() {
                 read -r -p '' RUS
                 case $RUS in
                 y)
-                    pkg_remove luci-i18n-podkop*
+                    pkg_remove luci-i18n-padkap*
                     pkg_install "$DOWNLOAD_DIR/$ru"
                     break
                     ;;
@@ -239,7 +239,7 @@ main() {
         fi
     fi
 
-    find "$DOWNLOAD_DIR" -type f -name '*podkop*' -exec rm {} \;
+    find "$DOWNLOAD_DIR" -type f -name '*padkap*' -exec rm {} \;
 }
 
 check_system() {
@@ -250,9 +250,9 @@ check_system() {
     # Check OpenWrt version
     openwrt_version=$(cat /etc/openwrt_release | grep DISTRIB_RELEASE | cut -d"'" -f2 | cut -d'.' -f1)
     if [ "$openwrt_version" = "23" ]; then
-        msg "OpenWrt 23.05 не поддерживается начиная с podkop 0.5.0"
-        msg "Для OpenWrt 23.05 используйте podkop версии 0.4.11 или устанавливайте зависимости и podkop вручную"
-        msg "Подробности: https://podkop.net/docs/install/#%d1%83%d1%81%d1%82%d0%b0%d0%bd%d0%be%d0%b2%d0%ba%d0%b0-%d0%bd%d0%b0-2305"
+        msg "OpenWrt 23.05 не поддерживается начиная с padkap 0.5.0"
+        msg "Для OpenWrt 23.05 используйте padkap версии 0.4.11 или устанавливайте зависимости и padkap вручную"
+        msg "Подробности: https://github.com/spgsroot/padkap-evolution#readme"
         exit 1
     fi
 
@@ -260,7 +260,7 @@ check_system() {
     AVAILABLE_SPACE=$(df /overlay | awk 'NR==2 {print $4}')
     REQUIRED_SPACE=15360 # 15MB in KB for first install
 
-    if command -v podkop > /dev/null 2>&1 || [ -f "/etc/init.d/podkop" ]; then
+    if command -v padkap > /dev/null 2>&1 || [ -f "/etc/init.d/padkap" ]; then
         REQUIRED_SPACE=8192 # 8MB is enough for upgrades; packages are downloaded to /tmp
     fi
 
@@ -277,9 +277,9 @@ check_system() {
     fi
 
     # Check version
-    if command -v podkop > /dev/null 2>&1; then
+    if command -v padkap > /dev/null 2>&1; then
         local version
-        version=$(/usr/bin/podkop show_version 2> /dev/null)
+        version=$(/usr/bin/padkap show_version 2> /dev/null)
         if [ -n "$version" ]; then
             version=$(echo "$version" | sed 's/^v//')
             local major
@@ -293,14 +293,14 @@ check_system() {
             if [ "$major" -gt 0 ] ||
                 [ "$major" -eq 0 ] && [ "$minor" -gt 7 ] ||
                 [ "$major" -eq 0 ] && [ "$minor" -eq 7 ] && [ "$patch" -ge 0 ]; then
-                msg "Podkop version >= 0.7.0"
+                msg "Padkap version >= 0.7.0"
                 return 0
             else
-                msg "Podkop version < 0.7.0"
+                msg "Padkap version < 0.7.0"
                 update_config
             fi
         else
-            msg "Unknown podkop version"
+            msg "Unknown padkap version"
             update_config
         fi
     fi
@@ -338,7 +338,7 @@ sing_box() {
     if [ "$(printf '%s\n%s\n' "$sing_box_version" "$required_version" | sort -V | head -n 1)" != "$required_version" ]; then
         msg "sing-box version $sing_box_version is older than the required version $required_version."
         msg "Removing old version..."
-        service podkop stop
+        service padkap stop
         pkg_remove sing-box
     fi
 }

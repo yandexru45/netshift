@@ -1,13 +1,13 @@
-# Podkop Evolution — .dockerignore for Docker builds
+# Padkap Evolution — .dockerignore for Docker builds
 # Speed up build context by excluding unnecessary files
 
 # Dependencies
 node_modules/
-fe-app-podkop/node_modules/
-fe-app-podkop/.yarn/
+fe-app-padkap/node_modules/
+fe-app-padkap/.yarn/
 
 # Build artifacts
-fe-app-podkop/dist/
+fe-app-padkap/dist/
 *.ipk
 *.apk
 

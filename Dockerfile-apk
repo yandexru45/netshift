@@ -1,11 +1,11 @@
 FROM itdoginfo/openwrt-sdk-apk:09102025
 
-ARG PODKOP_VERSION
-ENV PODKOP_VERSION=${PODKOP_VERSION}
+ARG PADKAP_VERSION
+ENV PADKAP_VERSION=${PADKAP_VERSION}
 
-COPY ./podkop /builder/package/feeds/utilities/podkop
-COPY ./luci-app-podkop /builder/package/feeds/luci/luci-app-podkop
+COPY ./padkap /builder/package/feeds/utilities/padkap
+COPY ./luci-app-padkap /builder/package/feeds/luci/luci-app-padkap
 
 RUN make defconfig && \
-    make package/podkop/compile -j1 V=s && \
-    make package/luci-app-podkop/compile -j1 V=s
+    make package/padkap/compile -j1 V=s && \
+    make package/luci-app-padkap/compile -j1 V=s

@@ -7,8 +7,8 @@ on:
       - 'rc/**'
     paths:
       - 'install.sh'
-      - 'podkop/files/usr/bin/**'
-      - 'podkop/files/usr/lib/**'
+      - 'padkap/files/usr/bin/**'
+      - 'padkap/files/usr/lib/**'
       - '.github/workflows/shellcheck.yml'
   pull_request:
     branches:
@@ -16,8 +16,8 @@ on:
       - 'rc/**'
     paths:
       - 'install.sh'
-      - 'podkop/files/usr/bin/**'
-      - 'podkop/files/usr/lib/**'
+      - 'padkap/files/usr/bin/**'
+      - 'padkap/files/usr/lib/**'
       - '.github/workflows/shellcheck.yml'
 
 permissions:
@@ -43,7 +43,7 @@ jobs:
         with:
           severity: error
           include-path: |
-            podkop/files/usr/bin/podkop
-            podkop/files/usr/lib/**.sh
+            padkap/files/usr/bin/padkap
+            padkap/files/usr/lib/**.sh
             install.sh
           token: ${{ secrets.GITHUB_TOKEN }}
