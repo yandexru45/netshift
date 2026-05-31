@@ -1,3 +1,5 @@
+# shellcheck disable=SC2148
+
 # Create an nftables table in the inet family
 nft_create_table() {
     local name="$1"

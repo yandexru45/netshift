@@ -1,3 +1,5 @@
+# shellcheck disable=SC2148
+
 # Constructs and returns a ruleset tag using section, name, optional type, and a fixed postfix
 get_ruleset_tag() {
     local section="$1"

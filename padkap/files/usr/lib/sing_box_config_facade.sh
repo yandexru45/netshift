@@ -1,3 +1,5 @@
+# shellcheck disable=SC2148
+
 PADKAP_LIB="/usr/lib/padkap"
 . "$PADKAP_LIB/helpers.sh"
 . "$PADKAP_LIB/sing_box_config_manager.sh"

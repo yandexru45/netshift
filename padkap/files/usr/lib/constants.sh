@@ -1,4 +1,4 @@
-# shellcheck disable=SC2034
+# shellcheck disable=SC2148,SC2034
 
 PADKAP_VERSION="__COMPILED_VERSION_VARIABLE__"
 ## Common

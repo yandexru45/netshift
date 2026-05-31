@@ -1,3 +1,5 @@
+# shellcheck disable=SC2148
+
 COLOR_CYAN="\033[0;36m"
 COLOR_GREEN="\033[0;32m"
 COLOR_RESET="\033[0m"

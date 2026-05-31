@@ -1,3 +1,5 @@
+# shellcheck disable=SC2148
+
 # Check if string is valid IPv4
 is_ipv4() {
     local ip="$1"

@@ -1,3 +1,5 @@
+# shellcheck disable=SC2148
+
 #
 # Module: sing_box_config_manager.sh
 #
