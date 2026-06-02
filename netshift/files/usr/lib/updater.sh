@@ -58,23 +58,83 @@ updates_resolve_sing_box_extended_arch_suffix() {
     esac
 }
 
-# Fetches the sing-box-extended GitHub releases JSON (echoes to stdout).
-updates_fetch_sing_box_extended_releases() {
-    local url response
-    url="https://api.github.com/repos/${UPDATES_SING_BOX_EXTENDED_REPO}/releases?per_page=30"
+# Performs a single HTTP GET, optionally through an http proxy. Sends a
+# User-Agent (the GitHub API rejects requests without one) and uses curl's
+# -f/--fail so HTTP errors (403 rate-limit, 404, ...) become a non-zero exit
+# with NO body, instead of returning the error JSON as if it succeeded.
+# Echoes the body to stdout; returns non-zero on any HTTP/transport error.
+updates_http_get_once() {
+    local url="$1"
+    local proxy="${2:-}"
+    local ua="netshift-updater"
 
     if command -v curl >/dev/null 2>&1; then
-        response="$(curl -m 15 -sL "$url" 2>/dev/null)"
-    fi
-    if [ -z "$response" ] && command -v wget >/dev/null 2>&1; then
-        response="$(wget -q -O- "$url" 2>/dev/null)"
+        if [ -n "$proxy" ]; then
+            curl --connect-timeout 5 -m 15 -fsSL -A "$ua" -x "http://$proxy" "$url" 2>/dev/null
+        else
+            curl --connect-timeout 5 -m 15 -fsSL -A "$ua" "$url" 2>/dev/null
+        fi
+        return $?
     fi
 
-    [ -n "$response" ] || return 1
-    printf '%s' "$response"
+    if command -v wget >/dev/null 2>&1; then
+        if [ -n "$proxy" ]; then
+            http_proxy="http://$proxy" https_proxy="http://$proxy" \
+                wget -T 15 -q -U "$ua" -O- "$url" 2>/dev/null
+        else
+            wget -T 15 -q -U "$ua" -O- "$url" 2>/dev/null
+        fi
+        return $?
+    fi
+
+    return 1
 }
 
-# Picks the newest non-draft, non-prerelease, stable (no alpha/beta/rc) tag.
+# Fetches the sing-box-extended GitHub releases JSON (echoes to stdout).
+# Tries a direct request first, then falls back through the VPN service proxy
+# (the router's own IP is often rate-limited or geo-blocked by GitHub). The
+# response is validated to be a JSON ARRAY: GitHub returns an OBJECT like
+# {"message":"API rate limit exceeded ..."} on 403/429, which must NOT be
+# mistaken for a releases list.
+updates_fetch_sing_box_extended_releases() {
+    local url response proxy
+    url="https://api.github.com/repos/${UPDATES_SING_BOX_EXTENDED_REPO}/releases?per_page=30"
+
+    response="$(updates_http_get_once "$url" "")"
+    if updates_response_is_release_array "$response"; then
+        printf '%s' "$response"
+        return 0
+    fi
+
+    proxy="$(get_service_proxy_address 2>/dev/null || true)"
+    if [ -n "$proxy" ]; then
+        updates_log "Direct GitHub API request failed; retrying via service proxy $proxy" "warn"
+        response="$(updates_http_get_once "$url" "$proxy")"
+        if updates_response_is_release_array "$response"; then
+            printf '%s' "$response"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+# Returns 0 only if the given body parses as a non-empty JSON array (a releases
+# list). Rejects empty bodies and GitHub error objects.
+updates_response_is_release_array() {
+    local body="$1"
+
+    [ -n "$body" ] || return 1
+    printf '%s' "$body" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1
+}
+
+# Picks the newest non-draft, non-prerelease, stable tag. Pre-release tags carry
+# a "-alpha"/"-beta"/"-rc" marker (e.g. v1.13.2-extended-2.0.0-rc.8).
+#
+# IMPORTANT: OpenWrt's jq is built WITHOUT the Oniguruma regex library, so
+# test()/match()/sub() are unavailable and error out (which, swallowed by
+# 2>/dev/null, silently emptied the whole pipeline). We therefore use plain
+# string containment (ascii_downcase + contains) instead of a regex.
 updates_extended_release_tag() {
     local json="$1"
 
@@ -82,7 +142,10 @@ updates_extended_release_tag() {
         map(select((.draft != true) and (.prerelease != true)))
         | map(.tag_name)
         | map(select(. != null and . != ""))
-        | map(select((ascii_downcase | test("alpha|beta|rc")) | not))
+        | map(select(
+            (ascii_downcase) as $t
+            | ($t | contains("-alpha") or contains("-beta") or contains("-rc")) | not
+          ))
         | .[0] // empty
     ' 2>/dev/null
 }
@@ -168,15 +231,15 @@ updates_install_sing_box_extended() {
 
     releases="$(updates_fetch_sing_box_extended_releases)"
     if [ -z "$releases" ]; then
-        updates_log "Failed to fetch sing-box-extended releases" "error"
-        echo "{\"success\":false,\"message\":\"Failed to fetch sing-box-extended releases\"}"
+        updates_log "Failed to fetch sing-box-extended releases (GitHub API unreachable or rate-limited; a proxy/VPN may be required)" "error"
+        echo "{\"success\":false,\"message\":\"Failed to fetch sing-box-extended releases (GitHub API unreachable or rate-limited; try again later or enable a proxy)\"}"
         return 1
     fi
 
     tag="$(updates_extended_release_tag "$releases")"
     if [ -z "$tag" ]; then
-        updates_log "Failed to resolve sing-box-extended release tag" "error"
-        echo "{\"success\":false,\"message\":\"Failed to resolve sing-box-extended release tag\"}"
+        updates_log "No stable sing-box-extended release tag found in the GitHub response" "error"
+        echo "{\"success\":false,\"message\":\"No stable sing-box-extended release found\"}"
         return 1
     fi
 
@@ -326,13 +389,13 @@ updates_check_sing_box_extended() {
 
     releases="$(updates_fetch_sing_box_extended_releases)"
     if [ -z "$releases" ]; then
-        echo "{\"success\":false,\"message\":\"Failed to fetch sing-box-extended releases\"}"
+        echo "{\"success\":false,\"message\":\"Failed to fetch sing-box-extended releases (GitHub API unreachable or rate-limited; try again later or enable a proxy)\"}"
         return 1
     fi
 
     tag="$(updates_extended_release_tag "$releases")"
     if [ -z "$tag" ]; then
-        echo "{\"success\":false,\"message\":\"Failed to resolve sing-box-extended release tag\"}"
+        echo "{\"success\":false,\"message\":\"No stable sing-box-extended release found\"}"
         return 1
     fi
 
