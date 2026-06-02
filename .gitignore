@@ -3,3 +3,4 @@ fe-app-netshift/node_modules
 fe-app-netshift/.env
 .DS_Store
 *.txt
+tests/test-results/
