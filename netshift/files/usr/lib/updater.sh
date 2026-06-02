@@ -261,6 +261,12 @@ updates_install_sing_box_extended() {
         return 1
     fi
 
+    # Remove any stale temp dirs left behind by an interrupted earlier run.
+    # tmpfs is small; a leftover ~40 MB backup would otherwise make the fresh
+    # backup `cp` below fail with ENOSPC ("Failed to backup current sing-box
+    # binary") even though the install itself is fine.
+    rm -rf /tmp/netshift-sbext.* 2>/dev/null
+
     tmp_dir="$(mktemp -d /tmp/netshift-sbext.XXXXXX 2>/dev/null)"
     if [ -z "$tmp_dir" ]; then
         updates_log "Failed to create temporary directory" "error"
