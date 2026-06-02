@@ -15,10 +15,8 @@
 
 ---
 <p align="center">
-
-[![Static Badge](https://img.shields.io/badge/Telegram-Channel-Link?style=for-the-badge&logo=Telegram&logoColor=white&logoSize=auto&color=blue)](https://t.me/netshift_news)
-
-[![Static Badge](https://img.shields.io/badge/Telegram-Chat-yes?style=for-the-badge&logo=Telegram&logoColor=white&logoSize=auto&color=blue)](https://t.me/netshift_chat)
+  <a href="https://t.me/netshift_news"><img src="https://img.shields.io/badge/Telegram-Channel-Link?style=for-the-badge&logo=Telegram&logoColor=white&logoSize=auto&color=blue" alt="Telegram Channel" /></a>
+  <a href="https://t.me/netshift_chat"><img src="https://img.shields.io/badge/Telegram-Chat-yes?style=for-the-badge&logo=Telegram&logoColor=white&logoSize=auto&color=blue" alt="Telegram Chat" /></a>
 </p>
 
 ---
