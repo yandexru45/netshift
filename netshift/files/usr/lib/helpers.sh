@@ -966,3 +966,161 @@ describe_subscription_validation_failure() {
     )] | length' "$filepath" 2>/dev/null)"
     echo "subscription contains no usable proxy outbounds: total=${total:-unknown}, usable=${usable:-unknown}"
 }
+
+# Fallback subscription parser.
+#
+# Many providers do not return a sing-box JSON config. Instead they return
+# either (a) a base64-encoded list of proxy URIs, or (b) a plaintext list of
+# proxy URIs (one per line), possibly interspersed with '#comment' metadata
+# lines. This function decodes/parses such a body into a minimal sing-box
+# configuration ({"outbounds":[...]}) so the normal persist + merge path can
+# consume it unchanged.
+#
+# It lives in helpers.sh (alongside validate_subscription_file). It calls
+# sing_box_cf_add_proxy_outbound, which is defined later in
+# sing_box_config_facade.sh. Shell resolves function names at call time, and
+# bin/netshift sources both helpers.sh and the facade before any subscription
+# work runs, so both the base64 helpers (defined here) and the URI->outbound
+# builder are available when this function is invoked.
+#
+# Arguments:
+#   src_file: path to the raw downloaded subscription body
+#   out_file: path to write the normalized sing-box JSON to
+#   section:  UCI section name (used to derive outbound tags)
+# Returns:
+#   0 and writes out_file when at least one outbound was parsed; 1 otherwise.
+normalize_subscription_to_singbox() {
+    local src_file="$1"
+    local out_file="$2"
+    local section="$3"
+
+    local raw stripped candidate pad_len decoded bom
+    local udp_over_tcp config new_config lines_file
+    local line scheme idx kept skipped before_count after_count final_count
+
+    [ -s "$src_file" ] || return 1
+    # Strip a leading UTF-8 BOM (EF BB BF) if present; it would otherwise break
+    # base64 charset detection and decoding. busybox sed lacks \x hex escapes,
+    # so build the BOM literally with printf octal escapes.
+    bom="$(printf '\357\273\277')"
+    raw="$(sed "1s/^${bom}//" "$src_file" 2>/dev/null)"
+    [ -n "$raw" ] || raw="$(cat "$src_file" 2>/dev/null)"
+    [ -n "$raw" ] || return 1
+
+    # Decide whether the body is a base64 blob or already plaintext URIs.
+    # Be conservative: only treat as base64 when the raw body has NO '://'
+    # substring (a plaintext URI list always contains '://') but the decoded
+    # body does contain '://'.
+    candidate="$raw"
+    case "$raw" in
+    *"://"*)
+        # Raw already contains URIs -> treat as plaintext.
+        :
+        ;;
+    *)
+        # Strip all whitespace and check the remaining charset is base64-only.
+        stripped="$(printf '%s' "$raw" | tr -d ' \t\r\n')"
+        if [ -n "$stripped" ] && [ -z "$(printf '%s' "$stripped" | tr -d 'A-Za-z0-9+/=')" ]; then
+            # Add '=' padding to a multiple of 4 (older coreutils-base64 lacks
+            # auto-padding).
+            pad_len=$(( ${#stripped} % 4 ))
+            if [ "$pad_len" -eq 2 ]; then
+                stripped="${stripped}=="
+            elif [ "$pad_len" -eq 3 ]; then
+                stripped="${stripped}="
+            elif [ "$pad_len" -eq 1 ]; then
+                # Length 1 mod 4 is not valid base64; leave as-is and let
+                # decode fail.
+                :
+            fi
+            decoded="$(base64_decode "$stripped")"
+            case "$decoded" in
+            *"://"*)
+                candidate="$decoded"
+                ;;
+            esac
+        fi
+        ;;
+    esac
+
+    # udp_over_tcp from the section if present, else empty.
+    udp_over_tcp="$(uci -q get "netshift.${section}.udp_over_tcp" 2>/dev/null)"
+
+    config='{"outbounds":[]}'
+    idx=0
+    kept=0
+    skipped=0
+
+    # Write candidate lines to a temp file and feed the loop via redirect rather
+    # than a heredoc/pipe. The builder calls helpers that read stdin (e.g.
+    # base64 pipelines); feeding the loop from the same stdin would let them
+    # consume subsequent lines. A file redirect keeps the loop's stdin isolated.
+    lines_file="$(mktemp 2>/dev/null)" || lines_file="/tmp/netshift-sub-fb.$$"
+    printf '%s\n' "$candidate" > "$lines_file"
+
+    while IFS= read -r line; do
+        # Trim leading/trailing whitespace.
+        line="$(printf '%s' "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+        [ -n "$line" ] || continue
+        # Skip metadata/comment lines.
+        case "$line" in
+        '#'*)
+            continue
+            ;;
+        esac
+        # Pre-filter: only attempt known schemes so an unknown scheme never
+        # reaches the builder's fatal path.
+        scheme="$(url_get_scheme "$line")"
+        case "$scheme" in
+        vless | trojan | ss | hysteria2 | hy2 | socks5 | socks4 | socks4a) ;;
+        *)
+            skipped=$(( skipped + 1 ))
+            continue
+            ;;
+        esac
+
+        before_count="$(printf '%s' "$config" | jq -r '.outbounds | length' 2>/dev/null)"
+        [ -n "$before_count" ] || before_count=0
+
+        # Second guard: run the builder in a subshell (command substitution) so
+        # an unexpected exit 1 (e.g. malformed URI) is contained and surfaced as
+        # a non-zero rc. Redirect its stdin from /dev/null so its internal
+        # pipelines cannot consume the loop's input.
+        new_config="$(sing_box_cf_add_proxy_outbound "$config" "${section}-fb${idx}" "$line" "$udp_over_tcp" </dev/null 2>/dev/null)" || {
+            log "skip unparsable subscription key #$idx for '$section'" "debug"
+            idx=$(( idx + 1 ))
+            continue
+        }
+        idx=$(( idx + 1 ))
+
+        # Validate the result parses as JSON and the outbound count increased.
+        if [ -z "$new_config" ] || ! printf '%s' "$new_config" | jq -e . >/dev/null 2>&1; then
+            log "skip subscription key (invalid JSON result) for '$section'" "debug"
+            continue
+        fi
+        after_count="$(printf '%s' "$new_config" | jq -r '.outbounds | length' 2>/dev/null)"
+        [ -n "$after_count" ] || after_count=0
+        if [ "$after_count" -le "$before_count" ]; then
+            log "skip subscription key (no outbound added) for '$section'" "debug"
+            continue
+        fi
+
+        config="$new_config"
+        kept=$(( kept + 1 ))
+    done < "$lines_file"
+    rm -f "$lines_file"
+
+    if [ "$skipped" -gt 0 ]; then
+        log "Fallback subscription parser for '$section' skipped $skipped key(s) with unknown/unsupported schemes" "debug"
+    fi
+
+    final_count="$(printf '%s' "$config" | jq -r '.outbounds | length' 2>/dev/null)"
+    [ -n "$final_count" ] || final_count=0
+    log "Fallback subscription parser for '$section' produced $final_count outbound(s) from $kept accepted key(s)" "debug"
+    if [ "$final_count" -le 0 ]; then
+        return 1
+    fi
+
+    printf '%s' "$config" | jq '.' > "$out_file" 2>/dev/null || return 1
+    return 0
+}

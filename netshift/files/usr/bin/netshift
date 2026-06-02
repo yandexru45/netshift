@@ -344,7 +344,7 @@ download_subscription_into_cache() {
     local subscription_json_path="$3"
     local subscription_url_cache_path="$4"
     local service_proxy_address="$5"
-    local tmpfile persist_tmpfile url_tmpfile rejected_cache_path tmp_hash rejected_hash validation_reason file_size
+    local tmpfile persist_tmpfile url_tmpfile rejected_cache_path tmp_hash rejected_hash validation_reason file_size fallback_tmp
 
     ensure_subscription_cache_dir || {
         log "Failed to prepare persistent subscription cache directory '$SUBSCRIPTION_CACHE_FOLDER' for section '$section'" "error"
@@ -369,10 +369,18 @@ download_subscription_into_cache() {
     log "Downloaded subscription body for section '$section': bytes=${file_size:-unknown}" "debug"
 
     if ! validate_subscription_file "$tmpfile"; then
-        validation_reason="$(describe_subscription_validation_failure "$tmpfile")"
-        log "Downloaded subscription for section '$section' is invalid: ${validation_reason:-unknown validation error}" "error"
-        rm -f "$tmpfile"
-        return 13
+        # Fallback: provider returned base64 / plaintext key list instead of sing-box JSON
+        fallback_tmp="${tmpfile}.fb"
+        if normalize_subscription_to_singbox "$tmpfile" "$fallback_tmp" "$section" && validate_subscription_file "$fallback_tmp"; then
+            mv -f "$fallback_tmp" "$tmpfile"
+            log "Subscription for section '$section' parsed via fallback (base64/plaintext key list)" "info"
+        else
+            rm -f "$fallback_tmp"
+            validation_reason="$(describe_subscription_validation_failure "$tmpfile")"
+            log "Downloaded subscription for section '$section' is invalid: ${validation_reason:-unknown validation error}" "error"
+            rm -f "$tmpfile"
+            return 13
+        fi
     fi
 
     rejected_cache_path="$(get_subscription_rejected_cache_path "$section")"

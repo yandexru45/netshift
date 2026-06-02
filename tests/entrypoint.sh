@@ -603,6 +603,165 @@ JQEOF
     else
         fail "Country flag grouping wrong: got $grouped grouped, $ungrouped ungrouped"
     fi
+
+    # ── Fallback Subscription Normalizer (helpers.sh) ───────────────
+    # Exercise normalize_subscription_to_singbox end-to-end against the
+    # real libs. The facade hardcodes NETSHIFT_LIB=/usr/lib/netshift, so we
+    # mirror test_jq_helpers and expose the bind-mounted libs there via
+    # symlinks, then source constants + logging + facade (the facade pulls in
+    # helpers.sh and the config manager). Tokens are emitted on stdout and
+    # parsed with the same name:OK/FAIL/SKIP convention used by test_helpers.
+    # NB: no `set -u` in the harness — the URI builders rely on optional unset
+    # query-param vars, exactly like the production backend.
+    printf "\n  ${BOLD}Fallback Subscription Normalizer${NC}\n"
+
+    local lib="${NETSHIFT_LIB_DIR}"
+    if [ ! -r "$lib/helpers.sh" ] || [ ! -r "$lib/sing_box_config_facade.sh" ]; then
+        skip "fallback normalizer (libs not found in $lib)"
+        return
+    fi
+
+    local fb="/tmp/netshift-sub-fallback-$$.sh"
+    cat > "$fb" << 'FBEOF'
+# Make the facade's hardcoded NETSHIFT_LIB path resolve to the bind-mounted libs.
+mkdir -p /usr/lib/netshift
+for f in constants.sh helpers.sh logging.sh sing_box_config_manager.sh sing_box_config_facade.sh; do
+    ln -sf "LIB_DIR/$f" "/usr/lib/netshift/$f"
+done
+
+. /usr/lib/netshift/constants.sh
+. /usr/lib/netshift/logging.sh
+# The facade sources helpers.sh + sing_box_config_manager.sh itself.
+. /usr/lib/netshift/sing_box_config_facade.sh
+
+# ── CASE A: plaintext URI list with comment/metadata lines ──────────
+caseA_in="/tmp/netshift-fb-caseA-$$.txt"
+caseA_out="/tmp/netshift-fb-caseA-out-$$.json"
+cat > "$caseA_in" << 'LIST'
+#profile-title: Test
+#subscription-userinfo: upload=0
+vless://11111111-1111-1111-1111-111111111111@example.com:443?security=tls&sni=example.com&type=tcp#A
+trojan://password123@example.com:8443?security=tls&sni=example.com#B
+ss://YWVzLTI1Ni1nY206cGFzcw==@example.com:8388#C
+hysteria2://pass@example.com:443?sni=example.com#D
+
+socks5://user:pass@example.com:1080#E
+LIST
+
+if normalize_subscription_to_singbox "$caseA_in" "$caseA_out" "testsub"; then
+    echo 'fb-caseA-rc:OK'
+else
+    echo 'fb-caseA-rc:FAIL'
+fi
+a_len="$(jq -r '.outbounds | length' "$caseA_out" 2>/dev/null)"
+[ -n "$a_len" ] || a_len=0
+if [ "$a_len" -ge 4 ]; then
+    echo "fb-caseA-count(>=4 got $a_len):OK"
+else
+    echo "fb-caseA-count(>=4 got $a_len):FAIL"
+fi
+if validate_subscription_file "$caseA_out"; then
+    echo 'fb-caseA-validate:OK'
+else
+    echo 'fb-caseA-validate:FAIL'
+fi
+rm -f "$caseA_in" "$caseA_out"
+
+# ── CASE B: base64-wrapped URI list ─────────────────────────────────
+# busybox base64 may lack -w0; encode then strip newlines with tr.
+caseB_plain="vless://22222222-2222-2222-2222-222222222222@example.com:443?security=tls&sni=example.com&type=tcp#B1
+trojan://secretpw@example.com:8443?security=tls&sni=example.com#B2"
+caseB_in="/tmp/netshift-fb-caseB-$$.txt"
+caseB_out="/tmp/netshift-fb-caseB-out-$$.json"
+printf '%s' "$caseB_plain" | base64 | tr -d '\n' > "$caseB_in"
+
+if normalize_subscription_to_singbox "$caseB_in" "$caseB_out" "testsub"; then
+    echo 'fb-caseB-rc:OK'
+else
+    echo 'fb-caseB-rc:FAIL'
+fi
+b_len="$(jq -r '.outbounds | length' "$caseB_out" 2>/dev/null)"
+[ -n "$b_len" ] || b_len=0
+if [ "$b_len" -ge 2 ]; then
+    echo "fb-caseB-count(>=2 got $b_len):OK"
+else
+    echo "fb-caseB-count(>=2 got $b_len):FAIL"
+fi
+if validate_subscription_file "$caseB_out"; then
+    echo 'fb-caseB-validate:OK'
+else
+    echo 'fb-caseB-validate:FAIL'
+fi
+rm -f "$caseB_in" "$caseB_out"
+
+# ── CASE C: robustness — valid keys mixed with garbage ──────────────
+# Two valid known-scheme keys; an unknown scheme (vmess), a malformed line,
+# a blank line and a comment must all be skipped without aborting the parse.
+caseC_in="/tmp/netshift-fb-caseC-$$.txt"
+caseC_out="/tmp/netshift-fb-caseC-out-$$.json"
+cat > "$caseC_in" << 'LIST'
+#header comment
+vless://33333333-3333-3333-3333-333333333333@example.com:443?security=tls&sni=example.com&type=tcp#C1
+vmess://eyJ0aGlzIjoidW5rbm93biJ9
+not-a-uri
+
+trojan://pw3@example.com:8443?security=tls&sni=example.com#C2
+LIST
+
+if normalize_subscription_to_singbox "$caseC_in" "$caseC_out" "testsub"; then
+    echo 'fb-caseC-rc:OK'
+else
+    echo 'fb-caseC-rc:FAIL'
+fi
+c_len="$(jq -r '.outbounds | length' "$caseC_out" 2>/dev/null)"
+[ -n "$c_len" ] || c_len=0
+if [ "$c_len" -eq 2 ]; then
+    echo "fb-caseC-count(==2 valid got $c_len):OK"
+else
+    echo "fb-caseC-count(==2 valid got $c_len):FAIL"
+fi
+rm -f "$caseC_in" "$caseC_out"
+
+# ── CASE D: negative — only comments / junk, no valid keys ──────────
+caseD_in="/tmp/netshift-fb-caseD-$$.txt"
+caseD_out="/tmp/netshift-fb-caseD-out-$$.json"
+cat > "$caseD_in" << 'LIST'
+#profile-title: Empty
+#subscription-userinfo: upload=0
+not-a-uri
+vmess://eyJqdW5rIjoidHJ1ZSJ9
+
+LIST
+
+if normalize_subscription_to_singbox "$caseD_in" "$caseD_out" "testsub"; then
+    echo 'fb-caseD-rc-nonzero:FAIL'
+else
+    echo 'fb-caseD-rc-nonzero:OK'
+fi
+# No usable output: either no file, or a file that fails validation.
+if [ ! -s "$caseD_out" ] || ! validate_subscription_file "$caseD_out"; then
+    echo 'fb-caseD-no-usable-output:OK'
+else
+    echo 'fb-caseD-no-usable-output:FAIL'
+fi
+rm -f "$caseD_in" "$caseD_out"
+
+echo 'DONE'
+FBEOF
+
+    sed -i "s|LIB_DIR|$lib|g" "$fb"
+
+    ash "$fb" 2>/dev/null | while IFS= read -r line; do
+        case "$line" in
+            *:OK) pass "$line" ;;
+            *:FAIL) fail "$line" ;;
+            *:SKIP) skip "$line" ;;
+            DONE) ;;
+            *) ;;
+        esac
+    done
+
+    rm -f "$fb"
 }
 
 # ─────────────────────────────────────────────────────────────────
