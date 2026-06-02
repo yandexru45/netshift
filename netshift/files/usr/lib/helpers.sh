@@ -1002,6 +1002,7 @@ normalize_subscription_to_singbox() {
     local raw stripped candidate pad_len decoded bom
     local udp_over_tcp config new_config lines_file
     local line scheme idx kept skipped before_count after_count final_count
+    local fragment display_name
 
     [ -s "$src_file" ] || return 1
     # Strip a leading UTF-8 BOM (EF BB BF) if present; it would otherwise break
@@ -1084,6 +1085,23 @@ normalize_subscription_to_singbox() {
             ;;
         esac
 
+        # Extract the human-readable name from the URI fragment (the part after
+        # the first '#', e.g. vless://...#🇩🇪 Frankfurt). The builder strips the
+        # fragment, so we capture it here and re-apply it as the outbound tag
+        # below. Fall back to a synthetic name when the fragment is absent.
+        case "$line" in
+        *"#"*) fragment="${line##*#}" ;;
+        *) fragment="" ;;
+        esac
+        display_name=""
+        if [ -n "$fragment" ]; then
+            # url_decode handles %20 / percent-escaped UTF-8 (flag emoji etc.).
+            display_name="$(url_decode "$fragment" 2>/dev/null)"
+            # Drop control characters/newlines that would corrupt the tag.
+            display_name="$(printf '%s' "$display_name" | tr -d '\r\n\t')"
+        fi
+        [ -n "$display_name" ] || display_name="${section}-fb${idx}"
+
         before_count="$(printf '%s' "$config" | jq -r '.outbounds | length' 2>/dev/null)"
         [ -n "$before_count" ] || before_count=0
 
@@ -1107,6 +1125,30 @@ normalize_subscription_to_singbox() {
         [ -n "$after_count" ] || after_count=0
         if [ "$after_count" -le "$before_count" ]; then
             log "skip subscription key (no outbound added) for '$section'" "debug"
+            continue
+        fi
+
+        # Re-apply the human-readable name as the tag of the just-added outbound
+        # (the builder appends it last). Deduplicate against tags already present
+        # so identical remarks across keys stay unique and valid for sing-box and
+        # the dashboard (which displays the tag verbatim via the Clash API).
+        new_config="$(
+            printf '%s' "$new_config" | jq -c --arg name "$display_name" '
+                ([.outbounds[:-1][].tag // empty]) as $existing
+                | (
+                    if ($existing | index($name) | not) then $name
+                    else
+                        (label $found
+                            | (range(1; 1000001)
+                                | ($name + "-" + (. | tostring)) as $cand
+                                | if ($existing | index($cand) | not) then $cand, break $found else empty end))
+                    end
+                  ) as $tag
+                | .outbounds[-1].tag = $tag
+            ' 2>/dev/null
+        )"
+        if [ -z "$new_config" ] || ! printf '%s' "$new_config" | jq -e . >/dev/null 2>&1; then
+            log "skip subscription key (tag rename failed) for '$section'" "debug"
             continue
         fi
 
