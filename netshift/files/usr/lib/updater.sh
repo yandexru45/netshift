@@ -348,24 +348,30 @@ updates_install_sing_box_extended() {
     return 0
 }
 
-# Reinstalls the stock (stable) sing-box via the system package manager.
-# Echoes a JSON result on stdout.
+# Reinstalls the stock (stable) sing-box via the system package manager,
+# reverting an "extended" install. Unlike the extended path this never touches
+# the GitHub API. Echoes a JSON result on stdout.
+#
+# The install result is checked (no silent "|| true" that always reports
+# success), and the outcome is validated to be a NON-extended build so a failed
+# downgrade is surfaced honestly instead of masquerading as success.
 updates_install_sing_box_stable() {
-    local new_version
+    local new_version installed=1
 
     if command -v apk >/dev/null 2>&1; then
         updates_log "Updating apk package lists"
         apk update </dev/null >/dev/null 2>&1 || true
         updates_log "Installing stable sing-box via apk"
         if ! apk add --allow-downgrade sing-box </dev/null >/dev/null 2>&1; then
-            apk fix sing-box </dev/null >/dev/null 2>&1 || true
+            # apk fix is a best-effort recovery; its result still decides success.
+            apk fix sing-box </dev/null >/dev/null 2>&1 || installed=0
         fi
     elif command -v opkg >/dev/null 2>&1; then
         updates_log "Updating opkg package lists"
         opkg update </dev/null >/dev/null 2>&1 || true
         updates_log "Installing stable sing-box via opkg"
         if ! opkg install --force-reinstall --force-downgrade sing-box </dev/null >/dev/null 2>&1; then
-            opkg install --force-downgrade sing-box </dev/null >/dev/null 2>&1 || true
+            opkg install --force-downgrade sing-box </dev/null >/dev/null 2>&1 || installed=0
         fi
     else
         updates_log "No supported package manager (apk/opkg) found" "error"
@@ -373,8 +379,31 @@ updates_install_sing_box_stable() {
         return 1
     fi
 
+    if [ "$installed" -eq 0 ]; then
+        updates_log "Failed to install stable sing-box via package manager" "error"
+        echo "{\"success\":false,\"message\":\"Failed to install stable sing-box (package manager error; check connectivity/repositories)\"}"
+        return 1
+    fi
+
+    # The extended path side-loads /usr/lib/libcronet.so next to the binary.
+    # Stock sing-box does not use it; remove the leftover so the rollback is
+    # clean. The package manager never installs this file, so this is safe.
+    if [ -e /usr/lib/libcronet.so ]; then
+        updates_log "Removing leftover libcronet.so from extended install"
+        rm -f /usr/lib/libcronet.so 2>/dev/null || true
+    fi
+
     updates_restart_netshift
     new_version="$(get_sing_box_version)"
+
+    # Validate the rollback actually took effect: the running binary must no
+    # longer be an "extended" build.
+    if is_sing_box_extended "$new_version"; then
+        updates_log "Stable install reported success but sing-box is still extended ($new_version)" "error"
+        echo "{\"success\":false,\"message\":\"sing-box is still the extended build after install; rollback did not take effect\"}"
+        return 1
+    fi
+
     updates_log "Stable sing-box installed: ${new_version:-unknown}"
     echo "{\"success\":true,\"version\":\"$new_version\"}"
     return 0
