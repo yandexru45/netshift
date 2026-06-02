@@ -175,7 +175,8 @@ migrate_from_podkop() {
         /etc/init.d/podkop disable 2>/dev/null || true
     fi
 
-    # 4. Migrate config (copy, not move — keep a backup). Schema is compatible.
+    # 4. Migrate config (copy first, then remove the original — we keep a
+    #    backup). Schema is compatible.
     if [ -f "/etc/config/podkop" ]; then
         if [ ! -f "/etc/config/netshift" ]; then
             msg "Migrating config /etc/config/podkop -> /etc/config/netshift..."
@@ -185,6 +186,14 @@ migrate_from_podkop() {
         fi
         if [ ! -f "/etc/config/podkop.bak.pre-netshift" ]; then
             cp /etc/config/podkop /etc/config/podkop.bak.pre-netshift 2>/dev/null || true
+        fi
+        # Remove the original /etc/config/podkop so a re-run does not keep
+        # detecting an "old podkop install" (podkop_is_installed checks this
+        # path). opkg/apk never delete user config, so we must do it here.
+        # Only remove once the backup is confirmed present, to avoid data loss.
+        if [ -f "/etc/config/podkop.bak.pre-netshift" ]; then
+            msg "Removing migrated /etc/config/podkop (backup kept at podkop.bak.pre-netshift)..."
+            rm -f /etc/config/podkop 2>/dev/null || true
         fi
     fi
 
