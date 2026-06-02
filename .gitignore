@@ -1,5 +1,5 @@
 .idea
-fe-app-podkop/node_modules
-fe-app-podkop/.env
+fe-app-netshift/node_modules
+fe-app-netshift/.env
 .DS_Store
 *.txt

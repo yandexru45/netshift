@@ -23,7 +23,7 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
   build:
-    name: Builder for ${{ matrix.package_type }} podkop and luci-app-podkop
+    name: Builder for ${{ matrix.package_type }} netshift and luci-app-netshift
     runs-on: ubuntu-latest
     needs: preparation
     strategy:
@@ -41,12 +41,12 @@ jobs:
         with:
           file: ./Dockerfile-${{ matrix.package_type }}
           context: .
-          tags: podkop:ci-${{ matrix.package_type }}
+          tags: netshift:ci-${{ matrix.package_type }}
           build-args: |
-            PODKOP_VERSION=${{ needs.preparation.outputs.version }}
+            NETSHIFT_VERSION=${{ needs.preparation.outputs.version }}
 
       - name: Create ${{ matrix.package_type }} Docker container
-        run: docker create --name ${{ matrix.package_type }} podkop:ci-${{ matrix.package_type }}
+        run: docker create --name ${{ matrix.package_type }} netshift:ci-${{ matrix.package_type }}
 
       - name: Copy files from ${{ matrix.package_type }} Docker container
         run: |
@@ -73,9 +73,9 @@ jobs:
           VERSION="${{ needs.preparation.outputs.version }}"
 
           mkdir -p ./filtered-bin/${{ matrix.package_type }}
-          cp ./bin/${{ matrix.package_type }}/luci-i18n-podkop-ru-*.${{ matrix.package_type }} "./filtered-bin/${{ matrix.package_type }}/luci-i18n-podkop-ru-${VERSION}.${{ matrix.package_type }}"
-          cp ./bin/${{ matrix.package_type }}/podkop-*.${{ matrix.package_type }} ./filtered-bin/${{ matrix.package_type }}/
-          cp ./bin/${{ matrix.package_type }}/luci-app-podkop-*.${{ matrix.package_type }} ./filtered-bin/${{ matrix.package_type }}/
+          cp ./bin/${{ matrix.package_type }}/luci-i18n-netshift-ru-*.${{ matrix.package_type }} "./filtered-bin/${{ matrix.package_type }}/luci-i18n-netshift-ru-${VERSION}.${{ matrix.package_type }}"
+          cp ./bin/${{ matrix.package_type }}/netshift-*.${{ matrix.package_type }} ./filtered-bin/${{ matrix.package_type }}/
+          cp ./bin/${{ matrix.package_type }}/luci-app-netshift-*.${{ matrix.package_type }} ./filtered-bin/${{ matrix.package_type }}/
 
       - name: Remove Docker container
         run: docker rm ${{ matrix.package_type }}
