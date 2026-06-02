@@ -1,117 +1,70 @@
-<div align="center">
-
-```
-   ╔╗╔╔═╗╔╦╗╔═╗╦ ╦╦╔═╗╔╦╗
-   ║║║║╣  ║ ╚═╗╠═╣║╠╣  ║
-   ╝╚╝╚═╝ ╩ ╚═╝╩ ╩╩╚   ╩
-        shift your traffic
-```
-
 # NetShift
 
-**Маршрутизация трафика для OpenWrt — нужное в туннель, остальное напрямую.**
+> **Форк с поддержкой Subscription URL + HWID и переключаемым ядром sing-box-extended (xhttp)**
+>
+> NetShift добавляет поддержку ссылок подписки (subscription URL) с кастомными заголовками (HWID, Device-OS, Device-Model) и автоматическим обновлением, а также переключение ядра на sing-box-extended с поддержкой клиентского транспорта xhttp. Основан на [itdoginfo/podkop](https://github.com/itdoginfo/podkop).
 
-Открытое ПО на базе [sing-box](https://github.com/SagerNet/sing-box) · форк [itdoginfo/podkop](https://github.com/itdoginfo/podkop) с поддержкой Subscription URL, HWID и переключаемого ядра sing-box-extended.
+Маршрутизация трафика для OpenWrt.
 
-[![Release](https://img.shields.io/github/v/release/yandexru45/podkop-evolution?style=flat-square)](https://github.com/yandexru45/podkop-evolution/releases)
-[![License](https://img.shields.io/badge/license-GPL--2.0--or--later-blue?style=flat-square)](LICENSE)
-[![OpenWrt](https://img.shields.io/badge/OpenWrt-24.10%2B-orange?style=flat-square)](https://openwrt.org/)
-[![Docs](https://img.shields.io/badge/docs-podkop.net-informational?style=flat-square)](https://podkop.net/)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/itdoginfo/podkop)
-
-</div>
+Направляйте нужные ресурсы в туннель, а остальное — напрямую. Открытое программное обеспечение на базе [sing-box](https://github.com/SagerNet/sing-box).
 
 > [!WARNING]
 > Проект находится в стадии бета-версии. Возможны ошибки, нестабильная работа и существенные изменения функциональности.
 
 ---
 
-## Возможности
+# Вещи, которые вам нужно знать перед установкой
 
-- [x] **Маршрутизация по доменам и подсетям** — направляйте нужные ресурсы в туннель, остальное идёт напрямую<br>　<sub>VLESS · Shadowsocks · Trojan · Hysteria2 · готовые community-списки</sub>
-- [x] **Subscription URL** — ссылки подписки от провайдера с автообновлением и автовыбором лучшего сервера<br>　<sub>кастомные заголовки HWID / Device-OS / Device-Model · URLTest · ручное переключение</sub>
-- [x] **Переключаемое ядро sing-box** — стабильное ↔ sing-box-extended прямо из веб-интерфейса<br>　<sub>клиентский транспорт xhttp · установка/откат в один клик</sub>
-- [x] **Веб-интерфейс LuCI** — дашборд, диагностика и настройки без правки конфигов<br>　<sub>статус серверов · проверка соединения · логи</sub>
-- [x] **Автоматическая миграция** — обновление со старого podkop переносит конфиг без перенастройки
+### Обновления и конфигурация
+- При обновлении **обязательно** [очищайте кэш LuCI](https://podkop.net/docs/clear-browser-cache/).
+- После обновления проверяйте конфигурацию — она может изменяться между версиями.
+- При старте NetShift модифицируется конфигурация Dnsmasq.
+- NetShift изменяет конфигурацию sing-box. Если вы используете собственную конфигурацию, заранее сохраните её.
 
-## Скриншоты
+### Системные требования
+- Требуется OpenWrt 24.10 или выше.
+- Необходимо минимум 25 МБ свободного места на устройстве. Устройства с флеш-памятью 16 МБ не поддерживаются.
 
-> Интерфейс доступен в LuCI: **Services → NetShift**.
-> _(скриншоты будут добавлены)_
+### Важные ограничения и особенности
+- Если установлен Getdomains, его [необходимо удалить](https://github.com/itdoginfo/domain-routing-openwrt?tab=readme-ov-file#скрипт-для-удаления)
+- Dashboard доступен только при подключении по HTTP (из-за особенностей Clash API). При использовании HTTPS или домена работа может быть недоступна.
 
-## Установка
+### Поддержка и диагностика
+- [Руководство по диагностике](https://podkop.net/docs/diagnostics/)
+- Актуальные изменения публикуются в [Telegram-чате](https://t.me/itdogchat/81758/420321). Пожалуйста, ознакомьтесь с закрепленными сообщениями.
+- При возникновении проблем оставляйте технически грамотный фидбэк в GitHub Issues и Telegram-чате.
 
-Полная инструкция — в [документации](https://podkop.net/docs/install/).
 
-Для установки и обновления достаточно одного скрипта:
+# Документация
+https://podkop.net/
 
-```sh
+# Установка NetShift
+Полная информация в [документации](https://podkop.net/docs/install/)
+
+Для установки и обновления достаточно выполнить один скрипт:
+```
 sh <(wget -O - https://raw.githubusercontent.com/yandexru45/podkop-evolution/refs/heads/main/install.sh)
 ```
 
-> [!IMPORTANT]
-> Перед установкой ознакомьтесь с разделом [**Перед установкой**](#перед-установкой) ниже — там системные требования и важные ограничения.
+## Новое в NetShift: Подписки (Subscription)
 
-## Перед установкой
+Добавлена поддержка subscription URL — ссылки подписки от провайдера прокси. При выборе типа конфигурации **Subscription** в LuCI:
 
-<details open>
-<summary><b>Системные требования</b></summary>
-
-- OpenWrt **24.10** или выше.
-- Минимум **25 МБ** свободного места. Устройства с флеш-памятью 16 МБ не поддерживаются.
-
-</details>
-
-<details>
-<summary><b>Обновления и конфигурация</b></summary>
-
-- При обновлении **обязательно** [очищайте кэш LuCI](https://podkop.net/docs/clear-browser-cache/).
-- После обновления проверяйте конфигурацию — она может меняться между версиями.
-- При старте NetShift модифицирует конфигурацию Dnsmasq.
-- NetShift изменяет конфигурацию sing-box. Если используете собственную — заранее сохраните её.
-
-</details>
-
-<details>
-<summary><b>Ограничения и особенности</b></summary>
-
-- Если установлен **Getdomains**, его [необходимо удалить](https://github.com/itdoginfo/domain-routing-openwrt?tab=readme-ov-file#скрипт-для-удаления).
-- **Dashboard** работает только по HTTP (особенность Clash API). По HTTPS или через домен может быть недоступен.
-
-</details>
-
-<details>
-<summary><b>Поддержка и диагностика</b></summary>
-
-- [Руководство по диагностике](https://podkop.net/docs/diagnostics/)
-- Актуальные изменения — в [Telegram-чате](https://t.me/itdogchat/81758/420321) (читайте закреплённые сообщения).
-- При проблемах оставляйте технически грамотный фидбэк в GitHub Issues и Telegram-чате.
-
-</details>
-
-## Subscription URL
-
-Поддержка ссылок подписки от провайдера прокси. При выборе типа конфигурации **Subscription** в LuCI:
-
-- Введите URL подписки от вашего провайдера.
-- Выберите интервал автообновления (от 30 минут до 1 дня).
-- Все серверы из подписки автоматически появятся в дашборде.
-- Автовыбор лучшего сервера по задержке (URLTest) и ручное переключение.
+- Введите URL подписки от вашего провайдера
+- Выберите интервал автообновления (от 30 минут до 1 дня)
+- Все серверы из подписки автоматически появятся в дашборде
+- Автоматический выбор лучшего сервера по задержке (URLTest)
+- Ручное переключение между серверами через дашборд
 
 При скачивании подписки отправляются заголовки:
+- `User-Agent: singbox/<версия>`
+- `X-HWID` — уникальный идентификатор роутера
+- `X-Device-OS: OpenWrt Linux`
+- `X-Device-Model` — модель роутера
+- `X-Ver-OS` — версия ядра
 
-| Заголовок | Значение |
-|---|---|
-| `User-Agent` | `singbox/<версия>` |
-| `X-HWID` | уникальный идентификатор роутера |
-| `X-Device-OS` | `OpenWrt Linux` |
-| `X-Device-Model` | модель роутера |
-| `X-Ver-OS` | версия ядра |
-
-<details>
-<summary><b>Пример настройки через UCI</b></summary>
-
-```sh
+Пример конфигурации через UCI:
+```
 uci set netshift.my_sub=section
 uci set netshift.my_sub.connection_type='proxy'
 uci set netshift.my_sub.proxy_config_type='subscription'
@@ -122,83 +75,69 @@ uci commit netshift
 ```
 
 Ручное обновление подписки:
-
-```sh
+```
 /usr/bin/netshift subscription_update
 ```
 
-</details>
+## Новое в NetShift: ядро sing-box-extended (xhttp)
 
-## Ядро sing-box-extended (xhttp)
-
-Переключение ядра между стабильным sing-box и сборкой **sing-box-extended** прямо из вкладки **Diagnostics** в LuCI:
+NetShift позволяет переключать ядро между стабильным sing-box и сборкой
+sing-box-extended прямо из вкладки **Diagnostics** в LuCI:
 
 - **Install extended** — установить расширенное ядро sing-box-extended.
-- **Install stable** — вернуться на стабильное ядро.
+- **Install stable** — вернуться на стабильное ядро sing-box.
 
-После установки расширенного ядра становится доступен клиентский транспорт **xhttp**. Поддерживается только клиентский режим (не серверный). По умолчанию ставится стабильное ядро — extended включается по желанию.
+После установки расширенного ядра становится доступен клиентский транспорт
+**xhttp**. Поддерживается только клиентский режим xhttp (не серверный).
 
-## Миграция
+## Изменения 0.8.0 — переименование в NetShift
+Начиная с версии 0.8.0 проект переименован из `podkop` в **NetShift**. Пакет
+теперь называется `netshift` (бинарь `/usr/bin/netshift`), а конфигурация
+переехала на `/etc/config/netshift`. LuCI-приложение — `luci-app-netshift`.
 
-<details>
-<summary><b>0.8.0 — переименование в NetShift</b></summary>
+При обновлении старый конфиг `/etc/config/podkop` автоматически мигрируется в
+`/etc/config/netshift`, а резервная копия сохраняется в
+`/etc/config/podkop.bak.pre-netshift`.
 
-С версии 0.8.0 проект переименован из `podkop` в **NetShift**:
+## Изменения 0.7.0
+Начиная с версии 0.7.0 изменена структура конфига `/etc/config/netshift`
+(на тот момент — `/etc/config/podkop`). Старые значения несовместимы с новыми.
+Нужно заново настроить NetShift.
 
-- пакет — `netshift` (бинарь `/usr/bin/netshift`);
-- конфигурация — `/etc/config/netshift`;
-- LuCI-приложение — `luci-app-netshift`.
+Скрипт установки обнаружит старую версию и предупредит вас об этом. Если вы согласитесь, то он сделает автоматически написанное ниже.
 
-При обновлении старый конфиг `/etc/config/podkop` **автоматически мигрируется** в `/etc/config/netshift`, резервная копия сохраняется в `/etc/config/podkop.bak.pre-netshift`. VPN продолжит работать без перенастройки.
+При обновлении вручную нужно:
 
-</details>
-
-<details>
-<summary><b>0.7.0 — несовместимый формат конфига</b></summary>
-
-С версии 0.7.0 изменена структура конфига (на тот момент — `/etc/config/podkop`). Старые значения несовместимы — нужно настроить заново. Скрипт установки обнаружит старую версию и предложит сделать это автоматически.
-
-Вручную:
-
-```sh
-# 1. Забэкапить старый конфиг
-mv /etc/config/netshift /etc/config/netshift-070
-# 2. Стянуть новый дефолтный конфиг
-wget -O /etc/config/netshift https://raw.githubusercontent.com/yandexru45/podkop-evolution/refs/heads/main/netshift/files/etc/config/netshift
-# 3. Настроить заново через LuCI или UCI
+0. Не ныть в issue и чатик.
+1. Забэкапить старый конфиг:
 ```
+mv /etc/config/netshift /etc/config/netshift-070
+```
+2. Стянуть новый дефолтный конфиг:
+```
+wget -O /etc/config/netshift https://raw.githubusercontent.com/yandexru45/podkop-evolution/refs/heads/main/netshift/files/etc/config/netshift
+```
+3. Настроить заново ваш NetShift через Luci или UCI.
 
-</details>
+# ToDo
 
-## Документация
+> [!IMPORTANT]  
+> Pull Request принимаются только после согласования с авторами в Telegram-чате. На данный момент PR без предварительного обсуждения не рассматриваются.
 
-Полная документация: **<https://podkop.net/>**
-
-## Дорожная карта
-
-> [!IMPORTANT]
-> Pull Request принимаются только после согласования с авторами в [Telegram-чате](https://t.me/itdogchat/81758/420321). PR без предварительного обсуждения не рассматриваются.
-
-- [x] [Подписка (Subscription URL)](https://github.com/itdoginfo/podkop/issues/118) — **реализовано**
-- [x] Переключаемое ядро sing-box-extended + xhttp — **реализовано**
+## Будущее
+- [x] [Подписка](https://github.com/itdoginfo/podkop/issues/118) — **реализовано в NetShift!**
 - [ ] Весь трафик в sing-box и маршрутизация полностью на его уровне.
-- [ ] Фоновый режим со слежением за состоянием sing-box и авто-restore dnsmasq при падении. [Issue](https://github.com/itdoginfo/podkop/issues/111)
-- [ ] Опция, ограничивающая доступ к DoH-серверам.
-- [ ] IPv6 (после наполнения Wiki).
+- [ ] При успешном запуске переходит в фоновый режим и следит за состоянием sing-box. Если вдруг идёт exit 1, выполняется dnsmasq restore и снова следит за состоянием. [Issue](https://github.com/itdoginfo/podkop/issues/111)
+- [ ] Галочка, которая режет доступ к doh серверам.
+- [ ] IPv6. Только после наполнения Wiki.
 
-**Тесты:**
-
-- [ ] Unit-тесты (BATS)
-- [ ] Интеграционные тесты бэкенда (OpenWrt rootfs + BATS)
-
-## Благодарности
-
-- [itdoginfo/podkop](https://github.com/itdoginfo/podkop) — исходный проект, форком которого является NetShift.
-- [sing-box](https://github.com/SagerNet/sing-box) — движок маршрутизации.
-
-## Лицензия
-
-GPL-2.0-or-later — см. [LICENSE](LICENSE).
+## Тесты
+- [ ] Unit тесты (BATS)
+- [ ] Интеграционные тесты бекенда (OpenWrt rootfs + BATS)
 
 > [!WARNING]
-> Программное обеспечение предоставляется «как есть», без каких-либо явных или подразумеваемых гарантий, включая гарантии коммерческой пригодности и соответствия определённой цели. Правообладатели и участники проекта не несут ответственности за любые убытки, возникшие в результате использования ПО.
+> Данное программное обеспечение предоставляется «как есть», без каких-либо явных или подразумеваемых гарантий, включая гарантии коммерческой пригодности и соответствия определённой цели. 
+> 
+> Правообладатели и участники проекта не несут ответственности за любые прямые, косвенные, случайные, специальные или иные убытки, возникшие в результате использования программного обеспечения, включая потерю данных, прибыли или прерывание деятельности, даже если они были предупреждены о возможности таких последствий.
+
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/itdoginfo/podkop)
