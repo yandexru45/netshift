@@ -93,7 +93,8 @@ This pattern (`... Aborted." "fatal"; exit 1`) appears throughout the CLI; prese
 - busybox `sed` lacks `\x` hex escapes. Build literal bytes with `printf` octal escapes (e.g. the UTF-8 BOM `printf '\357\273\277'` in `normalize_subscription_to_singbox`).
 - Convert CRLF→LF with `convert_crlf_to_lf` before parsing downloaded lists.
 - Strip a leading UTF-8 BOM before base64 charset detection.
-- Some diagnostic strings contain **intentional mojibake** (CP1251-encoded emoji / box-drawing in `list_update`, `subscription_update`, `global_check`, `check_nft`). These render correctly on the target/LuCI. **Preserve the existing byte sequences verbatim** when editing those lines — do not "fix" or re-encode them.
+- The diagnostic strings in `usr/bin/netshift` (emoji / box-drawing in `list_update`, `subscription_update`, `global_check`, `check_nft`, e.g. `📡 🛠️ ✅ ❌ ⚠️ ➡️ 🧱 🥸 📄` and `━` separators) are **valid UTF-8** and must stay valid UTF-8 — they render correctly on the device (SSH/UTF-8 terminal) and LuCI. They are **not** intentional mojibake.
+- These were once corrupted by a UTF-8→CP1251 double-encode (real UTF-8 bytes read as CP1251 and re-saved as UTF-8), which made them print as `рџ…`/`в”…` garbage; task-004 repaired them. **Never open/save `usr/bin/netshift` in a non-UTF-8 editor or run it through a CP1251 codepage** — doing so reintroduces the `рџ…`/`в”…`/`вЂ…` mojibake. Edit it as UTF-8 only.
 
 ## 9. New constants
 

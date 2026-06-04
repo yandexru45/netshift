@@ -132,6 +132,35 @@ test_syntax() {
         fi
     done
 
+    # Parse-check the CLI dispatcher itself (not just the libs).
+    local cli="${NETSHIFT_SRC}/usr/bin/netshift"
+    if [ ! -r "$cli" ]; then
+        fail "File not found: $cli"
+    elif ash -n "$cli" 2>&1; then
+        pass "Syntax OK: $(basename "$cli")"
+    else
+        fail "Syntax ERROR in $(basename "$cli")" "$(ash -n "$cli" 2>&1)"
+    fi
+
+    # Guard against re-introduction of the task-004 double-encode mojibake
+    # (UTF-8 emoji/box-drawing read as CP1251 and re-saved as UTF-8). The
+    # corrupted bytes render as рџ… / в”… / вЂ…; build the byte markers with
+    # printf octal escapes (busybox sed/grep lack \x).
+    if [ -r "$cli" ]; then
+        local mojibake_found=0
+        local marker
+        for marker in '\321\200\321\237' '\320\262\342\200\235' '\320\262\320\202'; do
+            if grep -qF "$(printf "$marker")" "$cli" 2>/dev/null; then
+                mojibake_found=1
+            fi
+        done
+        if [ "$mojibake_found" -eq 0 ]; then
+            pass "netshift CLI free of double-encode mojibake"
+        else
+            fail "netshift CLI contains residual mojibake (рџ/в”/вЂ)"
+        fi
+    fi
+
     # Test that libraries can be sourced (requires /lib/functions stubs).
     # Use a temp script to avoid fragile shell quoting.
     local source_test="/tmp/netshift-source-test-$$.sh"

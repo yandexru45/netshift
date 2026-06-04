@@ -48,4 +48,9 @@ append recurring findings; keep under ~200 lines.
 - Routing code that ignores `subscription_outbound_is_unavailable` (traffic
   leak when a subscription is down).
 - Scope creep: unrelated file churn (e.g. lockfile churn) flagged as Minor.
-- Corrupted mojibake bytes in diagnostic strings (should be byte-preserved).
+- Diagnostic strings in `usr/bin/netshift` are valid UTF-8 emoji/box-drawing —
+  must stay UTF-8, never CP1251 (task-004 fixed a double-encode). For
+  mojibake-repair reviews, prove ASCII-byte preservation byte-safely (Python:
+  decode HEAD blob vs working tree, strip `[^\x00-\x7F]` per line, expect 0
+  mismatched lines); beware PowerShell text pipelines which produce false UTF-16
+  diffs.

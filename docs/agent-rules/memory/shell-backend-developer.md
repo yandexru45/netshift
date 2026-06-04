@@ -14,10 +14,14 @@ findings; keep under ~200 lines.
   half-built config.
 - **busybox sed lacks `\x` escapes** — use printf-octal workarounds (see
   `helpers.sh` `convert_crlf_to_lf` and BOM stripping). Don't assume GNU sed.
-- **Intentional mojibake**: some diagnostic strings (list_update /
-  subscription_update / global_check) store emoji/box-drawing as corrupted
-  CP1251-ish bytes (e.g. `рџ”„`, `вњ…`, `в”Ѓ`). Preserve the exact existing bytes
-  when editing those lines or rendered output changes.
+- **Diagnostic strings are UTF-8, NOT mojibake** (corrected by task-004). The
+  emoji/box-drawing in `usr/bin/netshift` (`global_check`, `list_update`,
+  `subscription_update`, `check_nft`: `📡 🛠️ ✅ ❌ ⚠️ ➡️ 🧱 🥸 📄 ━`) are valid
+  UTF-8 and must STAY valid UTF-8. They were once double-encoded (UTF-8 read as
+  CP1251, re-saved as UTF-8 → printed `рџ…`/`в”…`/`вЂ…`). Never open/save that file
+  in a non-UTF-8 editor or pass it through CP1251 — it re-corrupts. The earlier
+  "preserve the corrupted bytes" note here was the WRONG guidance that protected
+  the bug.
 
 ## Conventions (follow exactly)
 
@@ -83,3 +87,19 @@ findings; keep under ~200 lines.
 - VPN `domain_resolver` uses wrong variable `$dns_server`.
 - `check_nft` references stale set names (`netshift_domains`) / UCI options that
   don't exist elsewhere — likely copied diagnostic cruft.
+
+## task-004: double-encode repair recipe (reusable)
+
+- To reverse a UTF-8→CP1251 double-encode losslessly: `text =
+  bytes.decode("utf-8"); fixed = text.encode("cp1251").decode("utf-8")` then
+  write `fixed.encode("utf-8")`. ASCII bytes pass through; verify 0
+  cp1251-unmappable chars and that ASCII-stripped lines are byte-identical
+  before/after (proves no code moved). Result was exactly 114 lines, all
+  non-ASCII-only. LF/no-BOM preserved.
+- On Windows here, `python3.exe` is the MS Store stub — use `python` (Python
+  3.11 at `...\Programs\Python\Python311`). Don't `print()` emoji to the
+  PowerShell console (cp1251 codepage mangles it / raises); write results to a
+  UTF-8 file and read it back.
+- `test_syntax` in `tests/entrypoint.sh` now also `ash -n`'s `usr/bin/netshift`
+  and asserts no residual `рџ`/`в”`/`вЂ` markers (built via `printf` octal, since
+  busybox grep lacks `\x`). Guards against re-introducing the mojibake.

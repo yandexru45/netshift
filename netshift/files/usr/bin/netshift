@@ -1080,7 +1080,7 @@ ensure_nft_ready_for_list_update() {
 
 
 list_update() {
-    echolog "рџ”„ Starting lists update..."
+    echolog "🔄 Starting lists update..."
 
     local nslookup_timeout=3
     local nslookup_attempts=10
@@ -1093,7 +1093,7 @@ list_update() {
     # DNS Check
     for i in $(seq 1 $nslookup_attempts); do
         if nslookup -timeout=$nslookup_timeout openwrt.org > /dev/null 2>&1; then
-            echolog "вњ… DNS check passed"
+            echolog "✅ DNS check passed"
             break
         fi
         echolog "DNS is unavailable [$i/$nslookup_attempts]"
@@ -1101,7 +1101,7 @@ list_update() {
     done
 
     if [ "$i" -eq $nslookup_attempts ]; then
-        echolog "вќЊ DNS check failed after $nslookup_attempts attempts"
+        echolog "❌ DNS check failed after $nslookup_attempts attempts"
         return 1
     fi
 
@@ -1112,12 +1112,12 @@ list_update() {
 
         if [ -n "$service_proxy_address" ]; then
             if curl -s -x "http://$service_proxy_address" -m $curl_timeout https://github.com > /dev/null; then
-                echolog "вњ… GitHub connection check passed (via proxy)"
+                echolog "✅ GitHub connection check passed (via proxy)"
                 break
             fi
         else
             if curl -s -m $curl_timeout https://github.com > /dev/null; then
-                echolog "вњ… GitHub connection check passed"
+                echolog "✅ GitHub connection check passed"
                 break
             fi
         fi
@@ -1130,16 +1130,16 @@ list_update() {
     done
 
     if [ "$i" -eq $curl_attempts ]; then
-        echolog "вќЊ GitHub connection check failed after $curl_attempts attempts"
+        echolog "❌ GitHub connection check failed after $curl_attempts attempts"
         return 1
     fi
 
     if ! ensure_nft_ready_for_list_update; then
-        echolog "вќЊ NFT table is unavailable, cannot update lists"
+        echolog "❌ NFT table is unavailable, cannot update lists"
         return 1
     fi
 
-    echolog "рџ“Ґ Downloading and processing lists..."
+    echolog "📥 Downloading and processing lists..."
 
     local update_failed=0
     config_foreach import_community_subnet_lists "section" || update_failed=1
@@ -1147,15 +1147,15 @@ list_update() {
     config_foreach import_subnets_from_remote_subnet_lists "section" || update_failed=1
 
     if [ "$update_failed" -eq 0 ]; then
-        echolog "вњ… Lists update completed successfully"
+        echolog "✅ Lists update completed successfully"
     else
-        echolog "вќЊ Lists update failed"
+        echolog "❌ Lists update failed"
         return 1
     fi
 }
 
 subscription_update() {
-    echolog "рџ”„ Starting subscription update..."
+    echolog "🔄 Starting subscription update..."
 
     local has_subscription=0
     local updated_sections=0
@@ -1178,7 +1178,7 @@ subscription_update() {
     config_foreach _check_subscription_section "section"
 
     if [ "$has_subscription" -eq 0 ]; then
-        echolog "в„№пёЏ No subscription sections found, nothing to update"
+        echolog "ℹ️ No subscription sections found, nothing to update"
         return 0
     fi
 
@@ -1200,21 +1200,21 @@ subscription_update() {
 
         config_get subscription_url "$section" "subscription_url"
         if [ -z "$subscription_url" ]; then
-            echolog "вќЊ Subscription URL not set for section '$section'"
+            echolog "❌ Subscription URL not set for section '$section'"
             failed_sections=$((failed_sections + 1))
             return
         fi
 
         mkdir -p "$TMP_SUBSCRIPTION_FOLDER"
         if ! ensure_subscription_cache_dir; then
-            echolog "вќЊ Subscription cache directory is unavailable for section '$section'"
+            echolog "❌ Subscription cache directory is unavailable for section '$section'"
             failed_sections=$((failed_sections + 1))
             return
         fi
         subscription_json_path="$(get_subscription_json_path "$section")"
         subscription_url_cache_path="$(get_subscription_url_cache_path "$section")"
 
-        echolog "рџ“Ґ Updating subscription for section '$section'..."
+        echolog "📥 Updating subscription for section '$section'..."
 
         service_proxy_address="$(get_subscription_download_proxy_address "$section" "runtime" || echo '')"
         if [ -n "$service_proxy_address" ]; then
@@ -1224,7 +1224,7 @@ subscription_update() {
         fi
 
         if ! wait_for_subscription_connectivity "$section" "$subscription_url" "$service_proxy_address" 6 5 5; then
-            echolog "вќЊ Subscription source is not reachable for section '$section'"
+            echolog "❌ Subscription source is not reachable for section '$section'"
             failed_sections=$((failed_sections + 1))
             return
         fi
@@ -1244,32 +1244,32 @@ subscription_update() {
                 .type != "block"
             )] | length' "$subscription_json_path" 2>/dev/null)
 
-            echolog "вњ… Subscription updated for section '$section': $outbounds_count outbounds"
+            echolog "✅ Subscription updated for section '$section': $outbounds_count outbounds"
             ;;
         2)
-            echolog "в„№пёЏ Subscription for section '$section' is unchanged"
+            echolog "ℹ️ Subscription for section '$section' is unchanged"
             return
             ;;
         10)
-            echolog "вќЊ Failed to prepare subscription cache for section '$section'"
+            echolog "❌ Failed to prepare subscription cache for section '$section'"
             ;;
         11)
-            echolog "вќЊ Failed to create temporary subscription download file for section '$section'"
+            echolog "❌ Failed to create temporary subscription download file for section '$section'"
             ;;
         12)
-            echolog "вќЊ Failed to download subscription body for section '$section'"
+            echolog "❌ Failed to download subscription body for section '$section'"
             ;;
         13)
-            echolog "вќЊ Downloaded subscription for section '$section' is invalid"
+            echolog "❌ Downloaded subscription for section '$section' is invalid"
             ;;
         14)
-            echolog "вќЊ Downloaded subscription for section '$section' is unchanged and still has no usable outbounds"
+            echolog "❌ Downloaded subscription for section '$section' is unchanged and still has no usable outbounds"
             ;;
         15)
-            echolog "вќЊ Failed to persist subscription cache for section '$section'"
+            echolog "❌ Failed to persist subscription cache for section '$section'"
             ;;
         *)
-            echolog "вќЊ Failed to update subscription for section '$section': internal error rc=$update_result"
+            echolog "❌ Failed to update subscription for section '$section': internal error rc=$update_result"
             ;;
         esac
 
@@ -1282,26 +1282,26 @@ subscription_update() {
 
     if [ "$updated_sections" -eq 0 ]; then
         if [ "$failed_sections" -gt 0 ]; then
-            echolog "вќЊ Subscription update finished with errors; keeping the last working cache"
+            echolog "❌ Subscription update finished with errors; keeping the last working cache"
             return 1
         fi
 
-        echolog "в„№пёЏ Subscription update completed: no changes detected"
+        echolog "ℹ️ Subscription update completed: no changes detected"
         return 0
     fi
 
-    echolog "рџ”„ Restarting netshift to apply updated subscriptions..."
+    echolog "🔄 Restarting netshift to apply updated subscriptions..."
     restart
     restart_rc=$?
     if [ "$restart_rc" -ne 0 ]; then
-        echolog "вќЊ Subscription was downloaded, but netshift restart failed"
+        echolog "❌ Subscription was downloaded, but netshift restart failed"
         return "$restart_rc"
     fi
 
     if [ "$failed_sections" -gt 0 ]; then
-        echolog "вњ… Subscription update applied for changed sections; failed sections kept their previous cache"
+        echolog "✅ Subscription update applied for changed sections; failed sections kept their previous cache"
     else
-        echolog "вњ… Subscription update completed"
+        echolog "✅ Subscription update completed"
     fi
 }
 
@@ -1757,10 +1757,10 @@ configure_outbound_handler() {
         config=$(sing_box_cm_add_interface_outbound "$config" "$outbound_tag" "$interface_name" "$domain_resolver_tag")
         ;;
     block)
-        log "Connection type 'block' detected for the $section section вЂ“ no outbound will be created (handled via reject route rules)"
+        log "Connection type 'block' detected for the $section section – no outbound will be created (handled via reject route rules)"
         ;;
     exclusion)
-        log "Connection type 'exclusion' detected for the $section section вЂ“ no outbound will be created (handled via route rules)"
+        log "Connection type 'exclusion' detected for the $section section – no outbound will be created (handled via route rules)"
         ;;
     *)
         log "Unknown connection type '$connection_type' for the $section section. Aborted." "fatal"
@@ -2791,7 +2791,7 @@ check_nft() {
 
     # Check if table exists
     if ! nft list table inet "$NFT_TABLE_NAME" > /dev/null 2>&1; then
-        nolog "вќЊ $NFT_TABLE_NAME not found"
+        nolog "❌ $NFT_TABLE_NAME not found"
         return 1
     fi
 
@@ -3445,9 +3445,9 @@ global_check() {
     local NETSHIFT_LUCI_VERSION="Unknown"
     [ -n "$1" ] && NETSHIFT_LUCI_VERSION="$1"
 
-    print_global "рџ“Ў Global check run!"
-    print_global "в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ"
-    print_global "рџ› пёЏ System info"
+    print_global "📡 Global check run!"
+    print_global "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_global "🛠️ System info"
 
     local system_info_json
     system_info_json=$(get_system_info)
@@ -3462,17 +3462,17 @@ global_check() {
         openwrt_version=$(echo "$system_info_json" | jq -r '.openwrt_version // "unknown"')
         device_model=$(echo "$system_info_json" | jq -r '.device_model // "unknown"')
 
-        print_global "рџ•іпёЏ NetShift:      $netshift_version (latest: $netshift_latest_version)"
-        print_global "рџ•іпёЏ LuCI App:      $luci_app_version"
-        print_global "рџ“¦ Sing-box:      $sing_box_version"
-        print_global "рџ›њ OpenWrt:       $openwrt_version"
-        print_global "рџ›њ Device:        $device_model"
+        print_global "🕳️ NetShift:      $netshift_version (latest: $netshift_latest_version)"
+        print_global "🕳️ LuCI App:      $luci_app_version"
+        print_global "📦 Sing-box:      $sing_box_version"
+        print_global "🛜 OpenWrt:       $openwrt_version"
+        print_global "🛜 Device:        $device_model"
     else
-        print_global "вќЊ Failed to get system info"
+        print_global "❌ Failed to get system info"
     fi
 
-    print_global "в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ"
-    print_global "вћЎпёЏ DNS status"
+    print_global "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_global "➡️ DNS status"
 
     local dns_check_json
     dns_check_json=$(check_dns_available)
@@ -3491,24 +3491,24 @@ global_check() {
         # Bootstrap DNS
         if [ -n "$bootstrap_dns_server" ]; then
             if [ "$bootstrap_dns_status" -eq 1 ]; then
-                print_global "вњ… Bootstrap DNS: $bootstrap_dns_server"
+                print_global "✅ Bootstrap DNS: $bootstrap_dns_server"
             else
-                print_global "вќЊ Bootstrap DNS: $bootstrap_dns_server"
+                print_global "❌ Bootstrap DNS: $bootstrap_dns_server"
             fi
         fi
 
         # DNS server status
         if [ "$dns_status" -eq 1 ]; then
-            print_global "вњ… Main DNS: $dns_server [$dns_type]"
+            print_global "✅ Main DNS: $dns_server [$dns_type]"
         else
-            print_global "вќЊ Main DNS: $dns_server [$dns_type]"
+            print_global "❌ Main DNS: $dns_server [$dns_type]"
         fi
 
         # DNS on router
         if [ "$dns_on_router" -eq 1 ]; then
-            print_global "вњ… DNS on router"
+            print_global "✅ DNS on router"
         else
-            print_global "вќЊ DNS on router"
+            print_global "❌ DNS on router"
         fi
 
         # DHCP configuration check
@@ -3516,20 +3516,20 @@ global_check() {
         config_get dont_touch_dhcp "settings" "dont_touch_dhcp"
 
         if [ "$dont_touch_dhcp" = "1" ]; then
-            print_global "вљ пёЏ dont_touch_dhcp is enabled. рџ“„ DHCP config:"
+            print_global "⚠️ dont_touch_dhcp is enabled. 📄 DHCP config:"
             awk '/^config /{p=($2=="dnsmasq")} p' /etc/config/dhcp
         elif [ "$dhcp_config_status" -eq 0 ]; then
-            print_global "вќЊ DHCP configuration differs from template. рџ“„ DHCP config:"
+            print_global "❌ DHCP configuration differs from template. 📄 DHCP config:"
             awk '/^config /{p=($2=="dnsmasq")} p' /etc/config/dhcp
         else
-            print_global "вњ… /etc/config/dhcp"
+            print_global "✅ /etc/config/dhcp"
         fi
     else
-        print_global "вќЊ Failed to get DNS info"
+        print_global "❌ Failed to get DNS info"
     fi
 
-    print_global "в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ"
-    print_global "рџ“¦ Sing-box status"
+    print_global "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_global "📦 Sing-box status"
 
     local singbox_check_json
     singbox_check_json=$(check_sing_box)
@@ -3545,46 +3545,46 @@ global_check() {
         sing_box_ports_listening=$(echo "$singbox_check_json" | jq -r '.sing_box_ports_listening // 0')
 
         if [ "$sing_box_installed" -eq 1 ]; then
-            print_global "вњ… Sing-box installed"
+            print_global "✅ Sing-box installed"
         else
-            print_global "вќЊ Sing-box installed"
+            print_global "❌ Sing-box installed"
         fi
 
         if [ "$sing_box_version_ok" -eq 1 ]; then
-            print_global "вњ… Sing-box version is compatible (newer than 1.12.4)"
+            print_global "✅ Sing-box version is compatible (newer than 1.12.4)"
         else
-            print_global "вќЊ Sing-box version is not compatible (older than 1.12.4)"
+            print_global "❌ Sing-box version is not compatible (older than 1.12.4)"
         fi
 
         if [ "$sing_box_service_exist" -eq 1 ]; then
-            print_global "вњ… Sing-box service exist"
+            print_global "✅ Sing-box service exist"
         else
-            print_global "вќЊ Sing-box service exist"
+            print_global "❌ Sing-box service exist"
         fi
 
         if [ "$sing_box_autostart_disabled" -eq 1 ]; then
-            print_global "вњ… Sing-box autostart disabled"
+            print_global "✅ Sing-box autostart disabled"
         else
-            print_global "вќЊ Sing-box autostart disabled"
+            print_global "❌ Sing-box autostart disabled"
         fi
 
         if [ "$sing_box_process_running" -eq 1 ]; then
-            print_global "вњ… Sing-box process running"
+            print_global "✅ Sing-box process running"
         else
-            print_global "вќЊ Sing-box process running"
+            print_global "❌ Sing-box process running"
         fi
 
         if [ "$sing_box_ports_listening" -eq 1 ]; then
-            print_global "вњ… Sing-box listening ports"
+            print_global "✅ Sing-box listening ports"
         else
-            print_global "вќЊ Sing-box listening ports"
+            print_global "❌ Sing-box listening ports"
         fi
     else
-        print_global "вќЊ Failed to get sing-box info"
+        print_global "❌ Failed to get sing-box info"
     fi
 
-    print_global "в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ"
-    print_global "рџ§± NFT rules status"
+    print_global "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_global "🧱 NFT rules status"
 
     local nft_check_json
     nft_check_json=$(check_nft_rules)
@@ -3602,78 +3602,78 @@ global_check() {
         rules_other_mark_exist=$(echo "$nft_check_json" | jq -r '.rules_other_mark_exist // 0')
 
         if [ "$table_exist" -eq 1 ]; then
-            print_global "вњ… Table exist"
+            print_global "✅ Table exist"
         else
-            print_global "вќЊ Table exist"
+            print_global "❌ Table exist"
         fi
 
         if [ "$rules_mangle_exist" -eq 1 ]; then
-            print_global "вњ… Rules mangle exist"
+            print_global "✅ Rules mangle exist"
         else
-            print_global "вќЊ Rules mangle exist"
+            print_global "❌ Rules mangle exist"
         fi
 
         if [ "$rules_mangle_counters" -eq 1 ]; then
-            print_global "вњ… Rules mangle counters"
+            print_global "✅ Rules mangle counters"
         else
-            print_global "вљ пёЏ  Rules mangle counters"
+            print_global "⚠️  Rules mangle counters"
         fi
 
         if [ "$rules_mangle_output_exist" -eq 1 ]; then
-            print_global "вњ… Rules mangle output exist"
+            print_global "✅ Rules mangle output exist"
         else
-            print_global "вќЊ Rules mangle output exist"
+            print_global "❌ Rules mangle output exist"
         fi
 
         if [ "$rules_mangle_output_counters" -eq 1 ]; then
-            print_global "вњ… Rules mangle output counters"
+            print_global "✅ Rules mangle output counters"
         else
-            print_global "вљ пёЏ  Rules mangle output counters"
+            print_global "⚠️  Rules mangle output counters"
         fi
 
         if [ "$rules_proxy_exist" -eq 1 ]; then
-            print_global "вњ… Rules proxy exist"
+            print_global "✅ Rules proxy exist"
         else
-            print_global "вќЊ Rules proxy exist"
+            print_global "❌ Rules proxy exist"
         fi
 
         if [ "$rules_proxy_counters" -eq 1 ]; then
-            print_global "вњ… Rules proxy counters"
+            print_global "✅ Rules proxy counters"
         else
-            print_global "вљ пёЏ  Rules proxy counters"
+            print_global "⚠️  Rules proxy counters"
         fi
 
         if [ "$rules_other_mark_exist" -eq 1 ]; then
-            print_global "вљ пёЏ  Additional marking rules found:"
+            print_global "⚠️  Additional marking rules found:"
             nft list ruleset | awk '/table inet '"$NFT_TABLE_NAME"'/{flag=1; next} /^table/{flag=0} !flag' | grep -E "mark set|meta mark"
         else
-            print_global "вњ… Additional marking rules found"
+            print_global "✅ Additional marking rules found"
         fi
     else
-        print_global "вќЊ Failed to get NFT rules info"
+        print_global "❌ Failed to get NFT rules info"
     fi
 
-    print_global "в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ"
-    print_global "рџ“„ NetShift config"
+    print_global "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_global "📄 NetShift config"
     show_config
 
-    # print_global "в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ"
-    # print_global "рџ”§ System check"
+    # print_global "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    # print_global "🔧 System check"
 
     # if grep -E "^nameserver\s+([0-9]{1,3}\.){3}[0-9]{1,3}" "$RESOLV_CONF" | grep -vqE "127\.0\.0\.1|0\.0\.0\.0"; then
-    #     print_global "вќЊ /etc/resolv.conf contains external nameserver:"
+    #     print_global "❌ /etc/resolv.conf contains external nameserver:"
     #     cat /etc/resolv.conf
     #     echo ""
     # else
-    #     print_global "вњ… /etc/resolv.conf"
+    #     print_global "✅ /etc/resolv.conf"
     # fi
 
-    # print_global "в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ"
-    # print_global "рџ§± NFT table"
+    # print_global "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    # print_global "🧱 NFT table"
     # check_nft
 
-    print_global "в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ"
-    print_global "рџ“„ WAN config"
+    print_global "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_global "📄 WAN config"
     if uci show network.wan > /dev/null 2>&1; then
         awk '
             /^config / {
@@ -3694,20 +3694,20 @@ global_check() {
             }
         ' /etc/config/network
     else
-        print_global "вќЊ WAN configuration not found"
+        print_global "❌ WAN configuration not found"
     fi
 
     if uci show network | grep -q endpoint_host; then
         uci show network | grep endpoint_host | cut -d'=' -f2 | tr -d "'\" " | while read -r host; do
             if [ "$host" = "engage.cloudflareclient.com" ]; then
-                print_global "вљ пёЏ WARP detected: $host"
+                print_global "⚠️ WARP detected: $host"
                 continue
             fi
 
             ip_prefix=$(echo "$host" | cut -d'.' -f1,2)
             if echo "$CLOUDFLARE_OCTETS" | grep -wq "$ip_prefix"; then
-                print_global "в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ"
-                print_global "вљ пёЏ WARP detected: $host"
+                print_global "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                print_global "⚠️ WARP detected: $host"
             fi
         done
     fi
@@ -3718,19 +3718,19 @@ global_check() {
             allowed_ips=$(uci get "${peer_section}.allowed_ips" 2> /dev/null)
 
             if [ "$allowed_ips" = "0.0.0.0/0" ]; then
-                print_global "в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ"
-                print_global "вљ пёЏ WG Route allowed IP enabled with 0.0.0.0/0"
+                print_global "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                print_global "⚠️ WG Route allowed IP enabled with 0.0.0.0/0"
             fi
         done
     fi
 
     if [ -f "/etc/init.d/zapret" ]; then
-        print_global "в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ"
-        print_global "вљ пёЏ Zapret detected"
+        print_global "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        print_global "⚠️ Zapret detected"
     fi
 
-    print_global "в”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓв”Ѓ"
-    print_global "рџҐё FakeIP status"
+    print_global "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_global "🥸 FakeIP status"
 
     local fakeip_check_json
     fakeip_check_json=$(check_fakeip)
@@ -3741,21 +3741,21 @@ global_check() {
         fakeip_status=$(echo "$fakeip_check_json" | jq -r '.fakeip // false')
 
         if [ "$fakeip_status" = "true" ]; then
-            print_global "вњ… Router DNS is routed through sing-box"
+            print_global "✅ Router DNS is routed through sing-box"
         else
-            print_global "вљ пёЏ Router DNS is NOT routed through sing-box"
+            print_global "⚠️ Router DNS is NOT routed through sing-box"
         fi
     else
-        print_global "вќЊ Failed to get FakeIP info"
+        print_global "❌ Failed to get FakeIP info"
     fi
 
     local fakeip_address
     fakeip_address=$(dig +short @127.0.0.42 $FAKEIP_TEST_DOMAIN)
 
     if echo "$fakeip_address" | grep -q "^198\.18\."; then
-        print_global "вњ… Sing-box works with FakeIP: $fakeip_address"
+        print_global "✅ Sing-box works with FakeIP: $fakeip_address"
     else
-        print_global "вќЊ Sing-box does NOT work with FakeIP: $fakeip_address"
+        print_global "❌ Sing-box does NOT work with FakeIP: $fakeip_address"
     fi
 }
 
