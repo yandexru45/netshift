@@ -365,6 +365,10 @@ sing_box_cf_add_single_key_reject_rule() {
 # Arguments:
 #   config: string (JSON), sing-box configuration the batch will be merged into
 #   subscription_json_path: string, path to the downloaded subscription JSON file
+#   include_keywords_json: string (JSON array), keep only nodes whose display name
+#       contains at least one of these (OR). Empty array ([]) = keep all.
+#   exclude_keywords_json: string (JSON array), drop any node whose display name
+#       contains at least one of these (OR). Empty array ([]) = no exclusion.
 # Outputs:
 #   Writes a JSON object to stdout:
 #     { outbounds: [ {type,...,tag} ... ], tags: [..], names: [..],
@@ -373,7 +377,12 @@ sing_box_cf_add_single_key_reject_rule() {
 sing_box_cf_prepare_subscription_batch() {
     local config="$1"
     local subscription_json_path="$2"
+    local include_keywords_json="${3:-[]}"
+    local exclude_keywords_json="${4:-[]}"
     local sing_box_extended="false"
+
+    [ -n "$include_keywords_json" ] || include_keywords_json="[]"
+    [ -n "$exclude_keywords_json" ] || exclude_keywords_json="[]"
 
     if is_sing_box_extended; then
         sing_box_extended="true"
@@ -383,7 +392,21 @@ sing_box_cf_prepare_subscription_batch() {
     # the subscription JSON is slurped from its file path.
     printf '%s' "$config" | jq -c \
         --slurpfile sub "$subscription_json_path" \
-        --argjson extended "$sing_box_extended" '
+        --argjson extended "$sing_box_extended" \
+        --argjson include_keywords "$include_keywords_json" \
+        --argjson exclude_keywords "$exclude_keywords_json" '
+        # Normalise the keyword lists: drop empty items and precompute the
+        # ASCII-lowercased form once. ascii_downcase only touches ASCII, so
+        # emoji/Cyrillic keywords are matched as exact byte-substrings.
+        # NB: "include"/"exclude" are reserved jq keywords, hence $inc/$exc.
+        ([$include_keywords[]? | tostring | select(length > 0) | ascii_downcase]) as $inc
+        | ([$exclude_keywords[]? | tostring | select(length > 0) | ascii_downcase]) as $exc
+        # A node "matches" a normalised keyword list when its lowercased name
+        # contains any of the keywords (substring via index, NO regex/Oniguruma).
+        # Bind each keyword to $kw so index() receives the keyword, not the name.
+        | def name_passes_keywords($lc):
+            (($inc | length) == 0 or any($inc[]; . as $kw | ($lc | index($kw)) != null))
+            and (($exc | length) == 0 or all($exc[]; . as $kw | ($lc | index($kw)) == null));
         # Reserved tags already used by the working config (stdin is the config).
         ([.outbounds[]?.tag // empty]) as $existing
         # Candidate proxy outbounds from the subscription (preserve order).
@@ -393,7 +416,16 @@ sing_box_cf_prepare_subscription_batch() {
             .type != "direct" and
             .type != "dns" and
             .type != "block"
-          )] as $candidates
+          )] as $all_candidates
+        # Keyword whitelist/blacklist filter on the display name. Runs BEFORE the
+        # static-unsupported filter and tag dedup, so dropped nodes never get
+        # tags and never reach sing-box check. Covers native + fallback-parsed
+        # subscriptions (both consume this batch).
+        | [$all_candidates[]
+            | . as $ob
+            | (($ob.remark // $ob.tag // "") | tostring) as $name
+            | select(name_passes_keywords($name | ascii_downcase))
+          ] as $candidates
         | ($candidates | length) as $total
         # Statically reject outbounds the current sing-box build cannot load.
         | [ $candidates[]
@@ -548,6 +580,10 @@ sing_box_cf_apply_subscription_range() {
 #   config: string (JSON), sing-box configuration to modify
 #   section: string, the UCI section name
 #   subscription_json_path: string, path to the downloaded subscription JSON file
+#   include_keywords_json: string (JSON array, optional), keyword whitelist (OR);
+#       empty/[] keeps all nodes. Forwarded to the prepare batch.
+#   exclude_keywords_json: string (JSON array, optional), keyword blacklist (OR);
+#       empty/[] excludes nothing. Forwarded to the prepare batch.
 # Outputs:
 #   Writes updated JSON configuration to stdout
 #   Sets global variable SUBSCRIPTION_OUTBOUND_TAGS (comma-separated list of tags)
@@ -558,6 +594,11 @@ sing_box_cf_add_subscription_outbounds() {
     local config="$1"
     local section="$2"
     local subscription_json_path="$3"
+    local include_keywords_json="${4:-[]}"
+    local exclude_keywords_json="${5:-[]}"
+
+    [ -n "$include_keywords_json" ] || include_keywords_json="[]"
+    [ -n "$exclude_keywords_json" ] || exclude_keywords_json="[]"
 
     SUBSCRIPTION_OUTBOUND_TAGS=""
     SUBSCRIPTION_OUTBOUND_TAGS_JSON="[]"
@@ -570,9 +611,17 @@ sing_box_cf_add_subscription_outbounds() {
         return 1
     fi
 
-    # Build the entire batch (filter + dedup tags) in one jq pass.
+    # Whether keyword filtering is active (for distinct empty-result logging).
+    local keyword_filter_active=0
+    if [ "$include_keywords_json" != "[]" ] || [ "$exclude_keywords_json" != "[]" ]; then
+        keyword_filter_active=1
+    fi
+
+    # Build the entire batch (keyword filter + static filter + dedup tags) in one
+    # jq pass.
     local prepared
-    prepared=$(sing_box_cf_prepare_subscription_batch "$config" "$subscription_json_path")
+    prepared=$(sing_box_cf_prepare_subscription_batch "$config" "$subscription_json_path" \
+        "$include_keywords_json" "$exclude_keywords_json")
     if [ -z "$prepared" ]; then
         log "Failed to parse subscription outbounds JSON" "error"
         echo "$config"
@@ -584,7 +633,23 @@ sing_box_cf_add_subscription_outbounds() {
     kept_count=$(printf '%s' "$prepared" | jq -r '.count // 0' 2>/dev/null)
     statically_skipped=$(printf '%s' "$prepared" | jq -r '.skipped // 0' 2>/dev/null)
 
+    if [ "$keyword_filter_active" -eq 1 ]; then
+        # candidate_total here is the post-keyword-filter candidate count; report
+        # kept vs. filtered_out so an over-strict filter is diagnosable.
+        local raw_candidate_total filtered_out
+        raw_candidate_total=$(printf '%s' "$config" | jq -c \
+            --slurpfile sub "$subscription_json_path" \
+            '[$sub[0].outbounds[]? | select(.type != "selector" and .type != "urltest" and .type != "direct" and .type != "dns" and .type != "block")] | length' 2>/dev/null)
+        [ -n "$raw_candidate_total" ] || raw_candidate_total=0
+        filtered_out=$((raw_candidate_total - candidate_total))
+        [ "$filtered_out" -ge 0 ] || filtered_out=0
+        log "Subscription keyword filter for section '$section': kept=$candidate_total, filtered_out=$filtered_out" "info"
+    fi
+
     if [ -z "$candidate_total" ] || [ "$candidate_total" -eq 0 ]; then
+        if [ "$keyword_filter_active" -eq 1 ]; then
+            log "Subscription keyword filter for section '$section' removed all nodes; using a temporary blocked outbound" "warn"
+        fi
         log "No proxy outbounds found in subscription JSON" "error"
         echo "$config"
         return 1

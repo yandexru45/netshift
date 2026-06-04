@@ -57,6 +57,26 @@ findings; keep under ~200 lines.
 - Pre-commit-equivalent: always run the `shellcheck` skill (severity error) on
   touched shell files before handing back.
 
+## jq gotchas (proven by task-002)
+
+- **`include` / `exclude` are RESERVED jq keywords** — you cannot name a jq
+  variable `$include` (jq tries to parse the `include` directive). Use `$inc`/
+  `$exc` etc. for keyword-filter lists.
+- **`any(gen; cond)` / `all(gen; cond)` binding trap**: inside the condition,
+  `.` is the generator element ONLY at the top of `cond`. If you write
+  `($name | index(.))` the `.` becomes `$name` (the pipe rebinds `.`), so the
+  match silently always succeeds. Bind first: `any($kw[]; . as $k | ($name |
+  index($k)) != null)`.
+- Subscription keyword filter lives in `sing_box_cf_prepare_subscription_batch`
+  (facade), runs BEFORE static-unsupported filter + tag dedup, threaded from the
+  `subscription)` branch via two UCI **list** options
+  `subscription_filter_include_keywords` / `subscription_filter_exclude_keywords`
+  (the cross-layer contract names for task-003 — do NOT rename). Keywords are
+  opaque user text: collect with a `config_list_foreach` handler that jq
+  `--arg`-appends each item into a JSON array (commas/emoji survive; never use
+  `comma_string_to_json_array` for them). Empty result reuses the existing
+  `mark_subscription_outbound_unavailable` fail-safe (no `exit 1`).
+
 ## Known landmines
 
 - nft proxy chain hardcodes `127.0.0.1:1602` (duplicates the constants).

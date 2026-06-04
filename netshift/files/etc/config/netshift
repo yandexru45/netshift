@@ -48,4 +48,11 @@ config section 'main'
 #        #option urltest_check_interval '3m'
 #        #option urltest_tolerance '50'
 #        #option urltest_testing_url 'https://www.gstatic.com/generate_204'
+#        # Keyword whitelist: keep only nodes whose display name contains any of
+#        # these (OR). Empty/absent = keep all. Substring, ASCII case-insensitive.
+#        #list subscription_filter_include_keywords '🤖'
+#        #list subscription_filter_include_keywords 'grpc'
+#        # Keyword blacklist: drop any node whose display name contains any of
+#        # these (OR). Empty/absent = no exclusion.
+#        #list subscription_filter_exclude_keywords 'expired'
 #        list community_lists 'russia_inside'

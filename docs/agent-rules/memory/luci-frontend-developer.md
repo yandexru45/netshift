@@ -53,6 +53,22 @@ append findings; keep under ~200 lines.
 - Wrap user-facing strings in `_()`, and only STRING LITERALS — the gettext
   extractor (`yarn locales:actualize`) only sees literal args. Some validator
   messages (vless/trojan) are currently NOT wrapped — wrap new ones.
+- i18n pipeline (`yarn locales:actualize` = extract-calls → generate-pot →
+  generate-po:ru → distribute). `extract-calls.js` scans BOTH `src/**/*.ts` AND
+  the hand-written `luci-app-netshift/.../view/netshift/**/*.js` (excludes
+  `main.js`), so `_()` strings added in `section.js` ARE extracted. Source of
+  truth for ru text is `fe-app-netshift/locales/netshift.ru.po` — fill the new
+  empty `msgstr` there (preserves existing translations on regen), then re-run
+  `yarn locales:distribute` to copy into the generated catalogs
+  `luci-app-netshift/po/{templates/netshift.pot, ru/netshift.po}`. Touched
+  catalog files: `locales/calls.json`, `locales/netshift.pot`,
+  `locales/netshift.ru.po`, `po/templates/netshift.pot`, `po/ru/netshift.po`.
+- TYPE-ONLY changes to `src/**` (e.g. adding interface fields in `types.ts`,
+  inside the `NetShift` namespace) erase at build → `main.js` has NO diff after
+  `yarn build`. Expect a clean `git diff` on `main.js` for pure-type edits.
+- `section.js` is a hand-written LuCI view, NOT bundled — `yarn format` only
+  touches `src/`, so format leaves section.js alone; keep its existing
+  2-space/double-quote style manually.
 
 ## Version placeholder
 

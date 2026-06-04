@@ -120,6 +120,8 @@ export namespace NetShift {
     subscription_url: string;
     subscription_update_interval?: string;
     subscription_group_by_countries?: '0' | '1';
+    subscription_filter_include_keywords?: string[];
+    subscription_filter_exclude_keywords?: string[];
   }
 
   export interface ConfigVpnSection {

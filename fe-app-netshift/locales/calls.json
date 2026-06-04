@@ -66,21 +66,21 @@
     "call": "Applicable for SOCKS and Shadowsocks proxy",
     "key": "Applicable for SOCKS and Shadowsocks proxy",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:251"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:269"
     ]
   },
   {
     "call": "At least one valid domain must be specified. Comments-only content is not allowed.",
     "key": "At least one valid domain must be specified. Comments-only content is not allowed.",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:496"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:514"
     ]
   },
   {
     "call": "At least one valid subnet or IP must be specified. Comments-only content is not allowed.",
     "key": "At least one valid subnet or IP must be specified. Comments-only content is not allowed.",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:577"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:595"
     ]
   },
   {
@@ -192,7 +192,7 @@
     "call": "Community Lists",
     "key": "Community Lists",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:351"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:369"
     ]
   },
   {
@@ -311,8 +311,8 @@
     "call": "Disabled",
     "key": "Disabled",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:442",
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:522"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:460",
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:540"
     ]
   },
   {
@@ -326,7 +326,7 @@
     "call": "DNS over HTTPS (DoH)",
     "key": "DNS over HTTPS (DoH)",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:319",
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:337",
       "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\settings.js:15"
     ]
   },
@@ -334,7 +334,7 @@
     "call": "DNS over TLS (DoT)",
     "key": "DNS over TLS (DoT)",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:320",
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:338",
       "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\settings.js:16"
     ]
   },
@@ -342,7 +342,7 @@
     "call": "DNS Protocol Type",
     "key": "DNS Protocol Type",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:316",
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:334",
       "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\settings.js:12"
     ]
   },
@@ -357,7 +357,7 @@
     "call": "DNS Server",
     "key": "DNS Server",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:329",
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:347",
       "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\settings.js:24"
     ]
   },
@@ -379,7 +379,7 @@
     "call": "Domain Resolver",
     "key": "Domain Resolver",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:306"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:324"
     ]
   },
   {
@@ -427,11 +427,18 @@
     ]
   },
   {
+    "call": "Drop subscription servers whose name contains any of these keywords (case-insensitive).",
+    "key": "Drop subscription servers whose name contains any of these keywords (case-insensitive).",
+    "places": [
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:147"
+    ]
+  },
+  {
     "call": "Dynamic List",
     "key": "Dynamic List",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:443",
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:523"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:461",
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:541"
     ]
   },
   {
@@ -445,21 +452,21 @@
     "call": "Enable built-in DNS resolver for domains handled by this section",
     "key": "Enable built-in DNS resolver for domains handled by this section",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:307"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:325"
     ]
   },
   {
     "call": "Enable DNS resolve to get real IP when routing",
     "key": "Enable DNS resolve to get real IP when routing",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:746"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:764"
     ]
   },
   {
     "call": "Enable Mixed Proxy",
     "key": "Enable Mixed Proxy",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:717"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:735"
     ]
   },
   {
@@ -473,7 +480,7 @@
     "call": "Enable the mixed proxy, allowing this section to route traffic through both HTTP and SOCKS proxies",
     "key": "Enable the mixed proxy, allowing this section to route traffic through both HTTP and SOCKS proxies",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:718"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:736"
     ]
   },
   {
@@ -501,21 +508,21 @@
     "call": "Enter domain names separated by commas, spaces, or newlines. You can add comments using //",
     "key": "Enter domain names separated by commas, spaces, or newlines. You can add comments using //",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:478"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:496"
     ]
   },
   {
     "call": "Enter domain names without protocols, e.g. example.com or sub.example.com",
     "key": "Enter domain names without protocols, e.g. example.com or sub.example.com",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:452"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:470"
     ]
   },
   {
     "call": "Enter subnets in CIDR notation (e.g. 103.21.244.0/22) or single IP addresses",
     "key": "Enter subnets in CIDR notation (e.g. 103.21.244.0/22) or single IP addresses",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:532"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:550"
     ]
   },
   {
@@ -529,7 +536,7 @@
     "call": "Every 1 minute",
     "key": "Every 1 minute",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:187"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:205"
     ]
   },
   {
@@ -550,7 +557,7 @@
     "call": "Every 3 minutes",
     "key": "Every 3 minutes",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:188"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:206"
     ]
   },
   {
@@ -564,14 +571,14 @@
     "call": "Every 30 seconds",
     "key": "Every 30 seconds",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:186"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:204"
     ]
   },
   {
     "call": "Every 5 minutes",
     "key": "Every 5 minutes",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:189"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:207"
     ]
   },
   {
@@ -610,6 +617,13 @@
     ]
   },
   {
+    "call": "Exclude servers by keyword",
+    "key": "Exclude servers by keyword",
+    "places": [
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:146"
+    ]
+  },
+  {
     "call": "Failed to copy!",
     "key": "Failed to copy!",
     "places": [
@@ -644,7 +658,7 @@
     "call": "Fully Routed IPs",
     "key": "Fully Routed IPs",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:690"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:708"
     ]
   },
   {
@@ -673,6 +687,13 @@
     "key": "HTTP error",
     "places": [
       "src\\netshift\\api.ts:27"
+    ]
+  },
+  {
+    "call": "Include servers by keyword",
+    "key": "Include servers by keyword",
+    "places": [
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:137"
     ]
   },
   {
@@ -1028,6 +1049,13 @@
     ]
   },
   {
+    "call": "Keep only subscription servers whose name contains at least one of these keywords (case-insensitive). Leave empty to keep all.",
+    "key": "Keep only subscription servers whose name contains at least one of these keywords (case-insensitive). Leave empty to keep all.",
+    "places": [
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:138"
+    ]
+  },
+  {
     "call": "Latest",
     "key": "Latest",
     "places": [
@@ -1045,14 +1073,14 @@
     "call": "Local Domain Lists",
     "key": "Local Domain Lists",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:598"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:616"
     ]
   },
   {
     "call": "Local Subnet Lists",
     "key": "Local Subnet Lists",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:621"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:639"
     ]
   },
   {
@@ -1080,7 +1108,7 @@
     "call": "Mixed Proxy Port",
     "key": "Mixed Proxy Port",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:730"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:748"
     ]
   },
   {
@@ -1094,7 +1122,7 @@
     "call": "Must be a number in the range of 50 - 1000",
     "key": "Must be a number in the range of 50 - 1000",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:215"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:233"
     ]
   },
   {
@@ -1122,7 +1150,7 @@
     "call": "Network Interface",
     "key": "Network Interface",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:260"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:278"
     ]
   },
   {
@@ -1258,28 +1286,28 @@
     "call": "Regional options cannot be used together",
     "key": "Regional options cannot be used together",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:385"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:403"
     ]
   },
   {
     "call": "Remote Domain Lists",
     "key": "Remote Domain Lists",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:644"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:662"
     ]
   },
   {
     "call": "Remote Subnet Lists",
     "key": "Remote Subnet Lists",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:667"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:685"
     ]
   },
   {
     "call": "Resolve real IP for routing",
     "key": "Resolve real IP for routing",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:745"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:763"
     ]
   },
   {
@@ -1363,7 +1391,7 @@
     "call": "Russia inside restrictions",
     "key": "Russia inside restrictions",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:404"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:422"
     ]
   },
   {
@@ -1384,7 +1412,7 @@
     "call": "Select a predefined list for routing",
     "key": "Select a predefined list for routing",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:352"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:370"
     ]
   },
   {
@@ -1419,14 +1447,14 @@
     "call": "Select network interface for VPN connection",
     "key": "Select network interface for VPN connection",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:261"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:279"
     ]
   },
   {
     "call": "Select or enter DNS server address",
     "key": "Select or enter DNS server address",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:330",
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:348",
       "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\settings.js:25"
     ]
   },
@@ -1448,21 +1476,21 @@
     "call": "Select the DNS protocol type for the domain resolver",
     "key": "Select the DNS protocol type for the domain resolver",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:317"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:335"
     ]
   },
   {
     "call": "Select the list type for adding custom domains",
     "key": "Select the list type for adding custom domains",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:440"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:458"
     ]
   },
   {
     "call": "Select the list type for adding custom subnets",
     "key": "Select the list type for adding custom subnets",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:520"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:538"
     ]
   },
   {
@@ -1504,7 +1532,7 @@
     "call": "Selector Proxy Links",
     "key": "Selector Proxy Links",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:137"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:155"
     ]
   },
   {
@@ -1603,29 +1631,29 @@
     "call": "Specify local IP addresses or subnets whose traffic will always be routed through the configured route",
     "key": "Specify local IP addresses or subnets whose traffic will always be routed through the configured route",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:691"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:709"
     ]
   },
   {
     "call": "Specify remote URLs to download and use domain lists",
     "key": "Specify remote URLs to download and use domain lists",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:645"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:663"
     ]
   },
   {
     "call": "Specify remote URLs to download and use subnet lists",
     "key": "Specify remote URLs to download and use subnet lists",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:668"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:686"
     ]
   },
   {
     "call": "Specify the path to the list file located on the router filesystem",
     "key": "Specify the path to the list file located on the router filesystem",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:599",
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:622"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:617",
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:640"
     ]
   },
   {
@@ -1702,8 +1730,8 @@
     "call": "Text List",
     "key": "Text List",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:444",
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:524"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:462",
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:542"
     ]
   },
   {
@@ -1717,21 +1745,21 @@
     "call": "The interval between connectivity tests",
     "key": "The interval between connectivity tests",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:184"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:202"
     ]
   },
   {
     "call": "The maximum difference in response times (ms) allowed when comparing servers",
     "key": "The maximum difference in response times (ms) allowed when comparing servers",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:198"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:216"
     ]
   },
   {
     "call": "The URL used to test server connectivity",
     "key": "The URL used to test server connectivity",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:222"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:240"
     ]
   },
   {
@@ -1780,7 +1808,7 @@
     "call": "UDP (Unprotected DNS)",
     "key": "UDP (Unprotected DNS)",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:321",
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:339",
       "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\settings.js:17"
     ]
   },
@@ -1788,7 +1816,7 @@
     "call": "UDP over TCP",
     "key": "UDP over TCP",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:250"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:268"
     ]
   },
   {
@@ -1844,70 +1872,70 @@
     "call": "URLTest Check Interval",
     "key": "URLTest Check Interval",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:183"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:201"
     ]
   },
   {
     "call": "URLTest Proxy Links",
     "key": "URLTest Proxy Links",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:160"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:178"
     ]
   },
   {
     "call": "URLTest Testing URL",
     "key": "URLTest Testing URL",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:221"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:239"
     ]
   },
   {
     "call": "URLTest Tolerance",
     "key": "URLTest Tolerance",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:197"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:215"
     ]
   },
   {
     "call": "User Domain List Type",
     "key": "User Domain List Type",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:439"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:457"
     ]
   },
   {
     "call": "User Domains",
     "key": "User Domains",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:451"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:469"
     ]
   },
   {
     "call": "User Domains List",
     "key": "User Domains List",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:477"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:495"
     ]
   },
   {
     "call": "User Subnet List Type",
     "key": "User Subnet List Type",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:519"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:537"
     ]
   },
   {
     "call": "User Subnets",
     "key": "User Subnets",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:531"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:549"
     ]
   },
   {
     "call": "User Subnets List",
     "key": "User Subnets List",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:557"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:575"
     ]
   },
   {
@@ -1934,8 +1962,8 @@
     "call": "Validation errors:",
     "key": "Validation errors:",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:510",
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:589"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:528",
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:607"
     ]
   },
   {
@@ -1958,22 +1986,22 @@
     "key": "vless://, ss://, trojan://, socks4/5://, hy2/hysteria2:// links",
     "places": [
       "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:38",
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:138",
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:161"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:156",
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:179"
     ]
   },
   {
     "call": "Warning: %s cannot be used together with %s. Previous selections have been removed.",
     "key": "Warning: %s cannot be used together with %s. Previous selections have been removed.",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:387"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:405"
     ]
   },
   {
     "call": "Warning: Russia inside can only be used with %s. %s already in Russia inside and have been removed from selection.",
     "key": "Warning: Russia inside can only be used with %s. %s already in Russia inside and have been removed from selection.",
     "places": [
-      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:406"
+      "..\\luci-app-netshift\\htdocs\\luci-static\\resources\\view\\netshift\\section.js:424"
     ]
   },
   {

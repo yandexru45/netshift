@@ -133,6 +133,24 @@ function createSectionContent(section) {
 
   o = section.option(
     form.DynamicList,
+    "subscription_filter_include_keywords",
+    _("Include servers by keyword"),
+    _("Keep only subscription servers whose name contains at least one of these keywords (case-insensitive). Leave empty to keep all."),
+  );
+  o.depends({ connection_type: "proxy", proxy_config_type: "subscription" });
+  o.rmempty = true;
+
+  o = section.option(
+    form.DynamicList,
+    "subscription_filter_exclude_keywords",
+    _("Exclude servers by keyword"),
+    _("Drop subscription servers whose name contains any of these keywords (case-insensitive)."),
+  );
+  o.depends({ connection_type: "proxy", proxy_config_type: "subscription" });
+  o.rmempty = true;
+
+  o = section.option(
+    form.DynamicList,
     "selector_proxy_links",
     _("Selector Proxy Links"),
     _("vless://, ss://, trojan://, socks4/5://, hy2/hysteria2:// links")

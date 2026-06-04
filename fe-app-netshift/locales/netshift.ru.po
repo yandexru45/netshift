@@ -7,8 +7,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: NETSHIFT\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-06-02 17:15+0300\n"
-"PO-Revision-Date: 2026-06-02 17:15+0300\n"
+"POT-Creation-Date: 2026-06-04 19:41+0300\n"
+"PO-Revision-Date: 2026-06-04 19:41+0300\n"
 "Last-Translator: yandexru45\n"
 "Language-Team: none\n"
 "Language: ru\n"
@@ -194,6 +194,9 @@ msgstr "Скачивать списки через выбранную секци
 msgid "Downloading all lists via specific Proxy/VPN"
 msgstr "Загрузка всех списков через указанный прокси/VPN"
 
+msgid "Drop subscription servers whose name contains any of these keywords (case-insensitive)."
+msgstr "Исключать серверы подписки, имя которых содержит любое из этих ключевых слов (без учёта регистра)."
+
 msgid "Dynamic List"
 msgstr "Динамический список"
 
@@ -272,6 +275,9 @@ msgstr "Исключить NTP"
 msgid "Exclude NTP protocol traffic from the tunnel to prevent it from being routed through the proxy or VPN"
 msgstr "Исключите трафик протокола NTP из туннеля, чтобы предотвратить его маршрутизацию через прокси-сервер или VPN."
 
+msgid "Exclude servers by keyword"
+msgstr "Исключать серверы по ключевому слову"
+
 msgid "Failed to copy!"
 msgstr "Не удалось скопировать!"
 
@@ -295,6 +301,9 @@ msgstr ""
 
 msgid "HTTP error"
 msgstr "Ошибка HTTP"
+
+msgid "Include servers by keyword"
+msgstr "Включать серверы по ключевому слову"
 
 msgid "Install extended"
 msgstr "Установить extended"
@@ -445,6 +454,9 @@ msgstr "IP-адрес 0.0.0.0 не допускается"
 
 msgid "Issues detected"
 msgstr "Обнаружены проблемы"
+
+msgid "Keep only subscription servers whose name contains at least one of these keywords (case-insensitive). Leave empty to keep all."
+msgstr "Оставлять только серверы подписки, имя которых содержит хотя бы одно из этих ключевых слов (без учёта регистра). Оставьте пустым, чтобы оставить все."
 
 msgid "Latest"
 msgstr "Последняя"

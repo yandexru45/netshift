@@ -90,3 +90,35 @@ save+`sing-box check` -> cron jobs -> start sing-box -> dnsmasq_configure ->
 
 - Contribution gating: `CODEOWNERS=@yandexru45`; PRs accepted only after Telegram
   coordination with authors (README). Reflect this in `/describe` output.
+- **Frontend yarn trap (verified 2026-06):** repo `fe-app-netshift/yarn.lock` is
+  CLASSIC yarn v1 format; there is NO `packageManager` pin and NO `.yarnrc.yml`.
+  A local corepack yarn 4.x will try to MIGRATE on `yarn install`, polluting the
+  tree with a 3000+ line `yarn.lock` rewrite + untracked `.yarn/` and
+  `.yarnrc.yml`. These are NOT deliverables — discard before commit
+  (`git checkout -- fe-app-netshift/yarn.lock`; rm `.yarn/`/`.yarnrc.yml`). To
+  verify the gate independently without polluting, run the tools directly from
+  `node_modules/.bin` (prettier/eslint/vitest/tsup) instead of `yarn install`.
+  Tell frontend devs to leave yarn.lock alone.
+- The frontend-ci `main.js` no-diff check: a TYPE-ONLY change in TS source
+  (e.g. adding optional fields to a `types.ts` interface) produces NO main.js
+  diff — that is expected/correct, not a missed rebuild.
+
+## Subscription keyword filter (issue #5, task-002/003 — done 2026-06)
+
+- Backend filter lives in `sing_box_cf_prepare_subscription_batch`
+  (sing_box_config_facade.sh): one jq pass between candidate-select and the
+  static-unsupported filter, BEFORE tag dedup + sing-box check. Covers native +
+  all fallback (base64/URI/Xray) bodies and both selector branches automatically.
+- UCI options (cross-layer contract, verbatim): `subscription_filter_include_keywords`
+  (whitelist) / `subscription_filter_exclude_keywords` (blacklist), both UCI
+  `list`. Read in the `subscription)` branch via `config_list_foreach`.
+- Semantics: include=OR (empty⇒keep all), exclude=OR(drop), SUBSTRING,
+  ASCII-case-insensitive (`ascii_downcase`), byte-exact for emoji/Cyrillic.
+  jq: NOTE `include`/`exclude` are RESERVED jq words — devs used `$inc`/`$exc`;
+  matching must use `. as $kw` inside any/all to avoid the `.`-after-pipe rebind.
+- Empty-after-filter ⇒ existing fail-safe `mark_subscription_outbound_unavailable`
+  + warn (NO exit 1). `skipped` stays "statically unsupported" (compute `$total`
+  AFTER the keyword filter, not before).
+- UI: two `form.DynamicList` in `section.js` after `subscription_group_by_countries`,
+  rmempty=true, NO validator (keep emoji/space verbatim); `string[]?` fields on
+  `ConfigProxySubscriptionSection` in types.ts; ru/en via locale tooling.

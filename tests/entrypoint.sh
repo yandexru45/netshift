@@ -1043,6 +1043,103 @@ else
     echo "fb-caseI-configured-only(got '$caseI_conf' lines=$caseI_conf_lines):FAIL"
 fi
 
+# ── CASE J: subscription keyword whitelist/blacklist filter ─────────
+# Drive sing_box_cf_prepare_subscription_batch directly with a synthetic
+# subscription JSON and assert kept counts/names for include/exclude lists.
+# Matching: substring, OR across keywords, ASCII case-insensitive, byte-exact
+# for non-ASCII (emoji/Cyrillic). No jq regex (index + ascii_downcase only).
+caseJ_cfg='{"outbounds":[]}'
+caseJ_sub="/tmp/netshift-fb-caseJ-$$.json"
+cat > "$caseJ_sub" << 'JSUB'
+{
+  "outbounds": [
+    {"type": "shadowsocks", "tag": "US grpc", "server": "a.example.com", "server_port": 443, "method": "aes-256-gcm", "password": "p"},
+    {"type": "shadowsocks", "tag": "US ws", "server": "b.example.com", "server_port": 443, "method": "aes-256-gcm", "password": "p"},
+    {"type": "shadowsocks", "tag": "DE grpc", "server": "c.example.com", "server_port": 443, "method": "aes-256-gcm", "password": "p"}
+  ]
+}
+JSUB
+
+# Helper: emit the JSON `count` for given include/exclude arrays.
+caseJ_count() {
+    sing_box_cf_prepare_subscription_batch "$caseJ_cfg" "$caseJ_sub" "$1" "$2" |
+        jq -r '.count // -1'
+}
+# Helper: emit a comma-joined sorted names list for given include/exclude arrays.
+caseJ_names() {
+    sing_box_cf_prepare_subscription_batch "$caseJ_cfg" "$caseJ_sub" "$1" "$2" |
+        jq -r '(.names // []) | sort | join(",")'
+}
+
+# (1) include-only: ["grpc"] keeps exactly the 2 grpc nodes.
+caseJ_inc_count="$(caseJ_count '["grpc"]' '[]')"
+caseJ_inc_names="$(caseJ_names '["grpc"]' '[]')"
+if [ "$caseJ_inc_count" = "2" ] && [ "$caseJ_inc_names" = "DE grpc,US grpc" ]; then
+    echo 'fb-caseJ-include-only:OK'
+else
+    echo "fb-caseJ-include-only(count=$caseJ_inc_count names='$caseJ_inc_names'):FAIL"
+fi
+
+# (2) exclude-only: ["ws"] drops the ws node, keeps the other 2.
+caseJ_exc_count="$(caseJ_count '[]' '["ws"]')"
+caseJ_exc_names="$(caseJ_names '[]' '["ws"]')"
+if [ "$caseJ_exc_count" = "2" ] && [ "$caseJ_exc_names" = "DE grpc,US grpc" ]; then
+    echo 'fb-caseJ-exclude-only:OK'
+else
+    echo "fb-caseJ-exclude-only(count=$caseJ_exc_count names='$caseJ_exc_names'):FAIL"
+fi
+
+# (3) include + exclude OR: include=["US"], exclude=["ws"] => "US grpc" only.
+caseJ_both_count="$(caseJ_count '["US"]' '["ws"]')"
+caseJ_both_names="$(caseJ_names '["US"]' '["ws"]')"
+if [ "$caseJ_both_count" = "1" ] && [ "$caseJ_both_names" = "US grpc" ]; then
+    echo 'fb-caseJ-include-exclude:OK'
+else
+    echo "fb-caseJ-include-exclude(count=$caseJ_both_count names='$caseJ_both_names'):FAIL"
+fi
+
+# (4) case-insensitive ASCII: include=["GRPC"] matches "US grpc"/"DE grpc".
+caseJ_ci_count="$(caseJ_count '["GRPC"]' '[]')"
+if [ "$caseJ_ci_count" = "2" ]; then
+    echo 'fb-caseJ-ascii-ci:OK'
+else
+    echo "fb-caseJ-ascii-ci(count=$caseJ_ci_count):FAIL"
+fi
+
+# (5) emoji/unicode substring: a robot-emoji node kept, a plain node dropped.
+caseJ_emoji_sub="/tmp/netshift-fb-caseJ-emoji-$$.json"
+cat > "$caseJ_emoji_sub" << 'JEMOJI'
+{
+  "outbounds": [
+    {"type": "shadowsocks", "tag": "🤖 Gemini", "server": "a.example.com", "server_port": 443, "method": "aes-256-gcm", "password": "p"},
+    {"type": "shadowsocks", "tag": "Plain Node", "server": "b.example.com", "server_port": 443, "method": "aes-256-gcm", "password": "p"}
+  ]
+}
+JEMOJI
+caseJ_emoji_count="$(sing_box_cf_prepare_subscription_batch "$caseJ_cfg" "$caseJ_emoji_sub" '["🤖"]' '[]' | jq -r '.count // -1')"
+caseJ_emoji_names="$(sing_box_cf_prepare_subscription_batch "$caseJ_cfg" "$caseJ_emoji_sub" '["🤖"]' '[]' | jq -r '(.names // []) | join(",")')"
+if [ "$caseJ_emoji_count" = "1" ] && [ "$caseJ_emoji_names" = "🤖 Gemini" ]; then
+    echo 'fb-caseJ-emoji-substring:OK'
+else
+    echo "fb-caseJ-emoji-substring(count=$caseJ_emoji_count names='$caseJ_emoji_names'):FAIL"
+fi
+rm -f "$caseJ_emoji_sub"
+
+# (6) empty include keeps all; over-strict filter removes everything (count 0).
+caseJ_all_count="$(caseJ_count '[]' '[]')"
+if [ "$caseJ_all_count" = "3" ]; then
+    echo 'fb-caseJ-empty-include-keeps-all:OK'
+else
+    echo "fb-caseJ-empty-include-keeps-all(count=$caseJ_all_count):FAIL"
+fi
+caseJ_none_count="$(caseJ_count '["nomatch-zzz"]' '[]')"
+if [ "$caseJ_none_count" = "0" ]; then
+    echo 'fb-caseJ-filter-removes-all-zero-kept:OK'
+else
+    echo "fb-caseJ-filter-removes-all-zero-kept(count=$caseJ_none_count):FAIL"
+fi
+rm -f "$caseJ_sub"
+
 echo 'DONE'
 FBEOF
 

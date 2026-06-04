@@ -1536,7 +1536,9 @@ configure_outbound_handler() {
             local subscription_url subscription_json_path urltest_tag selector_tag \
                 urltest_outbounds selector_outbounds urltest_check_interval urltest_tolerance \
                 urltest_testing_url subscription_group_by_countries subscription_group_by_countries_raw \
-                subscription_outbound_tags_json service_proxy_address subscription_ready
+                subscription_outbound_tags_json service_proxy_address subscription_ready \
+                subscription_filter_include_keywords_json subscription_filter_exclude_keywords_json \
+                subscription_keyword_filter_active
 
             config_get subscription_url "$section" "subscription_url"
             config_get urltest_check_interval "$section" "urltest_check_interval" "3m"
@@ -1555,6 +1557,16 @@ configure_outbound_handler() {
             fi
 
             log "Subscription country grouping for section '$section': raw='${subscription_group_by_countries_raw:-<empty>}', enabled=$subscription_group_by_countries" "debug"
+
+            # Keyword whitelist/blacklist filtering of subscription nodes by
+            # display name. Both are optional UCI lists of opaque match strings.
+            subscription_filter_include_keywords_json="$(build_subscription_filter_keywords_json "$section" "subscription_filter_include_keywords")"
+            subscription_filter_exclude_keywords_json="$(build_subscription_filter_keywords_json "$section" "subscription_filter_exclude_keywords")"
+            subscription_keyword_filter_active=0
+            if [ "$subscription_filter_include_keywords_json" != "[]" ] || [ "$subscription_filter_exclude_keywords_json" != "[]" ]; then
+                subscription_keyword_filter_active=1
+                log "Subscription keyword filter enabled for section '$section': include=$subscription_filter_include_keywords_json, exclude=$subscription_filter_exclude_keywords_json" "debug"
+            fi
 
             if [ -z "$subscription_url" ]; then
                 log "Subscription URL is not set. Aborted." "fatal"
@@ -1611,7 +1623,8 @@ configure_outbound_handler() {
 
             subscription_ready=0
             if subscription_cache_is_usable "$subscription_json_path"; then
-                if sing_box_cf_add_subscription_outbounds "$config" "$section" "$subscription_json_path" > /dev/null; then
+                if sing_box_cf_add_subscription_outbounds "$config" "$section" "$subscription_json_path" \
+                    "$subscription_filter_include_keywords_json" "$subscription_filter_exclude_keywords_json" > /dev/null; then
                     if [ -n "$SUBSCRIPTION_OUTBOUND_TAGS" ]; then
                         config="$SING_BOX_CF_LAST_CONFIG"
                         subscription_ready=1
@@ -1620,6 +1633,10 @@ configure_outbound_handler() {
             fi
 
             if [ "$subscription_ready" -eq 0 ]; then
+                # When the keyword filter empties the set, the precise cause is
+                # already logged facade-side (only on the cache-usable branch
+                # where add_subscription_outbounds actually ran the filter), so we
+                # do not re-warn here to avoid misattribution / double-warning.
                 log "Subscription cache for section '$section' is unavailable or empty; using a temporary blocked outbound" "warn"
                 mark_subscription_outbound_unavailable "$section"
             else
@@ -1910,6 +1927,37 @@ exclude_source_ip_from_routing_handler() {
     local rule_tag="$2"
 
     config=$(sing_box_cm_patch_route_rule "$config" "$rule_tag" "source_ip_cidr" "$source_ip")
+}
+
+# config_list_foreach callback that appends a raw keyword (opaque user text:
+# may contain spaces, emoji, Cyrillic, &?#%) onto the JSON array carried in the
+# global SUBSCRIPTION_FILTER_KEYWORDS_JSON. Items are appended verbatim; the
+# facade's jq filter later drops empty ("") items via select(length > 0). A
+# whitespace-only item is NOT trimmed and stays a literal match string
+# (intentional opaque match semantics per the spec). Uses jq --arg so every byte
+# survives intact (no URL/query parsing).
+append_subscription_filter_keyword_handler() {
+    local keyword="$1"
+    local next
+
+    next=$(printf '%s' "$SUBSCRIPTION_FILTER_KEYWORDS_JSON" |
+        jq -c --arg kw "$keyword" '. + [$kw]' 2>/dev/null)
+    [ -n "$next" ] && SUBSCRIPTION_FILTER_KEYWORDS_JSON="$next"
+}
+
+# Read a per-section UCI list of keyword filter values into a JSON array string.
+# Arguments:
+#   section: string, the UCI section name
+#   list_name: string, the UCI list option name
+# Outputs:
+#   Writes the JSON array (e.g. ["grpc","\ud83e\udd16"]) to stdout; "[]" if empty.
+build_subscription_filter_keywords_json() {
+    local section="$1"
+    local list_name="$2"
+
+    SUBSCRIPTION_FILTER_KEYWORDS_JSON="[]"
+    config_list_foreach "$section" "$list_name" append_subscription_filter_keyword_handler
+    printf '%s' "$SUBSCRIPTION_FILTER_KEYWORDS_JSON"
 }
 
 configure_routing_for_section_lists() {
