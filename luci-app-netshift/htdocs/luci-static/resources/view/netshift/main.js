@@ -699,6 +699,45 @@ var NetShift;
   })(AvailableClashAPIMethods = NetShift2.AvailableClashAPIMethods || (NetShift2.AvailableClashAPIMethods = {}));
 })(NetShift || (NetShift = {}));
 
+// src/netshift/methods/shell/sleep.ts
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// src/netshift/methods/shell/pollSingBoxComponentAction.ts
+var POLL_INTERVAL_MS = 2e3;
+var MAX_POLLS = 150;
+function parseComponentActionStatus(stdout) {
+  try {
+    return JSON.parse(stdout);
+  } catch (_e) {
+    return null;
+  }
+}
+async function pollSingBoxComponentAction(fetchStatus, sleepFn = sleep, intervalMs = POLL_INTERVAL_MS, maxPolls = MAX_POLLS) {
+  for (let poll = 0; poll < maxPolls; poll += 1) {
+    const status = await fetchStatus();
+    if (!status) {
+      return {
+        success: false,
+        message: _("Core switch failed")
+      };
+    }
+    if (status.running !== true) {
+      return {
+        success: Boolean(status.success),
+        version: status.version,
+        message: status.message
+      };
+    }
+    await sleepFn(intervalMs);
+  }
+  return {
+    success: false,
+    message: _("Core switch timed out")
+  };
+}
+
 // src/netshift/methods/shell/index.ts
 var NetShiftShellMethods = {
   checkDNSAvailable: async () => callBaseMethod(
@@ -766,32 +805,65 @@ var NetShiftShellMethods = {
   ),
   subscriptionUpdate: async () => callBaseMethod(NetShift.AvailableMethods.SUBSCRIPTION_UPDATE),
   singBoxComponentAction: async (action) => {
-    const response = await executeShellCommand({
+    if (action === "check_update") {
+      const response = await executeShellCommand({
+        command: "/usr/bin/netshift",
+        args: ["component_action", "sing_box", action],
+        timeout: 6e5
+      });
+      if (response.stdout) {
+        try {
+          const parsed = JSON.parse(
+            response.stdout
+          );
+          return {
+            success: Boolean(parsed.success),
+            version: parsed.version,
+            message: parsed.message
+          };
+        } catch (_e) {
+          return {
+            success: false,
+            message: response.stdout
+          };
+        }
+      }
+      return {
+        success: false,
+        message: response.stderr || ""
+      };
+    }
+    const startResponse = await executeShellCommand({
       command: "/usr/bin/netshift",
-      args: ["component_action", "sing_box", action],
-      timeout: 6e5
+      args: ["component_action_async", "sing_box", action]
     });
-    if (response.stdout) {
+    let start = null;
+    if (startResponse.stdout) {
       try {
-        const parsed = JSON.parse(
-          response.stdout
+        start = JSON.parse(
+          startResponse.stdout
         );
-        return {
-          success: Boolean(parsed.success),
-          version: parsed.version,
-          message: parsed.message
-        };
       } catch (_e) {
-        return {
-          success: false,
-          message: response.stdout
-        };
+        start = null;
       }
     }
-    return {
-      success: false,
-      message: response.stderr || ""
-    };
+    if (!start || start.success !== true || !start.job_id) {
+      return {
+        success: false,
+        message: start?.message || startResponse.stderr || _("Core switch failed")
+      };
+    }
+    const jobId = start.job_id;
+    return pollSingBoxComponentAction(async () => {
+      const statusResponse = await executeShellCommand({
+        command: "/usr/bin/netshift",
+        args: ["component_action_status", jobId]
+      });
+      if (!statusResponse.stdout) {
+        return null;
+      }
+      return parseComponentActionStatus(statusResponse.stdout);
+    });
   }
 };
 
@@ -4432,6 +4504,10 @@ async function handleInstallSingBox() {
     }
   });
   const isExtended = store.get().diagnosticsSystemInfo.sing_box_extended === 1;
+  showToast(
+    _("Switching sing-box core, this may take a few minutes\u2026"),
+    "success"
+  );
   try {
     const result = await NetShiftShellMethods.singBoxComponentAction(
       isExtended ? "install_stable" : "install_extended"

@@ -7,8 +7,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: NETSHIFT\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-06-04 22:59+0300\n"
-"PO-Revision-Date: 2026-06-04 22:59+0300\n"
+"POT-Creation-Date: 2026-06-05 09:28+0300\n"
+"PO-Revision-Date: 2026-06-05 09:28+0300\n"
 "Last-Translator: yandexru45\n"
 "Language-Team: none\n"
 "Language: ru\n"
@@ -115,6 +115,12 @@ msgstr "URL подключения"
 
 msgid "Copy"
 msgstr "Копировать"
+
+msgid "Core switch failed"
+msgstr "Не удалось переключить ядро"
+
+msgid "Core switch timed out"
+msgstr "Истекло время ожидания переключения ядра"
 
 msgid "Currently unavailable"
 msgstr "Временно недоступно"
@@ -748,6 +754,9 @@ msgstr ""
 
 msgid "Successfully copied!"
 msgstr "Успешно скопировано!"
+
+msgid "Switching sing-box core, this may take a few minutes…"
+msgstr "Переключение ядра sing-box, это может занять несколько минут…"
 
 msgid "System info"
 msgstr "Системная информация"

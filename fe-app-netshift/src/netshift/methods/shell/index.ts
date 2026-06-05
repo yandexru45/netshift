@@ -1,12 +1,12 @@
 import { callBaseMethod } from './callBaseMethod';
 import { ClashAPI, NetShift } from '../../types';
 import { executeShellCommand } from '../../../helpers';
-
-interface SingBoxComponentActionResult {
-  success: boolean;
-  version?: string;
-  message?: string;
-}
+import {
+  ComponentActionStartResponse,
+  SingBoxComponentActionResult,
+  parseComponentActionStatus,
+  pollSingBoxComponentAction,
+} from './pollSingBoxComponentAction';
 
 export const NetShiftShellMethods = {
   checkDNSAvailable: async () =>
@@ -96,34 +96,81 @@ export const NetShiftShellMethods = {
   singBoxComponentAction: async (
     action: 'install_extended' | 'install_stable' | 'check_update',
   ): Promise<SingBoxComponentActionResult> => {
-    const response = await executeShellCommand({
+    // `check_update` is a quick single call — not subject to the rpcd 30s wall —
+    // so keep it on the SYNCHRONOUS `component_action` path (unchanged shape).
+    if (action === 'check_update') {
+      const response = await executeShellCommand({
+        command: '/usr/bin/netshift',
+        args: ['component_action', 'sing_box', action],
+        timeout: 600000,
+      });
+
+      if (response.stdout) {
+        try {
+          const parsed = JSON.parse(
+            response.stdout,
+          ) as SingBoxComponentActionResult;
+
+          return {
+            success: Boolean(parsed.success),
+            version: parsed.version,
+            message: parsed.message,
+          };
+        } catch (_e) {
+          return {
+            success: false,
+            message: response.stdout,
+          };
+        }
+      }
+
+      return {
+        success: false,
+        message: response.stderr || '',
+      };
+    }
+
+    // Install actions can take minutes — drive the async backend contract:
+    // start the job, then poll `component_action_status` with short execs so
+    // rpcd never kills a single long-running call.
+    const startResponse = await executeShellCommand({
       command: '/usr/bin/netshift',
-      args: ['component_action', 'sing_box', action],
-      timeout: 600000,
+      args: ['component_action_async', 'sing_box', action],
     });
 
-    if (response.stdout) {
-      try {
-        const parsed = JSON.parse(
-          response.stdout,
-        ) as SingBoxComponentActionResult;
+    let start: ComponentActionStartResponse | null = null;
 
-        return {
-          success: Boolean(parsed.success),
-          version: parsed.version,
-          message: parsed.message,
-        };
+    if (startResponse.stdout) {
+      try {
+        start = JSON.parse(
+          startResponse.stdout,
+        ) as ComponentActionStartResponse;
       } catch (_e) {
-        return {
-          success: false,
-          message: response.stdout,
-        };
+        start = null;
       }
     }
 
-    return {
-      success: false,
-      message: response.stderr || '',
-    };
+    if (!start || start.success !== true || !start.job_id) {
+      return {
+        success: false,
+        message:
+          start?.message || startResponse.stderr || _('Core switch failed'),
+      };
+    }
+
+    const jobId = start.job_id;
+
+    return pollSingBoxComponentAction(async () => {
+      const statusResponse = await executeShellCommand({
+        command: '/usr/bin/netshift',
+        args: ['component_action_status', jobId],
+      });
+
+      if (!statusResponse.stdout) {
+        return null;
+      }
+
+      return parseComponentActionStatus(statusResponse.stdout);
+    });
   },
 };

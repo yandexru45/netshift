@@ -327,6 +327,11 @@ async function handleInstallSingBox() {
 
   const isExtended = store.get().diagnosticsSystemInfo.sing_box_extended === 1;
 
+  showToast(
+    _('Switching sing-box core, this may take a few minutes…'),
+    'success',
+  );
+
   try {
     const result = await NetShiftShellMethods.singBoxComponentAction(
       isExtended ? 'install_stable' : 'install_extended',

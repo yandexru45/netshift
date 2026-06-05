@@ -238,6 +238,21 @@
     ]
   },
   {
+    "call": "Core switch failed",
+    "key": "Core switch failed",
+    "places": [
+      "src\\netshift\\methods\\shell\\index.ts:157",
+      "src\\netshift\\methods\\shell\\pollSingBoxComponentAction.ts:65"
+    ]
+  },
+  {
+    "call": "Core switch timed out",
+    "key": "Core switch timed out",
+    "places": [
+      "src\\netshift\\methods\\shell\\pollSingBoxComponentAction.ts:82"
+    ]
+  },
+  {
     "call": "Currently unavailable",
     "key": "Currently unavailable",
     "places": [
@@ -640,8 +655,8 @@
       "src\\netshift\\tabs\\diagnostic\\initController.ts:267",
       "src\\netshift\\tabs\\diagnostic\\initController.ts:304",
       "src\\netshift\\tabs\\diagnostic\\initController.ts:308",
-      "src\\netshift\\tabs\\diagnostic\\initController.ts:342",
-      "src\\netshift\\tabs\\diagnostic\\initController.ts:346"
+      "src\\netshift\\tabs\\diagnostic\\initController.ts:347",
+      "src\\netshift\\tabs\\diagnostic\\initController.ts:351"
     ]
   },
   {
@@ -1625,7 +1640,7 @@
     "call": "Sing-box core changed, version:",
     "key": "Sing-box core changed, version:",
     "places": [
-      "src\\netshift\\tabs\\diagnostic\\initController.ts:337"
+      "src\\netshift\\tabs\\diagnostic\\initController.ts:342"
     ]
   },
   {
@@ -1746,6 +1761,13 @@
     "key": "Successfully copied!",
     "places": [
       "src\\helpers\\copyToClipboard.ts:10"
+    ]
+  },
+  {
+    "call": "Switching sing-box core, this may take a few minutes…",
+    "key": "Switching sing-box core, this may take a few minutes…",
+    "places": [
+      "src\\netshift\\tabs\\diagnostic\\initController.ts:331"
     ]
   },
   {

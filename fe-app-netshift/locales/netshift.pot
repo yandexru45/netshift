@@ -7,8 +7,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: NETSHIFT\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-06-04 19:59+0300\n"
-"PO-Revision-Date: 2026-06-04 19:59+0300\n"
+"POT-Creation-Date: 2026-06-05 06:27+0300\n"
+"PO-Revision-Date: 2026-06-05 06:27+0300\n"
 "Last-Translator: yandexru45 <sukadark228@gmail.com>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
 "Language: \n"
@@ -153,6 +153,15 @@ msgstr ""
 
 #: src\partials\modal\renderModal.ts:20
 msgid "Copy"
+msgstr ""
+
+#: src\netshift\methods\shell\index.ts:157
+#: src\netshift\methods\shell\pollSingBoxComponentAction.ts:65
+msgid "Core switch failed"
+msgstr ""
+
+#: src\netshift\methods\shell\pollSingBoxComponentAction.ts:82
+msgid "Core switch timed out"
 msgstr ""
 
 #: src\netshift\tabs\dashboard\partials\renderWidget.ts:22
@@ -389,8 +398,8 @@ msgstr ""
 #: src\netshift\tabs\diagnostic\initController.ts:267
 #: src\netshift\tabs\diagnostic\initController.ts:304
 #: src\netshift\tabs\diagnostic\initController.ts:308
-#: src\netshift\tabs\diagnostic\initController.ts:342
-#: src\netshift\tabs\diagnostic\initController.ts:346
+#: src\netshift\tabs\diagnostic\initController.ts:347
+#: src\netshift\tabs\diagnostic\initController.ts:351
 msgid "Failed to execute!"
 msgstr ""
 
@@ -960,7 +969,7 @@ msgstr ""
 msgid "Sing-box autostart disabled"
 msgstr ""
 
-#: src\netshift\tabs\diagnostic\initController.ts:337
+#: src\netshift\tabs\diagnostic\initController.ts:342
 msgid "Sing-box core changed, version:"
 msgstr ""
 
@@ -1031,6 +1040,10 @@ msgstr ""
 
 #: src\helpers\copyToClipboard.ts:10
 msgid "Successfully copied!"
+msgstr ""
+
+#: src\netshift\tabs\diagnostic\initController.ts:331
+msgid "Switching sing-box core, this may take a few minutes…"
 msgstr ""
 
 #: src\netshift\tabs\dashboard\initController.ts:304

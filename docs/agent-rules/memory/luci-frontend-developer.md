@@ -83,6 +83,53 @@ append findings; keep under ~200 lines.
   `describe.each`, `_()` identity-mocked in `tests/setup/global-mocks.ts`, node
   env (no DOM). New pure logic SHOULD ship a test. DOM/service/render code is
   untested (no DOM mocks) — verify those by reasoning + build.
+- DO NOT import a `.test.js` from `methods/shell/index.ts` (or anything that
+  transitively imports the helpers barrel → `withTimeout` → `../netshift`
+  logger → `TabService` which calls `new MutationObserver` at module init).
+  In the node env that throws `MutationObserver is not defined` at COLLECT time
+  (suite fails with "no tests"). Fix: put pure/testable logic in its OWN module
+  that imports leaf helpers by DIRECT path (e.g. `../../../helpers/sleep`, NOT
+  the barrel), and import the test from that module. Done for task-008's
+  `pollSingBoxComponentAction.ts`.
+
+## Async core switch (task-008) — the rpcd 30s pattern
+
+- The core switch (sing-box install_extended/install_stable) must use the
+  ASYNC backend contract, not a single sync `component_action` exec — rpcd
+  kills any single fs.exec at 30s SERVER-SIDE regardless of the JS
+  `timeout:600000`. Pattern: `executeShellCommand(['component_action_async',
+  'sing_box', action])` → parse `{success,job_id,message}` → if no job_id,
+  fail fast → poll `['component_action_status', jobId]` in a loop every ~2s
+  with SHORT individual execs until `running !== true`; safety cap ~150 polls.
+  Each status call is tiny (ms) so never hits the wall.
+- Status contract fields (task-007/009): `{success,running,component,action,
+  message,pid,started_at,updated_at,exit_code,version,latest_version}`.
+  Map terminal → `{success, version, message}`.
+- `check_update` stays on the SYNC `component_action` path (fast, not subject
+  to 30s) — branch inside `singBoxComponentAction` on `action`.
+- Make the poll loop a PURE fn `pollSingBoxComponentAction(fetchStatus,
+  sleepFn=sleep, intervalMs, maxPolls)` with injected `fetchStatus`+`sleepFn`
+  so tests pass a no-op sleep (`() => Promise.resolve()`) and never wait 2s.
+  `sleep(ms)` lives in `helpers/sleep.ts` (Promise+setTimeout).
+- `showToast` type is only `'success' | 'error'` — for an in-progress info
+  toast just use `'success'` (don't widen the helper signature for it).
+- BARREL LEAK GOTCHA: adding `export * from './sleep'` to `helpers/index.ts`
+  made `sleep` appear as `main.sleep` in the generated baseclass.extend export
+  block (used barrel exports are NOT tree-shaken). For a truly INTERNAL helper,
+  do NOT put it in the barrel — place it next to its only consumer (e.g.
+  `methods/shell/sleep.ts`) and import by direct relative path. Verify after
+  build: `git diff main.js | grep '^\+\s\+[a-z]\+,$'` shows no new bare export
+  line. (task-008 M1.)
+- TESTING the REAL `singBoxComponentAction` despite the DOM/MutationObserver
+  collect crash: `vi.mock('<barrel path>', () => ({ executeShellCommand: ... }))`
+  short-circuits the `helpers`→`withTimeout`→`../netshift`→TabService chain so
+  the method module imports cleanly, THEN `const { X } = await import('../index')`.
+  CRITICAL: `vi.mock` factory paths are relative to the TEST file, and must
+  resolve to the SAME absolute module the SUT imports. From
+  `methods/shell/tests/`, the SUT's `../../../helpers` is `../../../../helpers`
+  from the test, and `./callBaseMethod` is `../../callBaseMethod`. Get these
+  wrong and the real (DOM-crashing) module loads → "MutationObserver is not
+  defined" at collect. (task-008 M2.)
 
 ## Landmines
 
