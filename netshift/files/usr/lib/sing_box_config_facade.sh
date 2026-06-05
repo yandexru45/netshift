@@ -535,13 +535,27 @@ sing_box_cf_prepare_subscription_batch() {
         --argjson extended "$sing_box_extended" \
         --argjson include_keywords "$include_keywords_json" \
         --argjson exclude_keywords "$exclude_keywords_json" '
+        # Codepoint-based case fold. OpenWrt jq has no Oniguruma and ascii_downcase
+        # only maps ASCII A-Z (leaving Cyrillic mixed-case), so define an inline
+        # fold (this jq program does NOT import helpers.jq). It lowercases ASCII
+        # AND Cyrillic (incl. the Yo letter outside the contiguous block); emoji
+        # and all other scripts pass through unchanged and thus match as exact
+        # codepoint substrings.
+        def ucfold:
+          explode
+          | map(
+              if   (. >= 65   and . <= 90)   then . + 32     # ASCII A-Z -> a-z
+              elif (. >= 1040 and . <= 1071) then . + 32     # Cyrillic А-Я -> а-я
+              elif (. == 1025)               then 1105       # Ё -> ё
+              else . end)
+          | implode;
         # Normalise the keyword lists: drop empty items and precompute the
-        # ASCII-lowercased form once. ascii_downcase only touches ASCII, so
-        # emoji/Cyrillic keywords are matched as exact byte-substrings.
+        # case-folded form once. ucfold folds ASCII and Cyrillic; emoji/other
+        # scripts are matched as exact codepoint substrings.
         # NB: "include"/"exclude" are reserved jq keywords, hence $inc/$exc.
-        ([$include_keywords[]? | tostring | select(length > 0) | ascii_downcase]) as $inc
-        | ([$exclude_keywords[]? | tostring | select(length > 0) | ascii_downcase]) as $exc
-        # A node "matches" a normalised keyword list when its lowercased name
+        ([$include_keywords[]? | tostring | select(length > 0) | ucfold]) as $inc
+        | ([$exclude_keywords[]? | tostring | select(length > 0) | ucfold]) as $exc
+        # A node "matches" a normalised keyword list when its case-folded name
         # contains any of the keywords (substring via index, NO regex/Oniguruma).
         # Bind each keyword to $kw so index() receives the keyword, not the name.
         | def name_passes_keywords($lc):
@@ -564,7 +578,7 @@ sing_box_cf_prepare_subscription_batch() {
         | [$all_candidates[]
             | . as $ob
             | (($ob.remark // $ob.tag // "") | tostring) as $name
-            | select(name_passes_keywords($name | ascii_downcase))
+            | select(name_passes_keywords($name | ucfold))
           ] as $candidates
         | ($candidates | length) as $total
         # Statically reject outbounds the current sing-box build cannot load.

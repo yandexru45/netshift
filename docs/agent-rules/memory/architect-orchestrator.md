@@ -183,6 +183,21 @@ save+`sing-box check` -> cron jobs -> start sing-box -> dnsmasq_configure ->
   gate generation behind `is_sing_box_extended` and fail safe (warn + skip) when
   stock sing-box is installed, exactly like xhttp does today.
 
+## Subscription keyword filter — Cyrillic case bug (task-010, found on hardware 2026-06)
+
+- REAL bug (not version skew): the keyword filter's "case-insensitive" claim only
+  holds for ASCII. `sing_box_cf_prepare_subscription_batch`
+  (sing_box_config_facade.sh:542/543/567) uses jq `ascii_downcase`, which does
+  NOT lowercase Cyrillic (or any non-ASCII).
+- FIX: replace the 3 `ascii_downcase` in prepare_subscription_batch with an inline
+  jq `def ucfold` (codepoint arithmetic, NO Oniguruma): ASCII A-Z (65–90)+32,
+  Cyrillic А-Я (1040–1071)+32, Ё(1025)->ё(1105). Apply to BOTH the keyword list
+  and the node name. `explode`/`map`/`implode`/`index` all work on the device jq.
+  (Это inline — этот jq-вызов НЕ импортирует helpers.jq.)
+- rejected-hash (`<section>.rejected`, md5 of body) can wedge a retry storm if a
+  STUB body once got cached as rejected; it self-clears once a real body downloads
+  (return 0 path rm's it). Not the root cause here but amplified the symptom.
+
 ## Workflow facts
 
 - Contribution gating: `CODEOWNERS=@yandexru45`; PRs accepted only after Telegram

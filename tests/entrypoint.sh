@@ -1218,7 +1218,7 @@ fi
 # Drive sing_box_cf_prepare_subscription_batch directly with a synthetic
 # subscription JSON and assert kept counts/names for include/exclude lists.
 # Matching: substring, OR across keywords, ASCII case-insensitive, byte-exact
-# for non-ASCII (emoji/Cyrillic). No jq regex (index + ascii_downcase only).
+# for non-folded scripts (emoji/etc). No jq regex (index + inline ucfold only).
 caseJ_cfg='{"outbounds":[]}'
 caseJ_sub="/tmp/netshift-fb-caseJ-$$.json"
 cat > "$caseJ_sub" << 'JSUB'
@@ -1310,6 +1310,92 @@ else
     echo "fb-caseJ-filter-removes-all-zero-kept(count=$caseJ_none_count):FAIL"
 fi
 rm -f "$caseJ_sub"
+
+# ── CASE K: Cyrillic + Ё/ё case-fold (task-010) ─────────────────────
+# The keyword filter must fold ASCII AND Cyrillic (inline ucfold), so a
+# mixed-case Cyrillic keyword matches a mixed-case Cyrillic server name.
+# Emoji keywords still match by exact codepoints; ASCII is unaffected.
+caseK_sub="/tmp/netshift-fb-caseK-$$.json"
+cat > "$caseK_sub" << 'KSUB'
+{
+  "outbounds": [
+    {"type": "shadowsocks", "tag": "🇩🇪 Германия", "server": "a.example.com", "server_port": 443, "method": "aes-256-gcm", "password": "p"},
+    {"type": "shadowsocks", "tag": "🇵🇱 Польша", "server": "b.example.com", "server_port": 443, "method": "aes-256-gcm", "password": "p"},
+    {"type": "shadowsocks", "tag": "🇰🇿 Казахстан", "server": "c.example.com", "server_port": 443, "method": "aes-256-gcm", "password": "p"},
+    {"type": "shadowsocks", "tag": "Орёл", "server": "d.example.com", "server_port": 443, "method": "aes-256-gcm", "password": "p"},
+    {"type": "shadowsocks", "tag": "US grpc", "server": "e.example.com", "server_port": 443, "method": "aes-256-gcm", "password": "p"}
+  ]
+}
+KSUB
+
+caseK_count() {
+    sing_box_cf_prepare_subscription_batch "$caseJ_cfg" "$caseK_sub" "$1" "$2" |
+        jq -r '.count // -1'
+}
+caseK_names() {
+    sing_box_cf_prepare_subscription_batch "$caseJ_cfg" "$caseK_sub" "$1" "$2" |
+        jq -r '(.names // []) | join(",")'
+}
+
+# (1) include mixed-case Cyrillic ["ГеРма"] keeps Германия (was 0 before fix).
+caseK_mixed_count="$(caseK_count '["ГеРма"]' '[]')"
+caseK_mixed_names="$(caseK_names '["ГеРма"]' '[]')"
+if [ "$caseK_mixed_count" = "1" ] && [ "$caseK_mixed_names" = "🇩🇪 Германия" ]; then
+    echo 'fb-caseK-cyrillic-mixed-include:OK'
+else
+    echo "fb-caseK-cyrillic-mixed-include(count=$caseK_mixed_count names='$caseK_mixed_names'):FAIL"
+fi
+
+# (2) lower ["германия"] and upper ["ГЕРМАНИЯ"] both keep Германия.
+caseK_lower_count="$(caseK_count '["германия"]' '[]')"
+caseK_upper_count="$(caseK_count '["ГЕРМАНИЯ"]' '[]')"
+if [ "$caseK_lower_count" = "1" ] && [ "$caseK_upper_count" = "1" ]; then
+    echo 'fb-caseK-cyrillic-lower-upper-include:OK'
+else
+    echo "fb-caseK-cyrillic-lower-upper-include(lower=$caseK_lower_count upper=$caseK_upper_count):FAIL"
+fi
+
+# (3) exclude ["польша"] (lower) drops Польша (upper-P name) regardless of case.
+caseK_exc_count="$(caseK_count '[]' '["польша"]')"
+caseK_exc_names="$(caseK_names '[]' '["польша"]')"
+case "$caseK_exc_names" in
+    *Польша*) caseK_exc_has_pl=1 ;;
+    *) caseK_exc_has_pl=0 ;;
+esac
+if [ "$caseK_exc_count" = "4" ] && [ "$caseK_exc_has_pl" = "0" ]; then
+    echo 'fb-caseK-cyrillic-exclude:OK'
+else
+    echo "fb-caseK-cyrillic-exclude(count=$caseK_exc_count names='$caseK_exc_names'):FAIL"
+fi
+
+# (4) Ё/ё fold: name "Орёл" matched by lower "орёл" and upper "ОРЁЛ".
+caseK_yo_lower="$(caseK_count '["орёл"]' '[]')"
+caseK_yo_upper="$(caseK_count '["ОРЁЛ"]' '[]')"
+caseK_yo_names="$(caseK_names '["ОРЁЛ"]' '[]')"
+if [ "$caseK_yo_lower" = "1" ] && [ "$caseK_yo_upper" = "1" ] && [ "$caseK_yo_names" = "Орёл" ]; then
+    echo 'fb-caseK-yo-fold:OK'
+else
+    echo "fb-caseK-yo-fold(lower=$caseK_yo_lower upper=$caseK_yo_upper names='$caseK_yo_names'):FAIL"
+fi
+
+# (5) emoji keyword ["🇰🇿"] keeps Казахстан by exact codepoint match.
+caseK_emoji_count="$(caseK_count '["🇰🇿"]' '[]')"
+caseK_emoji_names="$(caseK_names '["🇰🇿"]' '[]')"
+if [ "$caseK_emoji_count" = "1" ] && [ "$caseK_emoji_names" = "🇰🇿 Казахстан" ]; then
+    echo 'fb-caseK-emoji-flag-include:OK'
+else
+    echo "fb-caseK-emoji-flag-include(count=$caseK_emoji_count names='$caseK_emoji_names'):FAIL"
+fi
+
+# (6) ASCII no regression: include ["GRPC"] still keeps the "US grpc" node.
+caseK_ascii_count="$(caseK_count '["GRPC"]' '[]')"
+caseK_ascii_names="$(caseK_names '["GRPC"]' '[]')"
+if [ "$caseK_ascii_count" = "1" ] && [ "$caseK_ascii_names" = "US grpc" ]; then
+    echo 'fb-caseK-ascii-no-regression:OK'
+else
+    echo "fb-caseK-ascii-no-regression(count=$caseK_ascii_count names='$caseK_ascii_names'):FAIL"
+fi
+rm -f "$caseK_sub"
 
 echo 'DONE'
 FBEOF

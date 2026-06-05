@@ -240,3 +240,27 @@ findings; keep under ~200 lines.
   runs, rc=1 with no FAIL line). Wrap the invocation `... || true` — assertions
   read JSON/file-state, not rc. (Distinct from the task-007 `$(...)`-capture
   variant.)
+
+## task-010: keyword filter case-fold is ASCII+Cyrillic (not just ASCII)
+
+- **`ascii_downcase` only folds ASCII A-Z** — Cyrillic server tags (e.g.
+  `Германия`) stayed mixed-case, so a Cyrillic include keyword in any other
+  case matched 0 nodes → kept=0 → blocked outbound (hardware-confirmed: include
+  `[ГеРма,пОЛЬш,рос]` over 316 outbounds gave 0 before, 28 after).
+- Fix lives in `sing_box_cf_prepare_subscription_batch`
+  (`sing_box_config_facade.sh`). That jq call does NOT `import` helpers.jq, so the
+  fold is defined **inline** at the top of the program as `def ucfold:` using only
+  `explode`/`map`/`implode` (NO Oniguruma): ASCII `65-90`→`+32`, Cyrillic
+  `1040-1071` (А-Я)→`+32`, and the single out-of-block `Ё` `1025`→`1105` (ё).
+  Everything else (emoji/other scripts) passes through unchanged → still matches
+  as exact codepoint substrings. Replaced the 3 `ascii_downcase` uses (the two
+  `$inc`/`$exc` list normalizers + the `$name | ucfold` in the select). The
+  `index()`-based `name_passes_keywords` substring logic is unchanged.
+- Cyrillic codepoints: А-Я = 1040-1071, а-я = 1072-1103 (so +32), Ё = 1025
+  sits BEFORE the block, ё = 1105 sits AFTER it — hence the special-case branch.
+- Smoke: extended the existing FBEOF block in `test_subscription` with CASE K
+  (Cyrillic). No new top-level test / registration needed — it rides the existing
+  `subscription` category. Synthetic names with literal UTF-8 (`Германия`,
+  `Орёл`, etc.) in the heredoc are fine; assert via `.count`/`.names`. Used a
+  `case "$x" in *Польша*)` membership check rather than exact-name compare for the
+  exclude case (order-independent). All ran green in-container.
