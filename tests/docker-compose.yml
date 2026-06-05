@@ -9,7 +9,8 @@
 #   docker compose -f tests/docker-compose.yml run --rm netshift-test <test-name>
 #
 # Test names: all, deps, syntax, config, helpers, jq, cm, sb, nft,
-#             diagnostics, subscription, rejected, jobstate, selfheal
+#             diagnostics, subscription, rejected, jobstate, selfheal,
+#             dnsdetour
 # ──────────────────────────────────────────────────────────────────
 
 services:

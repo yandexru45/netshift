@@ -2203,6 +2203,188 @@ RHEOF
 }
 
 # ─────────────────────────────────────────────────────────────────
+# Test: DNS via outbound (task-014) — detour wiring + fail-safe cascade
+# ─────────────────────────────────────────────────────────────────
+test_dns_via_outbound() {
+    header "DNS via Outbound (task-014)"
+
+    if ! command -v jq > /dev/null 2>&1; then
+        skip "jq not available"
+        return
+    fi
+
+    local facade_lib="${NETSHIFT_LIB_DIR}/sing_box_config_facade.sh"
+    local bin="${NETSHIFT_SRC}/usr/bin/netshift"
+    if [ ! -r "$facade_lib" ] || [ ! -r "$bin" ]; then
+        skip "facade lib / netshift bin not found"
+        return
+    fi
+
+    # Bind bind-mounted sources to the runtime path the facade hardcodes.
+    mkdir -p /usr/lib/netshift
+    ln -sf "${NETSHIFT_LIB_DIR}/helpers.sh" /usr/lib/netshift/helpers.sh
+    ln -sf "${NETSHIFT_LIB_DIR}/sing_box_config_manager.sh" /usr/lib/netshift/sing_box_config_manager.sh
+
+    local drv="/tmp/netshift-dnsdetour-$$.sh"
+    cat > "$drv" << 'DDEOF'
+. "NETSHIFT_LIB/logging.sh" 2>/dev/null || log() { :; }
+. "FACADE_LIB_PATH"
+
+# Minimal DNS skeleton like sing_box_cm_configure_dns produces.
+base_config='{"dns":{"servers":[],"rules":[],"final":"dns-server","strategy":"prefer_ipv4","independent_cache":true},"outbounds":[{"type":"direct","tag":"direct-out"}]}'
+
+# Tags mirror the constants used in production.
+BOOT="bootstrap"
+MAIN="dns-server"
+FAKE="fakeip"
+DETOUR_TAG="main-out"
+
+# ── Build a config WITH a non-empty detour on the MAIN DNS only. ─────────────
+cfg_on="$base_config"
+cfg_on=$(sing_box_cm_add_udp_dns_server "$cfg_on" "$BOOT" "77.88.8.8" 53)
+cfg_on=$(sing_box_cf_add_dns_server "$cfg_on" "udp" "$MAIN" "1.1.1.1" "" "$DETOUR_TAG")
+cfg_on=$(sing_box_cm_add_fakeip_dns_server "$cfg_on" "$FAKE" "198.18.0.0/15")
+
+echo "$cfg_on" | jq -e --arg t "$MAIN" --arg d "$DETOUR_TAG" \
+    '(.dns.servers[] | select(.tag==$t) | .detour) == $d' >/dev/null 2>&1 \
+    && echo 'dns-on-main-has-detour:OK' || echo 'dns-on-main-has-detour:FAIL'
+echo "$cfg_on" | jq -e --arg t "$BOOT" \
+    '(.dns.servers[] | select(.tag==$t) | has("detour")) == false' >/dev/null 2>&1 \
+    && echo 'dns-on-bootstrap-no-detour:OK' || echo 'dns-on-bootstrap-no-detour:FAIL'
+echo "$cfg_on" | jq -e --arg t "$FAKE" \
+    '(.dns.servers[] | select(.tag==$t) | has("detour")) == false' >/dev/null 2>&1 \
+    && echo 'dns-on-fakeip-no-detour:OK' || echo 'dns-on-fakeip-no-detour:FAIL'
+
+# ── Build a config with an EMPTY detour (feature off) — no .detour key. ──────
+cfg_off="$base_config"
+cfg_off=$(sing_box_cm_add_udp_dns_server "$cfg_off" "$BOOT" "77.88.8.8" 53)
+cfg_off=$(sing_box_cf_add_dns_server "$cfg_off" "udp" "$MAIN" "1.1.1.1" "" "")
+cfg_off=$(sing_box_cm_add_fakeip_dns_server "$cfg_off" "$FAKE" "198.18.0.0/15")
+
+echo "$cfg_off" | jq -e --arg t "$MAIN" \
+    '(.dns.servers[] | select(.tag==$t) | has("detour")) == false' >/dev/null 2>&1 \
+    && echo 'dns-off-main-no-detour:OK' || echo 'dns-off-main-no-detour:FAIL'
+
+# Byte-parity: the main DNS server object with empty tag must equal the object
+# built without passing a detour arg at all.
+cfg_legacy="$base_config"
+cfg_legacy=$(sing_box_cf_add_dns_server "$cfg_legacy" "udp" "$MAIN" "1.1.1.1" "")
+legacy_obj=$(echo "$cfg_legacy" | jq -cS --arg t "$MAIN" '.dns.servers[] | select(.tag==$t)')
+off_obj=$(echo "$cfg_off" | jq -cS --arg t "$MAIN" '.dns.servers[] | select(.tag==$t)')
+if [ "$legacy_obj" = "$off_obj" ]; then
+    echo 'dns-off-byte-parity:OK'
+else
+    echo 'dns-off-byte-parity:FAIL'
+fi
+
+# ── Both configs must pass sing-box check (whole-chain validation). ──────────
+if command -v sing-box > /dev/null 2>&1; then
+    echo "$cfg_on" > /tmp/dnsdetour-on.json
+    echo "$cfg_off" > /tmp/dnsdetour-off.json
+    sing-box -c /tmp/dnsdetour-on.json check >/dev/null 2>&1 \
+        && echo 'dns-on-singbox-check:OK' || echo 'dns-on-singbox-check:FAIL'
+    sing-box -c /tmp/dnsdetour-off.json check >/dev/null 2>&1 \
+        && echo 'dns-off-singbox-check:OK' || echo 'dns-off-singbox-check:FAIL'
+    rm -f /tmp/dnsdetour-on.json /tmp/dnsdetour-off.json
+else
+    echo 'dns-on-singbox-check:SKIP'
+    echo 'dns-off-singbox-check:SKIP'
+fi
+
+# ── Fail-safe cascade: exercise _get_dns_detour_tag VERBATIM from the bin. ───
+# Stub UCI + the reused helpers so the cascade is fully controllable. The stubs
+# read from shell variables set per-case below.
+eval "$(awk '/^_get_dns_detour_tag\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
+
+# UCI stubs (mimic LuCI config_get / config_get_bool: assign-and-return-0).
+config_get_bool() { eval "$1=\"\${UCI_DNS_VIA_OUTBOUND:-0}\""; return 0; }
+config_get() {
+    case "$3" in
+    dns_outbound_section) eval "$1=\"\$UCI_DNS_SECTION\"" ;;
+    connection_type) eval "$1=\"\$(_stub_conn_type \"$2\")\"" ;;
+    *) eval "$1=\"\"" ;;
+    esac
+    return 0
+}
+_stub_conn_type() {
+    case "$1" in
+    block-sec) echo "block" ;;
+    excl-sec) echo "exclusion" ;;
+    "") echo "" ;;
+    *) echo "proxy" ;;
+    esac
+}
+# section_has_configured_outbound: true unless name contains 'noout'.
+section_has_configured_outbound() {
+    case "$1" in
+    *noout*|"") return 1 ;;
+    esac
+    return 0
+}
+get_first_outbound_section() { echo "$STUB_FIRST_SECTION"; }
+get_outbound_tag_by_section() { echo "$1-out"; }
+subscription_outbound_is_unavailable() {
+    case " $STUB_UNAVAILABLE " in *" $1 "*) return 0 ;; esac
+    return 1
+}
+
+# CASE off: feature disabled -> empty.
+UCI_DNS_VIA_OUTBOUND=0; UCI_DNS_SECTION="main"; STUB_FIRST_SECTION="main"; STUB_UNAVAILABLE=""
+r=$(_get_dns_detour_tag)
+[ -z "$r" ] && echo 'cascade-off-empty:OK' || echo 'cascade-off-empty:FAIL'
+
+# CASE explicit-valid: enabled + valid explicit section -> its tag.
+UCI_DNS_VIA_OUTBOUND=1; UCI_DNS_SECTION="vpn1"; STUB_FIRST_SECTION="main"; STUB_UNAVAILABLE=""
+r=$(_get_dns_detour_tag)
+[ "$r" = "vpn1-out" ] && echo 'cascade-explicit-valid:OK' || echo 'cascade-explicit-valid:FAIL'
+
+# CASE invalid->first: explicit section has no configured outbound -> first.
+UCI_DNS_VIA_OUTBOUND=1; UCI_DNS_SECTION="noout-sec"; STUB_FIRST_SECTION="main"; STUB_UNAVAILABLE=""
+r=$(_get_dns_detour_tag)
+[ "$r" = "main-out" ] && echo 'cascade-invalid-to-first:OK' || echo 'cascade-invalid-to-first:FAIL'
+
+# CASE empty-selector->first: no explicit section -> first.
+UCI_DNS_VIA_OUTBOUND=1; UCI_DNS_SECTION=""; STUB_FIRST_SECTION="main"; STUB_UNAVAILABLE=""
+r=$(_get_dns_detour_tag)
+[ "$r" = "main-out" ] && echo 'cascade-empty-to-first:OK' || echo 'cascade-empty-to-first:FAIL'
+
+# CASE no-outbound->direct: enabled but no outbound section at all -> empty.
+UCI_DNS_VIA_OUTBOUND=1; UCI_DNS_SECTION=""; STUB_FIRST_SECTION=""; STUB_UNAVAILABLE=""
+r=$(_get_dns_detour_tag)
+[ -z "$r" ] && echo 'cascade-no-outbound-direct:OK' || echo 'cascade-no-outbound-direct:FAIL'
+
+# CASE block->direct: explicit block section -> empty.
+UCI_DNS_VIA_OUTBOUND=1; UCI_DNS_SECTION="block-sec"; STUB_FIRST_SECTION="main"; STUB_UNAVAILABLE=""
+r=$(_get_dns_detour_tag)
+[ -z "$r" ] && echo 'cascade-block-direct:OK' || echo 'cascade-block-direct:FAIL'
+
+# CASE exclusion->direct: explicit exclusion section -> empty.
+UCI_DNS_VIA_OUTBOUND=1; UCI_DNS_SECTION="excl-sec"; STUB_FIRST_SECTION="main"; STUB_UNAVAILABLE=""
+r=$(_get_dns_detour_tag)
+[ -z "$r" ] && echo 'cascade-exclusion-direct:OK' || echo 'cascade-exclusion-direct:FAIL'
+
+# CASE subscription-unavailable->direct: candidate present but outbound not built.
+UCI_DNS_VIA_OUTBOUND=1; UCI_DNS_SECTION="sub1"; STUB_FIRST_SECTION="main"; STUB_UNAVAILABLE="sub1"
+r=$(_get_dns_detour_tag)
+[ -z "$r" ] && echo 'cascade-subscription-unavailable-direct:OK' || echo 'cascade-subscription-unavailable-direct:FAIL'
+
+echo 'DONE'
+DDEOF
+    sed -i "s|FACADE_LIB_PATH|$facade_lib|; s|NETSHIFT_LIB|$NETSHIFT_LIB_DIR|g; s|BIN_PATH|$bin|g" "$drv"
+
+    ash "$drv" 2>/dev/null | while IFS= read -r line; do
+        case "$line" in
+            *:OK) pass "$line" ;;
+            *:FAIL) fail "$line" ;;
+            *:SKIP) skip "$line" ;;
+            DONE) ;;
+            *) ;;
+        esac
+    done
+    rm -f "$drv"
+}
+
+# ─────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────
 main() {
@@ -2229,6 +2411,7 @@ main() {
             test_rejected_hash
             test_jobstate
             test_selfheal
+            test_dns_via_outbound
             ;;
         deps)        test_deps ;;
         syntax)      test_syntax ;;
@@ -2240,12 +2423,13 @@ main() {
         rejected)    test_rejected_hash ;;
         jobstate)    test_jobstate ;;
         selfheal)    test_selfheal ;;
+        dnsdetour)   test_dns_via_outbound ;;
         jq)          test_jq_helpers ;;
         cm)          test_config_manager ;;
         sb)          test_sing_box_config ;;
         *)
             echo "Unknown test: $target"
-            echo "Available: all deps syntax config helpers jq cm sb nft diagnostics subscription rejected jobstate selfheal"
+            echo "Available: all deps syntax config helpers jq cm sb nft diagnostics subscription rejected jobstate selfheal dnsdetour"
             exit 1
             ;;
     esac

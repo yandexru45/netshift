@@ -1816,8 +1816,14 @@ sing_box_configure_dns() {
         dns_domain_resolver=$SB_BOOTSTRAP_SERVER_TAG
     fi
 
+    # Only the MAIN DNS server may carry a detour. Bootstrap stays direct (it
+    # resolves the DoH/DoT hostname before the tunnel is up) and FakeIP stays
+    # direct. An empty tag means no detour -> byte-identical to the off path.
+    local dns_detour_tag
+    dns_detour_tag="$(_get_dns_detour_tag)"
+
     config=$(sing_box_cm_add_udp_dns_server "$config" "$SB_BOOTSTRAP_SERVER_TAG" "$bootstrap_dns_server" 53)
-    config=$(sing_box_cf_add_dns_server "$config" "$dns_type" "$SB_DNS_SERVER_TAG" "$dns_server" "$dns_domain_resolver")
+    config=$(sing_box_cf_add_dns_server "$config" "$dns_type" "$SB_DNS_SERVER_TAG" "$dns_server" "$dns_domain_resolver" "$dns_detour_tag")
     config=$(sing_box_cm_add_fakeip_dns_server "$config" "$SB_FAKEIP_DNS_SERVER_TAG" "$SB_FAKEIP_INET4_RANGE")
 
     log "Adding DNS Rules"
@@ -2654,6 +2660,59 @@ _determine_first_outbound_section() {
     fi
 }
 
+# Resolve the outbound tag the MAIN sing-box DNS server should detour through.
+# Echoes the tag, or an EMPTY string meaning "no detour / direct DNS" (the safe
+# default). NEVER exits: every failure path logs the reason and falls back to
+# direct DNS so the service always starts and resolves. Mirrors the toggle +
+# optional section selector model of get_subscription_download_proxy_address.
+_get_dns_detour_tag() {
+    local dns_via_outbound dns_outbound_section candidate
+    local candidate_connection_type
+
+    # Step 1: feature off -> direct (silent).
+    config_get_bool dns_via_outbound "settings" "dns_via_outbound" 0
+    [ "$dns_via_outbound" -eq 1 ] || return 0
+
+    config_get dns_outbound_section "settings" "dns_outbound_section"
+
+    # Step 2: resolve the candidate section.
+    if [ -n "$dns_outbound_section" ] && \
+        config_get candidate_connection_type "$dns_outbound_section" "connection_type" && \
+        [ -n "$candidate_connection_type" ] && \
+        section_has_configured_outbound "$dns_outbound_section"; then
+        candidate="$dns_outbound_section"
+    else
+        if [ -n "$dns_outbound_section" ]; then
+            log "DNS-via-outbound section '$dns_outbound_section' is invalid or has no configured outbound; falling back to the first outbound section" "warn"
+        fi
+        candidate="$(get_first_outbound_section)"
+    fi
+
+    # Step 3: no candidate section at all -> direct.
+    if [ -z "$candidate" ]; then
+        log "DNS-via-outbound is enabled but no outbound section is configured; using direct DNS" "warn"
+        return 0
+    fi
+
+    # Step 4: block/exclusion sections produce no real outbound -> direct.
+    config_get candidate_connection_type "$candidate" "connection_type"
+    case "$candidate_connection_type" in
+    block | exclusion)
+        log "DNS-via-outbound candidate section '$candidate' has connection_type '$candidate_connection_type' (no real outbound); using direct DNS" "warn"
+        return 0
+        ;;
+    esac
+
+    # Step 5: subscription outbound not built yet / failed refresh -> direct (self-heal).
+    if subscription_outbound_is_unavailable "$candidate"; then
+        log "DNS-via-outbound selected section '$candidate' has no usable outbound yet; using direct DNS until it recovers" "warn"
+        return 0
+    fi
+
+    # Step 6: use the candidate section's outbound tag.
+    get_outbound_tag_by_section "$candidate"
+}
+
 get_first_outbound_section() {
     local first_section=""
 
@@ -3150,7 +3209,11 @@ check_dns_available() {
     config_foreach check_dhcp_has_netshift_dns dnsmasq
     config_load "$NETSHIFT_CONFIG"
 
-    echo "{\"dns_type\":\"$dns_type\",\"dns_server\":\"$display_dns_server\",\"dns_status\":$dns_status,\"dns_on_router\":$dns_on_router,\"bootstrap_dns_server\":\"$bootstrap_dns_server\",\"bootstrap_dns_status\":$bootstrap_dns_status,\"dhcp_config_status\":$dhcp_config_status}" | jq .
+    # Effective detour tag the main DNS would use (empty string = direct DNS).
+    local dns_via_outbound_tag
+    dns_via_outbound_tag="$(_get_dns_detour_tag)"
+
+    echo "{\"dns_type\":\"$dns_type\",\"dns_server\":\"$display_dns_server\",\"dns_status\":$dns_status,\"dns_on_router\":$dns_on_router,\"bootstrap_dns_server\":\"$bootstrap_dns_server\",\"bootstrap_dns_status\":$bootstrap_dns_status,\"dhcp_config_status\":$dhcp_config_status,\"dns_via_outbound_tag\":\"$dns_via_outbound_tag\"}" | jq .
 }
 
 check_dhcp_has_netshift_dns() {
@@ -3520,6 +3583,7 @@ global_check() {
 
     if [ -n "$dns_check_json" ]; then
         local dns_type dns_server dns_status dns_on_router bootstrap_dns_server bootstrap_dns_status dhcp_config_status
+        local dns_via_outbound_tag
 
         dns_type=$(echo "$dns_check_json" | jq -r '.dns_type // "unknown"')
         dns_server=$(echo "$dns_check_json" | jq -r '.dns_server // "unknown"')
@@ -3528,6 +3592,7 @@ global_check() {
         bootstrap_dns_server=$(echo "$dns_check_json" | jq -r '.bootstrap_dns_server // ""')
         bootstrap_dns_status=$(echo "$dns_check_json" | jq -r '.bootstrap_dns_status // 0')
         dhcp_config_status=$(echo "$dns_check_json" | jq -r '.dhcp_config_status // 0')
+        dns_via_outbound_tag=$(echo "$dns_check_json" | jq -r '.dns_via_outbound_tag // ""')
 
         # Bootstrap DNS
         if [ -n "$bootstrap_dns_server" ]; then
@@ -3543,6 +3608,13 @@ global_check() {
             print_global "✅ Main DNS: $dns_server [$dns_type]"
         else
             print_global "❌ Main DNS: $dns_server [$dns_type]"
+        fi
+
+        # Main DNS detour (DNS-via-outbound)
+        if [ -n "$dns_via_outbound_tag" ]; then
+            print_global "ℹ️ Main DNS via outbound: $dns_via_outbound_tag"
+        else
+            print_global "ℹ️ Main DNS: direct"
         fi
 
         # DNS on router

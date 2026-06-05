@@ -7,8 +7,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: NETSHIFT\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-06-05 09:28+0300\n"
-"PO-Revision-Date: 2026-06-05 09:28+0300\n"
+"POT-Creation-Date: 2026-06-05 21:43+0300\n"
+"PO-Revision-Date: 2026-06-05 21:43+0300\n"
 "Last-Translator: yandexru45\n"
 "Language-Team: none\n"
 "Language: ru\n"
@@ -157,6 +157,9 @@ msgstr "Отключено"
 
 msgid "DNS on router"
 msgstr "DNS на роутере"
+
+msgid "DNS outbound section"
+msgstr "Секция outbound для DNS"
 
 msgid "DNS over HTTPS (DoH)"
 msgstr "DNS через HTTPS (DoH)"
@@ -503,6 +506,9 @@ msgstr "Уровень логов"
 msgid "Main DNS"
 msgstr "Основной DNS"
 
+msgid "Main DNS via outbound"
+msgstr "Основной DNS через outbound"
+
 msgid "Memory Usage"
 msgstr "Использование памяти"
 
@@ -592,6 +598,9 @@ msgstr "Разрешение реальных IP-адресов"
 
 msgid "Restart NetShift"
 msgstr ""
+
+msgid "Route main DNS through proxy/VPN"
+msgstr "Основной DNS через прокси/VPN"
 
 msgid "Router DNS is not routed through sing-box"
 msgstr "DNS роутера не проходит через sing-box"
@@ -685,6 +694,9 @@ msgstr "Selector"
 
 msgid "Selector Proxy Links"
 msgstr "Ссылки прокси для Selector"
+
+msgid "Send upstream DNS queries through a proxy/VPN outbound instead of directly. Bootstrap DNS always stays direct."
+msgstr "Отправлять запросы к основному DNS через outbound прокси/VPN вместо прямого подключения. Bootstrap DNS всегда остаётся прямым."
 
 msgid "Services info"
 msgstr "Информация о сервисах"
@@ -877,6 +889,9 @@ msgstr "Предупреждение: %s нельзя использовать �
 
 msgid "Warning: Russia inside can only be used with %s. %s already in Russia inside and have been removed from selection."
 msgstr "Предупреждение: Russia inside может быть использован только с %s. %s уже есть в Russia inside и будет удален из выбранных."
+
+msgid "Which proxy/VPN section carries the DNS. Leave unset to use the first configured outbound."
+msgstr "Какая секция прокси/VPN обслуживает DNS. Оставьте пустым, чтобы использовать первый настроенный outbound."
 
 msgid "YACD Secret Key"
 msgstr "Секретный ключ YACD"

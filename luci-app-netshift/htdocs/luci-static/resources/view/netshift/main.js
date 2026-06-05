@@ -2828,6 +2828,16 @@ async function runDnsCheck() {
         key: _("Main DNS"),
         value: `${data.dns_server} [${data.dns_type}]`
       },
+      ...insertIf(
+        typeof data.dns_via_outbound_tag === "string" && data.dns_via_outbound_tag.length > 0,
+        [
+          {
+            state: "success",
+            key: _("Main DNS via outbound"),
+            value: data.dns_via_outbound_tag ?? ""
+          }
+        ]
+      ),
       {
         state: data.dns_on_router ? "success" : "error",
         key: _("DNS on router"),

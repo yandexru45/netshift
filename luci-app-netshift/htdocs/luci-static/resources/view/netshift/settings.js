@@ -63,6 +63,51 @@ function createSettingsContent(section) {
   };
 
   o = section.option(
+    form.Flag,
+    "dns_via_outbound",
+    _("Route main DNS through proxy/VPN"),
+    _(
+      "Send upstream DNS queries through a proxy/VPN outbound instead of directly. Bootstrap DNS always stays direct.",
+    ),
+  );
+  o.default = "0";
+  o.rmempty = false;
+
+  o = section.option(
+    form.ListValue,
+    "dns_outbound_section",
+    _("DNS outbound section"),
+    _(
+      "Which proxy/VPN section carries the DNS. Leave unset to use the first configured outbound.",
+    ),
+  );
+  o.rmempty = true;
+  o.depends("dns_via_outbound", "1");
+  o.cfgvalue = function (section_id) {
+    return uci.get("netshift", section_id, "dns_outbound_section");
+  };
+  o.load = function () {
+    const sections = this.map?.data?.state?.values?.netshift ?? {};
+
+    this.keylist = [];
+    this.vallist = [];
+
+    for (const secName in sections) {
+      const sec = sections[secName];
+      if (
+        sec[".type"] === "section" &&
+        sec["connection_type"] !== "block" &&
+        sec["connection_type"] !== "exclusion"
+      ) {
+        this.keylist.push(secName);
+        this.vallist.push(secName);
+      }
+    }
+
+    return Promise.resolve();
+  };
+
+  o = section.option(
     form.Value,
     "dns_rewrite_ttl",
     _("DNS Rewrite TTL"),

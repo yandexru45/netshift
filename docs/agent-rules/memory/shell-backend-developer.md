@@ -357,3 +357,46 @@ findings; keep under ~200 lines.
 - Smoke: NO new test (pure string strip, no new control flow — per spec). Reran
   `shellcheck -S error` clean on `bin/netshift`; `smoke-tests all` = 76 passed /
   0 failed.
+
+## task-014: route the MAIN DNS server through a proxy outbound (detour)
+
+- The cm/cf DNS primitives ALREADY accept `detour` as the last arg and merge it
+  conditionally (`+ (if $detour != "" then {detour:$detour} else {} end)`):
+  `sing_box_cf_add_dns_server` $6, `sing_box_cm_add_udp/tls_dns_server` $6,
+  `_add_https_dns_server` $8. So an EMPTY detour tag => byte-identical to the
+  pre-feature output (proven in smoke via `jq -cS` object compare of the
+  empty-tag main server vs a no-detour-arg call). Do NOT touch cm/cf for this.
+- New helper `_get_dns_detour_tag()` (bin/netshift, next to
+  `_determine_first_outbound_section`/`get_first_outbound_section`) echoes the
+  tag or "" = direct. NEVER `exit`; every fallback logs `warn` and degrades to
+  direct. Cascade: (1) `dns_via_outbound`!=1 -> "" silent; (2) explicit
+  `dns_outbound_section` valid + `section_has_configured_outbound` -> it, else
+  warn(if non-empty) + `get_first_outbound_section`; (3) no candidate -> warn+"";
+  (4) candidate connection_type block/exclusion -> warn+""; (5)
+  `subscription_outbound_is_unavailable` -> warn+"" (self-heal on fresh boot /
+  failed sub); (6) else `get_outbound_tag_by_section "$candidate"`. Mirrors
+  `get_subscription_download_proxy_address` (toggle + section + fail-safe).
+- Wired ONLY into the main `SB_DNS_SERVER_TAG` server in `sing_box_configure_dns`
+  (6th arg). Bootstrap (`SB_BOOTSTRAP_SERVER_TAG`) + FakeIP stay direct on
+  purpose (chicken-and-egg: bootstrap resolves the DoH/DoT host before the tunnel
+  is up; it's also the `domain_resolver` for a hostname main DNS). Two new UCI
+  opts documented (commented) in `etc/config/netshift`: `dns_via_outbound`(bool,
+  default 0) + `dns_outbound_section`. Read with `config_get_bool`/`config_get`
+  + safe defaults — never required live.
+- Did Req 4 (low-risk, observable): `check_dns_available` JSON gains
+  `"dns_via_outbound_tag"` (via `_get_dns_detour_tag`); `global_check` prints
+  `ℹ️ Main DNS via outbound: <tag>` or `ℹ️ Main DNS: direct` (valid-UTF-8 emoji).
+- **LuCI `config_get` always returns 0** (assign-and-succeed even when the option
+  is unset, leaving the var empty). So step-2's `config_get ... && [ -n "$var" ]`
+  detects a non-existent section purely via the EMPTY connection_type, not via rc.
+  Test stubs must mimic this (assign-then-`return 0`).
+- New top-level smoke test `test_dns_via_outbound` (alias `dnsdetour`): builds
+  on/off configs through the real cf/cm path (asserts main-has-detour,
+  bootstrap/fakeip no-detour, off no-detour, off byte-parity, both pass live
+  `sing-box check`), then awk-extracts `_get_dns_detour_tag` VERBATIM from the bin
+  and runs the 8-case cascade table with stubbed UCI + reused helpers. Registered
+  in `all)` + case alias + usage "Available:" line + docker-compose comment.
+  shellcheck -S error clean on bin + libs + install.sh; `smoke-tests all` = 76
+  passed / 0 failed (suite total unchanged because the per-line `pass` runs in a
+  piped `while` subshell — same counter quirk as test_subscription; the per-test
+  ✓ marks are the source of truth, here 15 green for dnsdetour).

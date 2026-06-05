@@ -186,3 +186,40 @@ append findings; keep under ~200 lines.
   `#`) case proving base64-body whitespace is still rejected.
 - main.js diff for this fix is exactly the `validateVmessUrl` function body
   (body/b64 split + whitespace-on-b64 + pad b64) — expected-only.
+
+## settings.js section-picker pattern + DNS-via-outbound (task-015)
+
+- `settings.js` is a HAND-WRITTEN LuCI view (NOT bundled by tsup → editing it
+  yields NO main.js diff). The reusable "pick a proxy/vpn section" dropdown
+  pattern: `form.ListValue` + `o.depends(<flag>,'1')` + `o.cfgvalue` reading
+  `uci.get('netshift',section_id,<opt>)` + custom `o.load` that walks
+  `this.map?.data?.state?.values?.netshift ?? {}`, pushes secName to
+  `this.keylist`/`this.vallist` when `sec['.type']==='section'` AND
+  `connection_type` is NOT `block`/`exclusion`, returns `Promise.resolve()`.
+  Mirrors `download_lists_via_proxy_section` (settings.js ~294-321).
+- `dns_outbound_section` uses `rmempty=true` (empty = backend falls back to
+  first outbound) — intentionally differs from the download-proxy clone's
+  `rmempty=false`. Don't "normalize" it.
+- R3 trap: the spec called the diagnostic field "type-only ⇒ no main.js diff",
+  but adding the field to `types.ts` is type-only (erased at build) WHILE the
+  paired `runDnsCheck.ts` `insertIf` render IS RUNTIME CODE → it DOES produce a
+  legit main.js diff (the 10-line insertIf block). That regenerated main.js is
+  the deliverable; a second build is idempotent (no further diff). "No diff"
+  only holds if you skip the runDnsCheck.ts edit.
+- locales: ran `node {extract-calls,generate-pot,generate-po ru,
+  distribute-locales}.js` (NOT yarn → no corepack). New ru text goes in the
+  SOURCE `locales/netshift.ru.po` empty `msgstr`, then `distribute-locales.js`
+  copies to `po/ru/netshift.po` + `po/templates/netshift.pot`. Regen touches
+  calls.json/pot broadly (line-ref reshuffle + POT-Creation-Date header) but is
+  PURELY ADDITIVE — verified at msgid level: 5 added, 0 removed.
+- ENCODING TRAP (Windows/PS5.1): `git show HEAD:file > tmp` re-encodes the blob
+  to UTF-16 and MANGLES UTF-8 (emoji/Cyrillic) — gives FALSE "removed/added"
+  noise. Use `cmd /c "git ... > %TEMP%\f"` (preserves raw bytes) OR compare via
+  `git diff` directly. The committed .pot/.po ARE valid UTF-8; don't panic.
+- Console prints po/pot Cyrillic as mojibake — that's PS display only; verify
+  on-disk via `node -e "require('./locales/calls.json')...includes(...)"` or
+  UTF-8 byte reads, not the terminal.
+- New i18n keys (task-015) + ru: "Route main DNS through proxy/VPN"→"Основной
+  DNS через прокси/VPN"; "DNS outbound section"→"Секция outbound для DNS";
+  "Main DNS via outbound"→"Основной DNS через outbound"; long descriptions
+  translated equivalently.

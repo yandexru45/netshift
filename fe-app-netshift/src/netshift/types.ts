@@ -175,6 +175,7 @@ export namespace NetShift {
     bootstrap_dns_server: string;
     bootstrap_dns_status: 0 | 1;
     dhcp_config_status: 0 | 1;
+    dns_via_outbound_tag?: string;
   }
 
   export interface NftRulesCheckResult {
