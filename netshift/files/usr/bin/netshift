@@ -3791,7 +3791,9 @@ Available commands:
     global_check            Run global system check
     component_action        Run component action: <component> <action>
                             (e.g. sing_box install_extended|install_stable|check_update)
-    component_action_async  Run component_action in background, returns job file path
+    component_action_async  Start component_action in background; echoes a job_id
+                            (use with component_action_status to poll the outcome)
+    component_action_status Report an async component action by job_id: <job_id>
 EOF
 }
 
@@ -3875,8 +3877,10 @@ component_action)
     component_action "$2" "$3"
     ;;
 component_action_async)
-    "$0" component_action "$2" "$3" > "/tmp/netshift-component-$$.json" 2>&1 &
-    echo "{\"success\":true,\"job\":\"/tmp/netshift-component-$$.json\"}"
+    component_action_async "$2" "$3"
+    ;;
+component_action_status)
+    component_action_status "$2"
     ;;
 *)
     show_help

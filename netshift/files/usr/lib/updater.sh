@@ -7,11 +7,427 @@
 SB_EXT_ARCH_SUFFIX=""
 UPDATES_SING_BOX_EXTENDED_REPO="shtorm-7/sing-box-extended"
 
+# Async component-action job state. State lives on tmpfs (/var/run): it survives
+# the rpcd call that started the worker but is intentionally transient (cleared
+# on reboot — a reboot mid-job simply loses the job, which is acceptable since
+# the install either already landed on disk or will be redone).
+UPDATES_JOB_DIR="/var/run/netshift/component-actions"
+# Finished state/.out files older than this are garbage-collected (minutes).
+UPDATES_JOB_FINISHED_TTL_MINUTES=60
+# Orphaned worker .out files older than this are reaped (minutes).
+UPDATES_JOB_ORPHAN_OUTPUT_TTL_MINUTES=60
+# Grace window after start before a running job whose pid is dead is declared
+# stale (seconds) — covers the race between fork and the pid being recorded.
+UPDATES_JOB_STALE_GRACE_SECONDS=15
+
 updates_log() {
     local message="$1"
     local level="${2:-info}"
 
     log "Updater: $message" "$level"
+}
+
+# ── Async component-action job state (jq, atomic) ───────────────────
+#
+# The UI starts long-running component actions (e.g. switching the sing-box
+# core) via `component_action_async`, which forks the real worker
+# (`component_action`) into a detached background process and returns a job_id
+# immediately — staying well under the rpcd 30s call timeout. The UI then polls
+# `component_action_status <job_id>`. State is small JSON objects written
+# atomically (`*.tmp.$$` + mv) and built with jq `--arg`/`--argjson` only (no
+# Oniguruma anywhere).
+#
+# State object contract (STABLE — consumed by the frontend, task-008):
+#   { success, running, component, action, message, pid,
+#     started_at, updated_at, exit_code, version, latest_version }
+#   * running state : running:true,  success:true,  exit_code:null
+#   * finished state: running:false, success/version/message parsed from the
+#     worker's captured stdout JSON, exit_code from the worker's $?.
+
+# Echoes the on-disk state path for a job id, or returns 1 for an unsafe id.
+# Rejecting anything outside [A-Za-z0-9._-] (and empty/./..) prevents path
+# traversal — the id reaches us straight from the (ACL-gated) UI.
+updates_job_state_path() {
+    local job_id="$1"
+
+    case "$job_id" in
+    "" | "." | "..") return 1 ;;
+    *[!A-Za-z0-9._-]*) return 1 ;;
+    esac
+
+    printf '%s/%s.json\n' "$UPDATES_JOB_DIR" "$job_id"
+}
+
+# Emits a small {"success","job_id","message"} response for the async call.
+updates_job_json_response() {
+    local success="$1"
+    local job_id="$2"
+    local message="${3:-}"
+
+    jq -nc \
+        --argjson success "$success" \
+        --arg job_id "$job_id" \
+        --arg message "$message" \
+        '{success: $success, job_id: $job_id, message: $message}'
+}
+
+# Emits a self-contained status object (used for invalid-id / not-found / error
+# replies that have no state file to cat).
+updates_job_status_response() {
+    local success="$1"
+    local running="$2"
+    local message="$3"
+
+    jq -nc \
+        --argjson success "$success" \
+        --argjson running "$running" \
+        --arg message "$message" \
+        '{success: $success, running: $running, component: "sing_box",
+          action: "", message: $message, pid: null, started_at: 0,
+          updated_at: 0, exit_code: null, version: "", latest_version: ""}'
+}
+
+# Returns a monotonic-ish wall clock as an integer (0 on failure).
+updates_now_seconds() {
+    local now
+
+    now="$(date +%s 2>/dev/null)"
+    case "$now" in
+    "" | *[!0-9]*) now=0 ;;
+    esac
+    printf '%s\n' "$now"
+}
+
+# Writes the "running" state for a job. pid may be empty (recorded as null and
+# patched in later once the worker is forked).
+updates_write_running_job_state() {
+    local state_file="$1"
+    local component="$2"
+    local action="$3"
+    local pid="${4:-}"
+    local tmp_file started_at pid_json rc
+
+    mkdir -p "$UPDATES_JOB_DIR" || return 1
+    started_at="$(updates_now_seconds)"
+    tmp_file="${state_file}.tmp.$$"
+
+    case "$pid" in
+    "" | *[!0-9]*) pid_json="null" ;;
+    *) pid_json="$pid" ;;
+    esac
+
+    jq -nc \
+        --arg component "$component" \
+        --arg action "$action" \
+        --argjson pid "$pid_json" \
+        --argjson started_at "$started_at" \
+        '{success: true, running: true, component: $component,
+          action: $action, message: "Component action is running",
+          pid: $pid, started_at: $started_at, updated_at: $started_at,
+          exit_code: null, version: "", latest_version: ""}' \
+        >"$tmp_file" && mv "$tmp_file" "$state_file"
+    rc=$?
+
+    rm -f "$tmp_file" 2>/dev/null
+    return $rc
+}
+
+# Patches the pid into an existing running state file.
+updates_update_running_job_pid() {
+    local state_file="$1"
+    local pid="$2"
+    local tmp_file rc
+
+    case "$pid" in
+    "" | *[!0-9]*) return 1 ;;
+    esac
+
+    [ -f "$state_file" ] || return 1
+    tmp_file="${state_file}.tmp.$$"
+
+    jq -c \
+        --argjson pid "$pid" \
+        '.pid = $pid' \
+        "$state_file" >"$tmp_file" && mv "$tmp_file" "$state_file"
+    rc=$?
+
+    rm -f "$tmp_file" 2>/dev/null
+    return $rc
+}
+
+# Rewrites a running state file as a failed/stale finished state.
+updates_mark_stale_job_state() {
+    local state_file="$1"
+    local tmp_file updated_at rc
+
+    [ -f "$state_file" ] || return 1
+    updated_at="$(updates_now_seconds)"
+    tmp_file="${state_file}.tmp.$$"
+
+    jq -c \
+        --argjson updated_at "$updated_at" \
+        '. + {success: false, running: false,
+              message: "Component action worker is no longer running",
+              updated_at: $updated_at,
+              exit_code: (if (.exit_code == null) then -1 else .exit_code end)}' \
+        "$state_file" >"$tmp_file" && mv "$tmp_file" "$state_file"
+    rc=$?
+
+    rm -f "$tmp_file" 2>/dev/null
+    return $rc
+}
+
+# 0 if the recorded start time is still inside the stale grace window.
+updates_started_at_is_within_stale_grace() {
+    local started_at="$1"
+    local now age
+
+    case "$started_at" in
+    "" | *[!0-9]*) return 1 ;;
+    esac
+    [ "$started_at" -gt 0 ] || return 1
+
+    now="$(updates_now_seconds)"
+    [ "$now" -gt 0 ] || return 1
+
+    age=$((now - started_at))
+    [ "$age" -lt "$UPDATES_JOB_STALE_GRACE_SECONDS" ]
+}
+
+# 0 if the state file is currently flagged running:true.
+updates_job_state_is_running() {
+    local state_file="$1"
+
+    [ -f "$state_file" ] || return 1
+    jq -e '.running == true' "$state_file" >/dev/null 2>&1
+}
+
+# If a job claims running:true but its pid is gone (past the grace window),
+# rewrite it as a stale finished state so the UI never polls a dead worker
+# forever.
+updates_refresh_running_job_state() {
+    local state_file="$1"
+    local pid started_at
+
+    updates_job_state_is_running "$state_file" || return 0
+
+    pid="$(jq -r '.pid // ""' "$state_file" 2>/dev/null)"
+    started_at="$(jq -r '.started_at // 0' "$state_file" 2>/dev/null)"
+
+    case "$pid" in
+    "" | *[!0-9]*)
+        updates_started_at_is_within_stale_grace "$started_at" && return 0
+        updates_mark_stale_job_state "$state_file"
+        return 0
+        ;;
+    esac
+
+    if kill -0 "$pid" 2>/dev/null; then
+        return 0
+    fi
+
+    updates_started_at_is_within_stale_grace "$started_at" && return 0
+    # Re-check under the (rare) race where the worker finished and rewrote the
+    # state between our running check and here.
+    updates_job_state_is_running "$state_file" || return 0
+    updates_mark_stale_job_state "$state_file"
+}
+
+# Garbage-collects old job artifacts. Never removes a still-running job.
+updates_cleanup_component_jobs() {
+    local output_file state_file
+
+    [ -d "$UPDATES_JOB_DIR" ] || return 0
+
+    # Reap orphan worker outputs whose state is finished (or missing).
+    find "$UPDATES_JOB_DIR" -type f -name '*.out' -mmin "+$UPDATES_JOB_ORPHAN_OUTPUT_TTL_MINUTES" 2>/dev/null |
+        while IFS= read -r output_file; do
+            [ -f "$output_file" ] || continue
+            state_file="${output_file%.out}.json"
+            if [ -f "$state_file" ]; then
+                updates_refresh_running_job_state "$state_file"
+                if updates_job_state_is_running "$state_file"; then
+                    continue
+                fi
+            fi
+            rm -f "$output_file" 2>/dev/null || true
+        done
+
+    # Remove old finished state files (running ones are kept).
+    find "$UPDATES_JOB_DIR" -type f -name '*.json' -mmin "+$UPDATES_JOB_FINISHED_TTL_MINUTES" 2>/dev/null |
+        while IFS= read -r state_file; do
+            [ -f "$state_file" ] || continue
+            updates_refresh_running_job_state "$state_file"
+            updates_job_state_is_running "$state_file" && continue
+            rm -f "$state_file" 2>/dev/null || true
+        done
+}
+
+# Extracts the LAST well-formed JSON object from the worker's captured stdout
+# into $dest. The worker echoes one JSON object, but updates_log/echolog may
+# also have written plain log lines to the same stream, so:
+#   1. if the WHOLE file is valid JSON, use it;
+#   2. else fall back to the last line that, after stripping any leading
+#      non-`{` prefix, parses as a JSON object.
+# busybox-safe sed, jq for validation — NO Oniguruma.
+updates_extract_worker_json() {
+    local output_file="$1"
+    local dest="$2"
+
+    [ -s "$output_file" ] || return 1
+
+    if jq -e . "$output_file" >/dev/null 2>&1; then
+        cp "$output_file" "$dest" 2>/dev/null || return 1
+        return 0
+    fi
+
+    sed -n 's/^[^{]*\({.*\)$/\1/p' "$output_file" 2>/dev/null | tail -n 1 >"$dest"
+    if [ -s "$dest" ] && jq -e . "$dest" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    rm -f "$dest" 2>/dev/null
+    return 1
+}
+
+# Builds the finished state from the worker's captured stdout + its exit code.
+updates_write_finished_job_state() {
+    local state_file="$1"
+    local component="$2"
+    local action="$3"
+    local exit_code="$4"
+    local output_file="$5"
+    local tmp_file json_file updated_at raw_output rc
+
+    updated_at="$(updates_now_seconds)"
+    tmp_file="${state_file}.tmp.$$"
+    json_file="${output_file}.json"
+
+    case "$exit_code" in
+    "" | *[!0-9]*) exit_code=1 ;;
+    esac
+
+    if updates_extract_worker_json "$output_file" "$json_file"; then
+        # Worker JSON shape: {success, message?, version?, current_version?,
+        # latest_version?, status?}. Surface what is present; fall back
+        # sensibly. success also derives from a zero exit code if the worker
+        # JSON omitted it.
+        jq -nc \
+            --slurpfile worker "$json_file" \
+            --arg component "$component" \
+            --arg action "$action" \
+            --argjson exit_code "$exit_code" \
+            --argjson updated_at "$updated_at" \
+            '($worker[0]) as $w
+             | {success: ($w.success // ($exit_code == 0)),
+                running: false,
+                component: $component,
+                action: $action,
+                message: ($w.message // ""),
+                pid: null,
+                started_at: 0,
+                updated_at: $updated_at,
+                exit_code: $exit_code,
+                version: ($w.version // $w.current_version // ""),
+                latest_version: ($w.latest_version // "")}' \
+            >"$tmp_file" && mv "$tmp_file" "$state_file"
+        rc=$?
+        rm -f "$tmp_file" "$json_file" "$output_file" 2>/dev/null
+        return $rc
+    fi
+    rm -f "$json_file" 2>/dev/null
+
+    # No parseable worker JSON: record a generic failure, surfacing a trimmed
+    # snippet of whatever the worker printed.
+    raw_output="$(tr '\n' ' ' <"$output_file" 2>/dev/null | cut -c1-240)"
+    [ -n "$raw_output" ] || raw_output="Component action failed"
+
+    jq -nc \
+        --arg component "$component" \
+        --arg action "$action" \
+        --arg message "$raw_output" \
+        --argjson exit_code "$exit_code" \
+        --argjson updated_at "$updated_at" \
+        '{success: false, running: false, component: $component,
+          action: $action, message: $message, pid: null, started_at: 0,
+          updated_at: $updated_at, exit_code: $exit_code, version: "",
+          latest_version: ""}' \
+        >"$tmp_file" && mv "$tmp_file" "$state_file"
+    rc=$?
+
+    rm -f "$tmp_file" "$output_file" 2>/dev/null
+    return $rc
+}
+
+# Starts `component_action` in a detached, HUP-proof background process and
+# returns a job_id immediately. Never `exit 1`s on a worker failure — the
+# worker's outcome is captured into the finished state for polling.
+component_action_async() {
+    local component="$1"
+    local action="$2"
+    local job_id state_file output_file job_pid
+
+    if ! mkdir -p "$UPDATES_JOB_DIR"; then
+        updates_job_json_response false "" "Failed to create component action state directory"
+        return 1
+    fi
+
+    updates_cleanup_component_jobs
+
+    job_id="$(updates_now_seconds)-$$"
+    state_file="$(updates_job_state_path "$job_id")" || {
+        updates_job_json_response false "" "Failed to prepare component action job"
+        return 1
+    }
+    output_file="$UPDATES_JOB_DIR/$job_id.out"
+
+    if ! updates_write_running_job_state "$state_file" "$component" "$action"; then
+        updates_job_json_response false "" "Failed to write component action state"
+        return 1
+    fi
+
+    # Detached + HUP-proof: trap '' HUP so the rpcd session close (SIGHUP on the
+    # process group) does not kill the worker. The worker's single JSON object
+    # is captured to $output_file; on completion we transcribe it (+ exit code)
+    # into the finished state.
+    (
+        trap '' HUP
+        "$0" component_action "$component" "$action" >"$output_file" 2>&1
+        updates_write_finished_job_state "$state_file" "$component" "$action" "$?" "$output_file"
+    ) >/dev/null 2>&1 &
+    job_pid="$!"
+
+    if ! updates_update_running_job_pid "$state_file" "$job_pid"; then
+        kill "$job_pid" 2>/dev/null || true
+        updates_job_json_response false "" "Failed to record component action worker pid"
+        return 1
+    fi
+
+    updates_job_json_response true "$job_id" "Component action started"
+    return 0
+}
+
+# Reports the status of an async component-action job by job_id.
+component_action_status() {
+    local job_id="$1"
+    local state_file
+
+    mkdir -p "$UPDATES_JOB_DIR" 2>/dev/null || true
+    updates_cleanup_component_jobs
+
+    state_file="$(updates_job_state_path "$job_id")" || {
+        updates_job_status_response false false "Invalid component action job id"
+        return 1
+    }
+
+    if [ ! -f "$state_file" ]; then
+        updates_job_status_response false false "Component action job was not found"
+        return 1
+    fi
+
+    updates_refresh_running_job_state "$state_file"
+    cat "$state_file"
+    return 0
 }
 
 # Returns 0 if the system uses musl libc.
@@ -232,6 +648,20 @@ updates_install_sing_box_extended() {
     local tmp_dir archive releases tag rel asset_url
     local binary_path cronet_path
     local backup_binary="" backup_cronet="" new_version
+
+    # Interruption-tolerant heal: a run killed mid-flight (e.g. the old rpcd 30s
+    # timeout) could leave a non-executable /usr/bin/sing-box behind. Such a
+    # partial artifact must NOT be trusted (e.g. backed up as if it were a real
+    # binary) — the install below replaces it anyway, but we drop it up front so
+    # the tmpfs backup never preserves a broken binary and the version probe
+    # never reads garbage from it.
+    if [ -e /usr/bin/sing-box ] && {
+        [ ! -x /usr/bin/sing-box ] ||
+            ! LD_LIBRARY_PATH=/usr/lib /usr/bin/sing-box version >/dev/null 2>&1
+    }; then
+        updates_log "Found a non-runnable /usr/bin/sing-box (likely a partial install); discarding it before reinstall" "warn"
+        rm -f /usr/bin/sing-box
+    fi
 
     if ! updates_resolve_sing_box_extended_arch_suffix; then
         updates_log "Unsupported architecture for sing-box-extended" "error"

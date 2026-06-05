@@ -1330,6 +1330,253 @@ FBEOF
 }
 
 # ─────────────────────────────────────────────────────────────────
+# Test: Async component-action job state (updater.sh)
+# ─────────────────────────────────────────────────────────────────
+# Exercises the jq job-state machinery from updater.sh with a STUBBED worker
+# (no network, no real download). A tiny stub CLI sources the real updater.sh,
+# provides a trivial `log`, and lets the `component_action` worker be controlled
+# by env vars (STUB_JSON / STUB_SLEEP / STUB_RC). component_action_async forks
+# `"$0" component_action ...`, so $0 must be the stub CLI itself — hence the
+# separate executable. All assertions are jq-validated; tokens are parsed with
+# the same name:OK/FAIL convention as test_subscription.
+test_jobstate() {
+    header "Async Component-Action Job State (updater.sh)"
+
+    if ! command -v jq > /dev/null 2>&1; then
+        skip "jq not available"
+        return
+    fi
+
+    local updater="${NETSHIFT_LIB_DIR}/updater.sh"
+    if [ ! -r "$updater" ]; then
+        skip "updater.sh not found in ${NETSHIFT_LIB_DIR}"
+        return
+    fi
+
+    local stub="/tmp/netshift-jobstub-$$"
+    cat > "$stub" << 'STUBEOF'
+#!/bin/sh
+# Minimal stand-in for /usr/bin/netshift that exposes the async job-state API.
+log() { :; }
+echolog() { :; }
+nolog() { :; }
+# Isolate state under a per-process tmpfs dir so parallel/old runs never clash.
+UPDATES_JOB_DIR="${JOBSTUB_DIR:-/tmp/netshift-jobstub-state}"
+
+. "UPDATER_PATH"
+
+# Re-pin after sourcing (the source sets its own default).
+UPDATES_JOB_DIR="${JOBSTUB_DIR:-/tmp/netshift-jobstub-state}"
+
+case "$1" in
+component_action)
+    # Stubbed worker: emit a (possibly delayed) JSON object then exit STUB_RC.
+    [ -n "$STUB_SLEEP" ] && sleep "$STUB_SLEEP"
+    if [ -z "$STUB_JSON" ]; then
+        STUB_JSON='{"success":true,"version":"1.0.0-extended"}'
+    fi
+    printf '%s\n' "$STUB_JSON"
+    exit "${STUB_RC:-0}"
+    ;;
+component_action_async)
+    component_action_async "$2" "$3"
+    ;;
+component_action_status)
+    component_action_status "$2"
+    ;;
+esac
+STUBEOF
+    sed -i "s|UPDATER_PATH|$updater|g" "$stub"
+    chmod 0755 "$stub"
+
+    local jdir="/tmp/netshift-jobstate-$$"
+    rm -rf "$jdir"
+
+    # ── 1. async returns {success:true, job_id} fast; running state appears ──
+    local start_async end_async elapsed async_json job_id
+    start_async="$(date +%s)"
+    async_json="$(JOBSTUB_DIR="$jdir" STUB_SLEEP=2 STUB_JSON='{"success":true,"version":"1.7.0-extended"}' \
+        "$stub" component_action_async sing_box install_extended)"
+    end_async="$(date +%s)"
+    elapsed=$((end_async - start_async))
+
+    if echo "$async_json" | jq -e '.success == true and (.job_id | length) > 0' > /dev/null 2>&1; then
+        pass "async returns success+job_id ($async_json)"
+    else
+        fail "async did not return success+job_id" "$async_json"
+    fi
+    if [ "$elapsed" -lt 5 ]; then
+        pass "async returned fast (${elapsed}s, well under 30s)"
+    else
+        fail "async too slow: ${elapsed}s"
+    fi
+
+    job_id="$(echo "$async_json" | jq -r '.job_id')"
+    if [ -f "$jdir/$job_id.json" ]; then
+        pass "running state file created"
+    else
+        fail "running state file missing: $jdir/$job_id.json"
+    fi
+    # While the stub sleeps, the state must read running:true / success:true.
+    if jq -e '.running == true and .success == true and .exit_code == null' \
+            "$jdir/$job_id.json" > /dev/null 2>&1; then
+        pass "running state has running:true,success:true,exit_code:null"
+    else
+        fail "running state shape wrong" "$(cat "$jdir/$job_id.json" 2>/dev/null)"
+    fi
+    # The recorded pid must be a live integer while running.
+    local running_pid
+    running_pid="$(jq -r '.pid' "$jdir/$job_id.json" 2>/dev/null)"
+    case "$running_pid" in
+        '' | *[!0-9]*) fail "running pid not an integer: '$running_pid'" ;;
+        *) pass "running pid recorded ($running_pid)" ;;
+    esac
+
+    # ── 2. after the worker finishes, status reports the surfaced outcome ────
+    # Wait for the background worker (stub sleeps 2s) to complete.
+    local waited=0
+    while [ "$waited" -lt 15 ]; do
+        if jq -e '.running == false' "$jdir/$job_id.json" > /dev/null 2>&1; then
+            break
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    local status_json
+    status_json="$(JOBSTUB_DIR="$jdir" "$stub" component_action_status "$job_id")"
+    if echo "$status_json" | jq -e '.running == false and .success == true and .exit_code == 0 and .version == "1.7.0-extended"' > /dev/null 2>&1; then
+        pass "finished status surfaces success/version/exit_code"
+    else
+        fail "finished status wrong" "$status_json"
+    fi
+
+    # ── 2b. a failing worker is recorded (success:false, non-zero exit) ──────
+    local fail_json fail_id fail_status
+    fail_json="$(JOBSTUB_DIR="$jdir" STUB_RC=3 STUB_JSON='{"success":false,"message":"boom"}' \
+        "$stub" component_action_async sing_box install_extended)"
+    fail_id="$(echo "$fail_json" | jq -r '.job_id')"
+    waited=0
+    while [ "$waited" -lt 15 ]; do
+        if jq -e '.running == false' "$jdir/$fail_id.json" > /dev/null 2>&1; then
+            break
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    fail_status="$(JOBSTUB_DIR="$jdir" "$stub" component_action_status "$fail_id")"
+    if echo "$fail_status" | jq -e '.running == false and .success == false and .exit_code == 3 and .message == "boom"' > /dev/null 2>&1; then
+        pass "failed worker recorded (success:false, exit_code:3, message surfaced)"
+    else
+        fail "failed worker status wrong" "$fail_status"
+    fi
+
+    # ── 2c. worker stdout polluted with log lines: last JSON object wins ─────
+    local noisy_json noisy_id noisy_status
+    noisy_json="$(JOBSTUB_DIR="$jdir" \
+        STUB_JSON='Updater: some log line
+another stray line {not-json}
+{"success":true,"version":"9.9.9-extended"}' \
+        "$stub" component_action_async sing_box install_extended)"
+    noisy_id="$(echo "$noisy_json" | jq -r '.job_id')"
+    waited=0
+    while [ "$waited" -lt 15 ]; do
+        if jq -e '.running == false' "$jdir/$noisy_id.json" > /dev/null 2>&1; then
+            break
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    noisy_status="$(JOBSTUB_DIR="$jdir" "$stub" component_action_status "$noisy_id")"
+    if echo "$noisy_status" | jq -e '.running == false and .success == true and .version == "9.9.9-extended"' > /dev/null 2>&1; then
+        pass "finished parser extracts the LAST well-formed JSON object from noisy stdout"
+    else
+        fail "noisy-stdout parse wrong" "$noisy_status"
+    fi
+
+    # ── 3. invalid / traversal job ids are rejected safely ──────────────────
+    local bad bad_json bad_rc bad_out="/tmp/netshift-jobstate-bad-$$"
+    for bad in "../foo" "../../etc/passwd" "foo/bar" "a b" "" "."; do
+        bad_rc=0
+        JOBSTUB_DIR="$jdir" "$stub" component_action_status "$bad" > "$bad_out" 2>/dev/null || bad_rc=$?
+        bad_json="$(cat "$bad_out" 2>/dev/null)"
+        if [ "$bad_rc" -ne 0 ] \
+                && echo "$bad_json" | jq -e '.success == false and .running == false' > /dev/null 2>&1; then
+            pass "invalid job_id rejected safely: '$bad'"
+        else
+            fail "invalid job_id NOT rejected: '$bad'" "rc=$bad_rc json=$bad_json"
+        fi
+    done
+    rm -f "$bad_out"
+    # The validator must never resolve a traversal id to a path.
+    local fb_jobstate="/tmp/netshift-jobstate-validate-$$.sh"
+    cat > "$fb_jobstate" << 'VEOF'
+log() { :; }
+UPDATES_JOB_DIR="VDIR"
+. "UPDATER_PATH"
+UPDATES_JOB_DIR="VDIR"
+if updates_job_state_path "../foo" >/dev/null 2>&1; then
+    echo 'jobstate-traversal-rejected:FAIL'
+else
+    echo 'jobstate-traversal-rejected:OK'
+fi
+if updates_job_state_path "good-1.2_3" >/dev/null 2>&1; then
+    echo 'jobstate-valid-id-accepted:OK'
+else
+    echo 'jobstate-valid-id-accepted:FAIL'
+fi
+VEOF
+    sed -i "s|UPDATER_PATH|$updater|g;s|VDIR|$jdir|g" "$fb_jobstate"
+    ash "$fb_jobstate" 2>/dev/null | while IFS= read -r line; do
+        case "$line" in
+            *:OK) pass "$line" ;;
+            *:FAIL) fail "$line" ;;
+        esac
+    done
+    rm -f "$fb_jobstate"
+
+    # ── 4. stale job: running:true with a dead pid past grace → finished ─────
+    local stale_dir="$jdir/stale"
+    mkdir -p "$stale_dir"
+    local stale_state="$stale_dir/staletest.json"
+    local stale_sh="/tmp/netshift-jobstate-stale-$$.sh"
+    cat > "$stale_sh" << 'SEOF'
+log() { :; }
+UPDATES_JOB_DIR="SDIR"
+. "UPDATER_PATH"
+UPDATES_JOB_DIR="SDIR"
+state="SSTATE"
+# Pick a pid that is certainly dead, and a started_at far in the past so we are
+# well beyond the stale grace window.
+dead_pid=999999
+while kill -0 "$dead_pid" 2>/dev/null; do
+    dead_pid=$((dead_pid + 1))
+done
+old_started=$(( $(date +%s) - 3600 ))
+jq -nc --argjson pid "$dead_pid" --argjson started "$old_started" \
+    '{success:true,running:true,component:"sing_box",action:"install_extended",
+      message:"Component action is running",pid:$pid,started_at:$started,
+      updated_at:$started,exit_code:null,version:"",latest_version:""}' > "$state"
+updates_refresh_running_job_state "$state"
+if jq -e '.running == false and .success == false' "$state" >/dev/null 2>&1; then
+    echo 'jobstate-stale-marked-finished:OK'
+else
+    echo 'jobstate-stale-marked-finished:FAIL'
+fi
+SEOF
+    sed -i "s|UPDATER_PATH|$updater|g;s|SDIR|$stale_dir|g;s|SSTATE|$stale_state|g" "$stale_sh"
+    ash "$stale_sh" 2>/dev/null | while IFS= read -r line; do
+        case "$line" in
+            *:OK) pass "$line" ;;
+            *:FAIL) fail "$line" ;;
+        esac
+    done
+    rm -f "$stale_sh"
+
+    rm -rf "$jdir" "$stub"
+}
+
+# ─────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────
 main() {
@@ -1353,6 +1600,7 @@ main() {
             test_nft
             test_diagnostics
             test_subscription
+            test_jobstate
             ;;
         deps)        test_deps ;;
         syntax)      test_syntax ;;
@@ -1361,12 +1609,13 @@ main() {
         nft)         test_nft ;;
         diagnostics) test_diagnostics ;;
         subscription) test_subscription ;;
+        jobstate)    test_jobstate ;;
         jq)          test_jq_helpers ;;
         cm)          test_config_manager ;;
         sb)          test_sing_box_config ;;
         *)
             echo "Unknown test: $target"
-            echo "Available: all deps syntax config helpers jq cm sb nft diagnostics subscription"
+            echo "Available: all deps syntax config helpers jq cm sb nft diagnostics subscription jobstate"
             exit 1
             ;;
     esac

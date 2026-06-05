@@ -86,6 +86,71 @@ save+`sing-box check` -> cron jobs -> start sing-box -> dnsmasq_configure ->
   `xray_json_count_unsupported`) and dialerProxy-chained outbounds; dedups on
   the connection part. No-regex jq + busybox-safe sed pre-gate.
 
+## Core-switch (sing-box <-> extended) failure — DIAGNOSED on real hardware 2026-06
+
+- SYMPTOM: switching stock->extended fails; on the router the new ~79MB binary
+  sits at /usr/bin/sing-box but with perms `rw-------` (NOT executable), the
+  tmpfs backup + downloaded archive remain, sing-box won't run.
+- ROOT CAUSE: **rpcd timeout**. rpcd runs with `-t 30` (30s). The UI calls
+  `component_action sing_box install_extended` SYNCHRONOUSLY via LuCI fs.exec.
+  Download (~29MB over a slow/proxied link) + gzip extract of the 50MB binary
+  (measured **13s just for extract** on aarch64 cortex-a53) exceeds 30s, so rpcd
+  KILLS the process mid-flight — AFTER `tar -O > /usr/bin/sing-box` (file written
+  `rw-------` under the context umask 0077) but BEFORE `chmod 0755` + the
+  `LD_LIBRARY_PATH=/usr/lib sing-box version` validation. Hence the un-chmod'd
+  binary, leftover backup/archive, no cleanup.
+- DISPROVEN earlier guesses: (a) NOT a disk-space issue (repro'd with free
+  space). (b) NOT the missing-LD_LIBRARY_PATH theory — the extended binary runs
+  `sing-box version` fine WITHOUT LD_LIBRARY_PATH (libcronet only needed at
+  runtime for naive); `chmod 0755` itself works under umask 0077. The code's
+  chmod/validate is correct; it just never gets to run.
+- FIX DIRECTION (matches podkop-plus): make core-switch ASYNCHRONOUS — podkop-plus
+  has `component_action_async` (writes output to a file, forks the work) +
+  `component_action_status` (UI polls). NetShift's updater is synchronous and has
+  no async/status path. Port that model: fork the install, return immediately,
+  poll status; UI shows progress instead of hitting the 30s rpcd wall.
+- Secondary hardening to fold in: chmod 0755 BEFORE validation is already there
+  but ordering/robustness should survive interruption; also rulesets in
+  /tmp/sing-box/rulesets were `rw-------` (umask 0077) — sing-box could still read
+  them as root, not the failure cause, but worth normalizing.
+- Manual recovery that works: `chmod 0755 /usr/bin/sing-box` (the downloaded
+  extended binary is valid), `rm -rf /tmp/netshift-sbext.*`, restart netshift.
+- Router access for testing: `ssh root@192.168.1.1` (no password). aarch64,
+  OpenWrt 24.10.5, overlay 60.9M (16.5M free), /tmp tmpfs 117M. scp does NOT work
+  (no sftp-server) — push scripts via `echo <base64> | base64 -d > f` over ssh.
+
+## Core-switch async fix (task-007) — on-device verified 2026-06; SECOND bug found
+
+- task-007 async model WORKS on real hardware: `component_action_async` returns
+  in 0s with a job_id (no more rpcd 30s kill), `component_action_status` polling
+  goes running->finished cleanly. The PRIMARY bug (synchronous timeout) is fixed.
+- BUT live-testing exposed a SECOND, deeper bug in `updates_install_sing_box_stable`
+  (extended->stock): it has NO backup/rollback (unlike the extended path) AND the
+  whole switch happens while NetShift's nft tproxy + dnsmasq redirect are STILL
+  active. Sequence that bricked the router:
+  1. install_stable removes/replaces the extended binary, then `opkg/apk install
+     sing-box` needs working internet — but the only internet was THROUGH the now
+     -dead VPN. opkg fails with "Operation not permitted" + DNS timeout (the nft
+     kill-switch sends marked traffic to a dead sing-box).
+  2. Net result: /usr/bin/sing-box GONE, no rollback, router has no working core
+     and can't fetch one (extended path also fails: GitHub unreachable w/o VPN).
+- This is a CLASSIC kill-switch deadlock: you can't download a new core because
+  the old core (that provided connectivity) is gone.
+- RESCUE that works: `/etc/init.d/netshift stop` (tears down nft/dnsmasq so direct
+  internet returns) -> set a real resolver -> `opkg update && opkg install
+  sing-box` -> `/etc/init.d/netshift restart`. Verified: restored stock 1.12.22,
+  sing-box running.
+- DESIGN IMPLICATION for the stable-rollback path (future task): before
+  install_stable, KEEP a backup of the current (extended) binary on tmpfs and
+  RESTORE it if the package install fails (so a failed downgrade never leaves the
+  router core-less) — mirror the extended path's backup/restore. Also consider
+  tearing down the redirect (or a temporary direct route) during a core swap so
+  the package manager can reach the feeds. The extended->stock path fundamentally
+  needs connectivity that the dead VPN may have been providing.
+- Router note: stock sing-box install also drops `/etc/config/sing-box-opkg` and
+  `/etc/sing-box/config.json-opkg` (conffile conflicts) — harmless, NetShift owns
+  its own config path.
+
 ## sing-box-extended capability map (researched 2026-06)
 
 - NetShift ALREADY installs sing-box-extended: `updater.sh` pulls

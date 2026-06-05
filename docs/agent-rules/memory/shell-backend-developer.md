@@ -129,3 +129,61 @@ findings; keep under ~200 lines.
 - `test_syntax` in `tests/entrypoint.sh` now also `ash -n`'s `usr/bin/netshift`
   and asserts no residual `рџ`/`в”`/`вЂ` markers (built via `printf` octal, since
   busybox grep lacks `\x`). Guards against re-introducing the mojibake.
+
+## task-007: async component-action job state (rpcd 30s wall fix)
+
+- Root cause of "core switch fails": the UI called `component_action sing_box
+  install_extended` SYNCHRONOUSLY via rpcd `fs.exec`; rpcd has `-t 30` and kills
+  the worker mid-extract (after `tar -O > /usr/bin/sing-box`, before
+  `chmod 0755`). The JS-side `timeout: 600000` does NOT help (server-side limit).
+  Fix = fork the worker detached; return a job_id in <<30s; poll status.
+- Job-state machinery lives in `updater.sh` (jq, no ucode — podkop-plus uses
+  `json_utils_ucode` which we don't have). State dir `/var/run/netshift/
+  component-actions` (tmpfs). Constants: `UPDATES_JOB_DIR`,
+  `UPDATES_JOB_FINISHED_TTL_MINUTES=60`, `UPDATES_JOB_ORPHAN_OUTPUT_TTL_MINUTES=60`,
+  `UPDATES_JOB_STALE_GRACE_SECONDS=15`.
+- **State object contract (STABLE — frontend task-008 depends on these field
+  names):** `{ success, running, component, action, message, pid, started_at,
+  updated_at, exit_code, version, latest_version }`. running:
+  `running:true,success:true,exit_code:null`. finished: `running:false`,
+  success/version/message parsed from the worker stdout JSON, exit_code from `$?`.
+- HUP-proof fork: `( trap '' HUP; "$0" component_action "$c" "$a" >"$out" 2>&1;
+  updates_write_finished_job_state ... "$?" "$out" ) >/dev/null 2>&1 &`; record
+  `$!` into the running state via `updates_update_running_job_pid`. `trap '' HUP`
+  is what survives the rpcd session close. The async wrapper NEVER `exit 1`s on a
+  worker failure — the failure is recorded in the finished state.
+- finished-state stdout parser (`updates_extract_worker_json`): `updates_log`/
+  `echolog` can pollute the worker's stdout, so: (1) if the WHOLE file is valid
+  JSON (`jq -e .`) use it; else (2) `sed -n 's/^[^{]*\({.*\)$/\1/p' | tail -n 1`
+  then `jq -e` validate. sed is busybox-safe; NO Oniguruma. success derives from
+  `$w.success // ($exit_code == 0)`; version from `$w.version // $w.current_version`.
+- Path-traversal guard: `updates_job_state_path` rejects ids matching
+  `*[!A-Za-z0-9._-]*` or empty/`.`/`..` → return 1. The id comes straight from
+  the (ACL-gated) UI, so this is the security boundary. `component_action_status`
+  returns a safe self-contained `{success:false,running:false,...}` (via
+  `updates_job_status_response`, non-zero rc) for invalid id / missing file.
+- Stale detection (`updates_refresh_running_job_state`): running:true but pid not
+  `kill -0` alive AND past `started_at + STALE_GRACE` → rewrite as finished/stale
+  (`success:false`). Prevents the UI polling a crashed worker forever.
+- Idempotent install (Req 4): at the START of `updates_install_sing_box_extended`,
+  if `/usr/bin/sing-box` exists but is not `-x` OR fails a `version` probe, `rm`
+  it up front (don't back up a broken partial artifact). `chmod 0755` stays
+  IMMEDIATELY after stream-extract and BEFORE validation — keep that order.
+- **`set -e` + command substitution landmine (smoke harness):** under `set -e`,
+  `x="$(cmd-that-returns-nonzero)"` ABORTS the whole script. When a test
+  deliberately invokes a failing command (e.g. invalid-id status returns rc 1),
+  run it as `cmd > tmpfile 2>/dev/null || rc=$?` then read tmpfile — do NOT
+  capture via `$(...)` in an assignment, and do NOT use `|| true` (that clobbers
+  `$?` so you can't assert the non-zero rc). This cost me one debug cycle.
+- **Brace-in-default-param landmine (busybox ash):** `${VAR:-{json...}}` emits an
+  EXTRA literal `}` even when VAR is set (the inner `{...}` confuses the `}`
+  matching), corrupting JSON. Use `[ -z "$VAR" ] && VAR='{...}'` then print `$VAR`.
+- New top-level smoke test `test_jobstate` (alias `jobstate`): stubs the worker
+  via a tiny generated CLI whose `$0` IS the stub (because `component_action_async`
+  forks `"$0" component_action ...`); controls the worker with `STUB_JSON`/
+  `STUB_SLEEP`/`STUB_RC` env; isolates state under `JOBSTUB_DIR`. Registered in
+  `all)`, case alias, usage line, and the docker-compose comment.
+- Dispatcher (`bin/netshift`): `component_action_async) component_action_async
+  "$2" "$3" ;;` and `component_action_status) component_action_status "$2" ;;`
+  replaced the old naive `"$0" component_action ... > /tmp/...json &` hack. ACL
+  needs NO change (`/usr/bin/netshift` is exec-allowed wholesale).
