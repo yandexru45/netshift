@@ -1577,6 +1577,338 @@ SEOF
 }
 
 # ─────────────────────────────────────────────────────────────────
+# Test: Core-switch connectivity self-heal + rollback (updater.sh, task-009)
+#
+# Fully mocked — no real network, no real package install, no real binary
+# touched. A generated driver sources updater.sh, points RESOLV_CONF and the
+# tmpfs backup at test files, stubs dig/nslookup/curl/opkg/apk and a fake
+# /etc/init.d/netshift via a PATH-prepended bin dir + a writable init stub, and
+# drives each scenario via env flags. The driver emits `name:OK`/`name:FAIL`
+# tokens which the case parser turns into pass/fail.
+# ─────────────────────────────────────────────────────────────────
+test_selfheal() {
+    header "Core-switch Connectivity Self-Heal + Rollback (updater.sh)"
+
+    if ! command -v jq > /dev/null 2>&1; then
+        skip "jq not available"
+        return
+    fi
+
+    local updater="${NETSHIFT_LIB_DIR}/updater.sh"
+    if [ ! -r "$updater" ]; then
+        skip "updater.sh not found in ${NETSHIFT_LIB_DIR}"
+        return
+    fi
+
+    local work="/tmp/netshift-selfheal-$$"
+    rm -rf "$work"
+    mkdir -p "$work/bin" "$work/init"
+
+    # ── Command stubs (PATH-prepended). Behaviour is driven by env files so the
+    # driver can flip them between scenarios without rewriting the stubs. ──────
+    #
+    # DNS/HTTPS probes: a stub "succeeds" only when its marker file is present.
+    cat > "$work/bin/dig" << 'DIGEOF'
+#!/bin/sh
+# Echo an address (so the resolver-detect grep matches) only if allowed.
+[ -f "$SELFHEAL_DNS_OK" ] && { echo "1.2.3.4"; exit 0; }
+exit 1
+DIGEOF
+    cat > "$work/bin/nslookup" << 'NSEOF'
+#!/bin/sh
+[ -f "$SELFHEAL_DNS_OK" ] && { echo "Address 1.2.3.4"; exit 0; }
+exit 1
+NSEOF
+    cat > "$work/bin/curl" << 'CURLEOF'
+#!/bin/sh
+# Reachability probe (-I/HEAD). Succeed only when the marker is present.
+[ -f "$SELFHEAL_HTTP_OK" ] && exit 0
+exit 1
+CURLEOF
+    # opkg/apk stubs: package "install" succeeds or fails per marker, and on a
+    # "successful" stable install they flip the installed core to non-extended.
+    cat > "$work/bin/opkg" << 'OPKGEOF'
+#!/bin/sh
+case "$1" in
+update) exit 0 ;;
+install)
+    if [ -f "$SELFHEAL_PKG_OK" ]; then
+        printf 'stable-1.12.0\n' > "$SELFHEAL_CORE_VERSION"
+        exit 0
+    fi
+    # Simulate a package failure that ALSO removed the live binary (the brick
+    # scenario): blow away the mock binary so the rollback must restore it.
+    rm -f "$SELFHEAL_BIN" 2>/dev/null
+    exit 1
+    ;;
+esac
+exit 0
+OPKGEOF
+    chmod 0755 "$work/bin/dig" "$work/bin/nslookup" "$work/bin/curl" "$work/bin/opkg"
+
+    # Fake /etc/init.d/netshift: records each invocation (stop/start/restart) to
+    # a log so the driver can assert teardown/bring-up happened.
+    cat > "$work/init/netshift" << 'INITEOF'
+#!/bin/sh
+printf '%s\n' "$1" >> "$SELFHEAL_INIT_LOG"
+exit 0
+INITEOF
+    chmod 0755 "$work/init/netshift"
+
+    # ── Driver: sources updater, overrides paths/helpers, runs one scenario. ──
+    local drv="$work/driver.sh"
+    cat > "$drv" << 'DRVEOF'
+log() { :; }
+echolog() { :; }
+nolog() { :; }
+updates_log() { :; }
+RESOLV_CONF="DRV_RESOLV"
+UPDATES_RESOLV_BACKUP="DRV_BACKUP"
+UPDATES_FEED_PROBE_HOST="feeds.test"
+UPDATES_GITHUB_PROBE_HOST="github.test"
+UPDATES_HEAL_RESOLVERS="1.1.1.1 9.9.9.9"
+UPDATES_SING_BOX_BIN="$SELFHEAL_BIN"
+UPDATES_LIBCRONET_LIB="DRV_CRONET"
+. "DRV_UPDATER"
+# Re-pin after sourcing (the source sets its own defaults).
+RESOLV_CONF="DRV_RESOLV"
+UPDATES_RESOLV_BACKUP="DRV_BACKUP"
+UPDATES_FEED_PROBE_HOST="feeds.test"
+UPDATES_GITHUB_PROBE_HOST="github.test"
+UPDATES_HEAL_RESOLVERS="1.1.1.1 9.9.9.9"
+UPDATES_SING_BOX_BIN="$SELFHEAL_BIN"
+UPDATES_LIBCRONET_LIB="DRV_CRONET"
+
+# Mocked helpers used by the stable core (normally from helpers.sh).
+get_sing_box_version() { cat "$SELFHEAL_CORE_VERSION" 2>/dev/null; }
+is_sing_box_extended() {
+    case "${1:-$(get_sing_box_version)}" in
+    *extended*) return 0 ;;
+    *) return 1 ;;
+    esac
+}
+# Make the post-install restart a no-op probe (the fake init records it anyway).
+updates_restart_netshift() { /etc/init.d/netshift restart >/dev/null 2>&1 || true; }
+
+case "$1" in
+run_stable)  updates_install_sing_box_stable ;;
+esac
+DRVEOF
+    sed -i "s|DRV_UPDATER|$updater|g;s|DRV_RESOLV|$work/resolv.conf|g;s|DRV_BACKUP|$work/resolv.bak|g;s|DRV_CRONET|$work/libcronet.so|g" "$drv"
+
+    # Common per-run wiring: PATH-prepended stubs + fake init under /etc/init.d.
+    # We back up any real /etc/init.d/netshift and restore it at the end.
+    local init_target="/etc/init.d/netshift"
+    local init_saved=""
+    if [ -e "$init_target" ]; then
+        init_saved="$work/netshift.realinit"
+        cp -p "$init_target" "$init_saved" 2>/dev/null || init_saved=""
+    fi
+    mkdir -p /etc/init.d 2>/dev/null || true
+    cp -p "$work/init/netshift" "$init_target" 2>/dev/null
+    chmod 0755 "$init_target" 2>/dev/null || true
+
+    # Marker/state files shared with the stubs via env.
+    export SELFHEAL_DNS_OK="$work/dns_ok"
+    export SELFHEAL_HTTP_OK="$work/http_ok"
+    export SELFHEAL_PKG_OK="$work/pkg_ok"
+    export SELFHEAL_INIT_LOG="$work/init.log"
+    export SELFHEAL_CORE_VERSION="$work/core.version"
+    export SELFHEAL_BIN="$work/usr-bin-sing-box"
+
+    local out="$work/out.json"
+
+    run_scenario() {
+        # The worker returns non-zero on recoverable failures (success:false);
+        # under `set -e` that would abort the suite, so swallow the rc here — the
+        # assertions read the JSON + file state, not the exit code.
+        rm -f "$work/init.log"
+        PATH="$work/bin:$PATH" ash "$drv" run_stable > "$out" 2>/dev/null || true
+    }
+
+    # ── Scenario 1: pre-flight passes → install proceeds, no teardown ─────────
+    : > "$SELFHEAL_DNS_OK"; : > "$SELFHEAL_HTTP_OK"; : > "$SELFHEAL_PKG_OK"
+    printf 'extended-1.12.0\n' > "$SELFHEAL_CORE_VERSION"
+    printf 'original-resolver\n' > "$work/resolv.conf"
+    : > "$work/usr-bin-sing-box"
+    run_scenario
+    if jq -e '.success == true' "$out" > /dev/null 2>&1; then
+        pass "selfheal-preflight-pass-proceeds:OK"
+    else
+        fail "selfheal-preflight-pass-proceeds:FAIL" "$(cat "$out" 2>/dev/null)"
+    fi
+    if [ ! -f "$work/init.log" ] || ! grep -q 'stop' "$work/init.log"; then
+        pass "selfheal-preflight-pass-no-teardown:OK"
+    else
+        fail "selfheal-preflight-pass-no-teardown:FAIL" "init.log=$(cat "$work/init.log" 2>/dev/null)"
+    fi
+    if [ "$(cat "$work/resolv.conf" 2>/dev/null)" = "original-resolver" ]; then
+        pass "selfheal-preflight-pass-resolv-untouched:OK"
+    else
+        fail "selfheal-preflight-pass-resolv-untouched:FAIL" "$(cat "$work/resolv.conf" 2>/dev/null)"
+    fi
+
+    # ── Scenario 2: pre-flight fails → DNS heal succeeds → resolv restored ────
+    # DNS fails first, but once the temp resolver is written DNS+HTTP pass. We
+    # model "temp resolver fixes DNS" by making the DNS probe key off the temp
+    # resolver content: the stub succeeds only when the marker exists, and the
+    # heal writes the marker via a wrapper. Simpler: DNS off initially, but the
+    # heal's resolv write triggers a hook that flips DNS on. We emulate that by
+    # having the temp-resolver write observed through resolv.conf content.
+    rm -f "$SELFHEAL_DNS_OK"; : > "$SELFHEAL_HTTP_OK"; : > "$SELFHEAL_PKG_OK"
+    printf 'extended-1.12.0\n' > "$SELFHEAL_CORE_VERSION"
+    printf 'original-resolver\n' > "$work/resolv.conf"
+    : > "$work/usr-bin-sing-box"
+    # dig stub variant for scenario 2: DNS resolves only once resolv.conf holds
+    # the temp resolver (i.e. after the heal wrote it).
+    cat > "$work/bin/dig" << 'DIG2EOF'
+#!/bin/sh
+grep -q '1.1.1.1' "DRV_RESOLV2" 2>/dev/null && { echo "1.2.3.4"; exit 0; }
+exit 1
+DIG2EOF
+    sed -i "s|DRV_RESOLV2|$work/resolv.conf|g" "$work/bin/dig"
+    chmod 0755 "$work/bin/dig"
+    run_scenario
+    if jq -e '.success == true' "$out" > /dev/null 2>&1; then
+        pass "selfheal-dns-heal-proceeds:OK"
+    else
+        fail "selfheal-dns-heal-proceeds:FAIL" "$(cat "$out" 2>/dev/null)"
+    fi
+    # Epilogue must have restored the ORIGINAL resolv.conf.
+    if [ "$(cat "$work/resolv.conf" 2>/dev/null)" = "original-resolver" ]; then
+        pass "selfheal-dns-heal-resolv-restored:OK"
+    else
+        fail "selfheal-dns-heal-resolv-restored:FAIL" "$(cat "$work/resolv.conf" 2>/dev/null)"
+    fi
+    # DNS heal alone was enough → redirect should NOT have been torn down.
+    if [ ! -f "$work/init.log" ] || ! grep -q 'stop' "$work/init.log"; then
+        pass "selfheal-dns-heal-no-teardown:OK"
+    else
+        fail "selfheal-dns-heal-no-teardown:FAIL" "init.log=$(cat "$work/init.log" 2>/dev/null)"
+    fi
+
+    # ── Scenario 3: DNS heal insufficient → redirect teardown heals ───────────
+    # DNS resolves even with the temp resolver, but HTTP only comes up AFTER the
+    # redirect is torn down (the fake init writes a marker on stop that flips
+    # HTTP on).
+    rm -f "$SELFHEAL_DNS_OK"; rm -f "$SELFHEAL_HTTP_OK"; : > "$SELFHEAL_PKG_OK"
+    printf 'extended-1.12.0\n' > "$SELFHEAL_CORE_VERSION"
+    printf 'original-resolver\n' > "$work/resolv.conf"
+    : > "$work/usr-bin-sing-box"
+    # DNS resolves only with temp resolver present (as scenario 2).
+    # HTTP succeeds only after init stop has been recorded.
+    cat > "$work/bin/curl" << 'CURL3EOF'
+#!/bin/sh
+grep -q 'stop' "$SELFHEAL_INIT_LOG" 2>/dev/null && exit 0
+exit 1
+CURL3EOF
+    chmod 0755 "$work/bin/curl"
+    run_scenario
+    if jq -e '.success == true' "$out" > /dev/null 2>&1; then
+        pass "selfheal-teardown-heal-proceeds:OK"
+    else
+        fail "selfheal-teardown-heal-proceeds:FAIL" "$(cat "$out" 2>/dev/null)"
+    fi
+    if grep -q 'stop' "$work/init.log" 2>/dev/null; then
+        pass "selfheal-teardown-taken:OK"
+    else
+        fail "selfheal-teardown-taken:FAIL" "init.log=$(cat "$work/init.log" 2>/dev/null)"
+    fi
+    if grep -q 'start' "$work/init.log" 2>/dev/null; then
+        pass "selfheal-teardown-bringup-called:OK"
+    else
+        fail "selfheal-teardown-bringup-called:FAIL" "init.log=$(cat "$work/init.log" 2>/dev/null)"
+    fi
+    if [ "$(cat "$work/resolv.conf" 2>/dev/null)" = "original-resolver" ]; then
+        pass "selfheal-teardown-resolv-restored:OK"
+    else
+        fail "selfheal-teardown-resolv-restored:FAIL" "$(cat "$work/resolv.conf" 2>/dev/null)"
+    fi
+
+    # ── Scenario 4: heal fails entirely → install ABORTED, binary not removed ─
+    rm -f "$SELFHEAL_DNS_OK"; rm -f "$SELFHEAL_HTTP_OK"; : > "$SELFHEAL_PKG_OK"
+    printf 'extended-1.12.0\n' > "$SELFHEAL_CORE_VERSION"
+    printf 'original-resolver\n' > "$work/resolv.conf"
+    : > "$work/usr-bin-sing-box"
+    # DNS never resolves; HTTP never reachable even after teardown.
+    cat > "$work/bin/dig" << 'DIG4EOF'
+#!/bin/sh
+exit 1
+DIG4EOF
+    cat > "$work/bin/curl" << 'CURL4EOF'
+#!/bin/sh
+exit 1
+CURL4EOF
+    chmod 0755 "$work/bin/dig" "$work/bin/curl"
+    run_scenario
+    if jq -e '.success == false and (.message | length) > 0' "$out" > /dev/null 2>&1; then
+        pass "selfheal-heal-fail-aborts-successfalse:OK"
+    else
+        fail "selfheal-heal-fail-aborts-successfalse:FAIL" "$(cat "$out" 2>/dev/null)"
+    fi
+    # The (mock) binary must NOT have been removed (opkg install never ran).
+    if [ -e "$work/usr-bin-sing-box" ]; then
+        pass "selfheal-heal-fail-binary-intact:OK"
+    else
+        fail "selfheal-heal-fail-binary-intact:FAIL" "mock binary was removed"
+    fi
+    # Original resolv.conf restored by the epilogue.
+    if [ "$(cat "$work/resolv.conf" 2>/dev/null)" = "original-resolver" ]; then
+        pass "selfheal-heal-fail-resolv-restored:OK"
+    else
+        fail "selfheal-heal-fail-resolv-restored:FAIL" "$(cat "$work/resolv.conf" 2>/dev/null)"
+    fi
+    # Redirect was torn down during the (failed) heal → epilogue brings it back.
+    if grep -q 'start' "$work/init.log" 2>/dev/null; then
+        pass "selfheal-heal-fail-bringup-called:OK"
+    else
+        fail "selfheal-heal-fail-bringup-called:FAIL" "init.log=$(cat "$work/init.log" 2>/dev/null)"
+    fi
+
+    # ── Scenario 5: stable install fails after binary removed → backup restored
+    : > "$SELFHEAL_DNS_OK"; : > "$SELFHEAL_HTTP_OK"; rm -f "$SELFHEAL_PKG_OK"
+    printf 'extended-1.12.0\n' > "$SELFHEAL_CORE_VERSION"
+    printf 'original-resolver\n' > "$work/resolv.conf"
+    printf 'EXTENDED-CORE-BYTES\n' > "$work/usr-bin-sing-box"
+    # Connectivity is fine; dig/curl just check the markers.
+    cat > "$work/bin/dig" << 'DIG5EOF'
+#!/bin/sh
+[ -f "$SELFHEAL_DNS_OK" ] && { echo "1.2.3.4"; exit 0; }
+exit 1
+DIG5EOF
+    cat > "$work/bin/curl" << 'CURL5EOF'
+#!/bin/sh
+[ -f "$SELFHEAL_HTTP_OK" ] && exit 0
+exit 1
+CURL5EOF
+    chmod 0755 "$work/bin/dig" "$work/bin/curl"
+    run_scenario
+    if jq -e '.success == false' "$out" > /dev/null 2>&1; then
+        pass "selfheal-stable-install-fail-successfalse:OK"
+    else
+        fail "selfheal-stable-install-fail-successfalse:FAIL" "$(cat "$out" 2>/dev/null)"
+    fi
+    # The opkg stub removed the live binary; the tmpfs backup must be restored
+    # so a working binary remains with the ORIGINAL extended bytes.
+    if [ -e "$work/usr-bin-sing-box" ] && \
+            [ "$(cat "$work/usr-bin-sing-box" 2>/dev/null)" = "EXTENDED-CORE-BYTES" ]; then
+        pass "selfheal-stable-install-fail-backup-restored:OK"
+    else
+        fail "selfheal-stable-install-fail-backup-restored:FAIL" "$(cat "$work/usr-bin-sing-box" 2>/dev/null)"
+    fi
+
+    # ── Restore the real init script (if any) and clean up. ──────────────────
+    if [ -n "$init_saved" ] && [ -e "$init_saved" ]; then
+        cp -p "$init_saved" "$init_target" 2>/dev/null || true
+    else
+        rm -f "$init_target" 2>/dev/null || true
+    fi
+    unset SELFHEAL_DNS_OK SELFHEAL_HTTP_OK SELFHEAL_PKG_OK SELFHEAL_INIT_LOG \
+        SELFHEAL_CORE_VERSION SELFHEAL_BIN
+    rm -rf "$work"
+}
+
+# ─────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────
 main() {
@@ -1601,6 +1933,7 @@ main() {
             test_diagnostics
             test_subscription
             test_jobstate
+            test_selfheal
             ;;
         deps)        test_deps ;;
         syntax)      test_syntax ;;
@@ -1610,12 +1943,13 @@ main() {
         diagnostics) test_diagnostics ;;
         subscription) test_subscription ;;
         jobstate)    test_jobstate ;;
+        selfheal)    test_selfheal ;;
         jq)          test_jq_helpers ;;
         cm)          test_config_manager ;;
         sb)          test_sing_box_config ;;
         *)
             echo "Unknown test: $target"
-            echo "Available: all deps syntax config helpers jq cm sb nft diagnostics subscription jobstate"
+            echo "Available: all deps syntax config helpers jq cm sb nft diagnostics subscription jobstate selfheal"
             exit 1
             ;;
     esac

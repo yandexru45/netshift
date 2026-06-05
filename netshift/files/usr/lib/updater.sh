@@ -632,6 +632,276 @@ updates_restart_netshift() {
     fi
 }
 
+# ── Core-switch connectivity self-heal + restore (task-009) ─────────
+#
+# Switching the core needs working internet (package feeds for the stable
+# install, the GitHub API for the extended install). On the operator's router
+# the only egress was THROUGH the now-dead VPN, so the swap deadlocked behind
+# NetShift's own kill-switch (nft tproxy + dnsmasq -> dead sing-box) and bricked
+# the box: the stock binary was removed with no way to fetch a replacement.
+#
+# The fix encodes the manual rescue as self-healing with active connectivity
+# repair: pre-flight a connectivity probe; if it fails, heal (a working
+# temporary resolver, then tear down the redirect via the EXISTING
+# `/etc/init.d/netshift stop`) and re-check; only swap once a feed is reachable;
+# ALWAYS restore the original resolv.conf and the redirect afterwards.
+#
+# What the heal changed is recorded in two module-level flags so the restore
+# epilogue touches back EXACTLY what was changed (and nothing leaks):
+#   UPDATES_HEAL_RESOLV_REPLACED=1  -> /etc/resolv.conf was overwritten
+#   UPDATES_HEAL_REDIRECT_DOWN=1    -> the NetShift redirect was torn down
+UPDATES_HEAL_RESOLV_REPLACED=0
+UPDATES_HEAL_REDIRECT_DOWN=0
+
+# Resolves the probe host for a swap direction.
+#   stable   -> OpenWrt package feeds host
+#   extended -> GitHub API host
+updates_preflight_host_for_direction() {
+    local direction="$1"
+
+    case "$direction" in
+    stable) printf '%s\n' "$UPDATES_FEED_PROBE_HOST" ;;
+    extended) printf '%s\n' "$UPDATES_GITHUB_PROBE_HOST" ;;
+    *) return 1 ;;
+    esac
+}
+
+# Returns 0 if a DNS lookup of $host resolves, using bind-dig (a dependency)
+# with an nslookup fallback. Small timeouts; logs the outcome.
+updates_dns_resolves() {
+    local host="$1"
+
+    if command -v dig >/dev/null 2>&1; then
+        if dig +time=3 +tries=1 +short "$host" 2>/dev/null | grep -q '[0-9a-fA-F]'; then
+            return 0
+        fi
+        return 1
+    fi
+
+    if command -v nslookup >/dev/null 2>&1; then
+        # busybox nslookup: any "Address" line beyond the server line means a
+        # successful resolution. Avoid jq/regex; plain grep is fine here.
+        if nslookup "$host" 2>/dev/null | grep -q 'Address'; then
+            return 0
+        fi
+        return 1
+    fi
+
+    return 1
+}
+
+# Returns 0 if an HTTPS reachability check to $host succeeds within a short
+# connect timeout (curl HEAD --fail, wget --spider fallback).
+updates_host_reachable() {
+    local host="$1"
+    local url="https://$host"
+
+    if command -v curl >/dev/null 2>&1; then
+        curl --connect-timeout 5 -m 8 -fsSI -A "netshift-updater" "$url" >/dev/null 2>&1 && return 0
+        return 1
+    fi
+
+    if command -v wget >/dev/null 2>&1; then
+        wget -T 8 -q --spider "$url" >/dev/null 2>&1 && return 0
+        return 1
+    fi
+
+    return 1
+}
+
+# Direction-aware connectivity pre-flight. Returns 0 if the host needed for the
+# CURRENT swap direction is both resolvable AND reachable, non-zero otherwise.
+# Logs each probe so the outcome is visible via the job message / syslog.
+updates_preflight_connectivity() {
+    local direction="$1"
+    local host
+
+    host="$(updates_preflight_host_for_direction "$direction")" || {
+        updates_log "Connectivity pre-flight: unknown direction '$direction'" "error"
+        return 1
+    }
+
+    if ! updates_dns_resolves "$host"; then
+        updates_log "Connectivity pre-flight: DNS resolve of $host FAILED" "warn"
+        return 1
+    fi
+    updates_log "Connectivity pre-flight: DNS resolve of $host ok"
+
+    if ! updates_host_reachable "$host"; then
+        updates_log "Connectivity pre-flight: HTTPS reachability of $host FAILED" "warn"
+        return 1
+    fi
+    updates_log "Connectivity pre-flight: HTTPS reachability of $host ok"
+
+    return 0
+}
+
+# Writes a temporary working resolver to /etc/resolv.conf, backing up the
+# original to tmpfs first. Records UPDATES_HEAL_RESOLV_REPLACED so the epilogue
+# restores it. Atomic write (*.tmp.$$ + mv).
+updates_write_temp_resolver() {
+    local resolver tmp_file
+
+    # Back up the original exactly once.
+    if [ "$UPDATES_HEAL_RESOLV_REPLACED" -eq 0 ]; then
+        if [ -e "$RESOLV_CONF" ]; then
+            cp -p "$RESOLV_CONF" "$UPDATES_RESOLV_BACKUP" 2>/dev/null || true
+        else
+            # No original to restore; mark the backup absent so the epilogue
+            # removes the temp file rather than restoring a phantom.
+            rm -f "$UPDATES_RESOLV_BACKUP" 2>/dev/null || true
+        fi
+    fi
+
+    tmp_file="${RESOLV_CONF}.netshift.tmp.$$"
+    : >"$tmp_file" 2>/dev/null || return 1
+    for resolver in $UPDATES_HEAL_RESOLVERS; do
+        printf 'nameserver %s\n' "$resolver" >>"$tmp_file" 2>/dev/null || {
+            rm -f "$tmp_file" 2>/dev/null
+            return 1
+        }
+    done
+
+    if mv -f "$tmp_file" "$RESOLV_CONF" 2>/dev/null; then
+        UPDATES_HEAL_RESOLV_REPLACED=1
+        updates_log "Self-heal: wrote temporary resolver ($UPDATES_HEAL_RESOLVERS) to $RESOLV_CONF"
+        return 0
+    fi
+
+    rm -f "$tmp_file" 2>/dev/null
+    return 1
+}
+
+# Tears down the NetShift redirect (kill-switch) by invoking the EXISTING
+# `/etc/init.d/netshift stop` — this runs dnsmasq_restore + stop_main (nft
+# table delete + ip rule/route flush + sing-box stop) and flips
+# shutdown_correctly so the dnsmasq UCI bookkeeping stays consistent. Records
+# UPDATES_HEAL_REDIRECT_DOWN so the epilogue brings it back.
+updates_teardown_redirect() {
+    if [ ! -x /etc/init.d/netshift ]; then
+        updates_log "Self-heal: /etc/init.d/netshift not present; cannot tear down redirect" "warn"
+        return 1
+    fi
+
+    updates_log "Self-heal: tearing down the NetShift redirect via /etc/init.d/netshift stop"
+    /etc/init.d/netshift stop >/dev/null 2>&1 || true
+    UPDATES_HEAL_REDIRECT_DOWN=1
+    return 0
+}
+
+# Variant B self-heal — only invoked when pre-flight fails. Reversible steps,
+# each logged and each recorded in UPDATES_HEAL_* so the epilogue restores
+# precisely what was touched:
+#   1. temp resolver -> re-check
+#   2. still failing -> tear down the redirect -> re-check
+# Returns 0 when connectivity is restored, non-zero when healing failed.
+updates_selfheal_connectivity() {
+    local direction="$1"
+
+    updates_log "Connectivity pre-flight failed; attempting self-heal (variant B)" "warn"
+
+    # Step 1: temporary resolver, then re-check.
+    if updates_write_temp_resolver; then
+        if updates_preflight_connectivity "$direction"; then
+            updates_log "Self-heal: connectivity restored by temporary resolver (dns_healed)"
+            return 0
+        fi
+    else
+        updates_log "Self-heal: failed to write temporary resolver" "warn"
+    fi
+
+    # Step 2: tear down the redirect (kill-switch), then re-check.
+    if updates_teardown_redirect; then
+        if updates_preflight_connectivity "$direction"; then
+            updates_log "Self-heal: connectivity restored after redirect teardown (redirect_down)"
+            return 0
+        fi
+    fi
+
+    updates_log "Self-heal: connectivity could NOT be restored" "error"
+    return 1
+}
+
+# Restore epilogue — MUST run on EVERY exit path of an install (success, install
+# failure, heal failure). Restores exactly what the heal changed:
+#   * resolv.conf replaced -> restore the backed-up original (or drop the temp
+#     file if there was no original);
+#   * redirect torn down   -> bring NetShift back up via `/etc/init.d/netshift
+#     start` so nft/dnsmasq/routing + shutdown_correctly are reinstated.
+# Idempotent: clears the flags so a second call is a no-op.
+updates_restore_after_swap() {
+    if [ "$UPDATES_HEAL_RESOLV_REPLACED" -eq 1 ]; then
+        if [ -e "$UPDATES_RESOLV_BACKUP" ]; then
+            if mv -f "$UPDATES_RESOLV_BACKUP" "$RESOLV_CONF" 2>/dev/null; then
+                updates_log "Restore: original $RESOLV_CONF reinstated"
+            else
+                updates_log "Restore: failed to reinstate original $RESOLV_CONF" "warn"
+            fi
+        else
+            # No original existed: remove our temporary resolver.
+            rm -f "$RESOLV_CONF" 2>/dev/null || true
+            updates_log "Restore: removed temporary $RESOLV_CONF (no original to restore)"
+        fi
+        UPDATES_HEAL_RESOLV_REPLACED=0
+    fi
+
+    if [ "$UPDATES_HEAL_REDIRECT_DOWN" -eq 1 ]; then
+        if [ -x /etc/init.d/netshift ]; then
+            updates_log "Restore: bringing the NetShift redirect back up via /etc/init.d/netshift start"
+            /etc/init.d/netshift start >/dev/null 2>&1 || true
+        fi
+        UPDATES_HEAL_REDIRECT_DOWN=0
+    fi
+}
+
+# Runs pre-flight for a direction and, on failure, the self-heal. Returns 0 when
+# connectivity is confirmed (possibly after healing), non-zero when it could not
+# be established. Callers MUST run updates_restore_after_swap on every exit path
+# regardless of this function's result.
+updates_ensure_connectivity() {
+    local direction="$1"
+
+    if updates_preflight_connectivity "$direction"; then
+        return 0
+    fi
+
+    updates_selfheal_connectivity "$direction"
+}
+
+# Public entry: install sing-box-extended with the connectivity self-heal
+# preamble + the always-run restore epilogue around the real worker.
+#
+# The epilogue is guaranteed via a SINGLE cleanup path: the core worker echoes
+# its JSON to a capture file and returns an rc; we then ALWAYS call
+# updates_restore_after_swap once, re-emit the captured JSON, and return the rc.
+# No early `return` skips the restore.
+updates_install_sing_box_extended() {
+    local rc out json
+
+    UPDATES_HEAL_RESOLV_REPLACED=0
+    UPDATES_HEAL_REDIRECT_DOWN=0
+
+    if ! updates_ensure_connectivity "extended"; then
+        # Heal failed: nothing was removed (extended only touches the binary
+        # AFTER a reachable feed), so the router keeps its working core.
+        updates_restore_after_swap
+        updates_log "Aborting extended install: GitHub unreachable and self-heal failed (existing core left intact)" "error"
+        echo "{\"success\":false,\"message\":\"GitHub API unreachable and connectivity self-heal failed; core switch aborted (existing sing-box left intact)\"}"
+        return 1
+    fi
+
+    out="/tmp/netshift-sbext-result.$$"
+    _updates_install_sing_box_extended_core >"$out" 2>/dev/null
+    rc=$?
+    json="$(cat "$out" 2>/dev/null)"
+    rm -f "$out" 2>/dev/null
+
+    updates_restore_after_swap
+
+    [ -n "$json" ] && printf '%s\n' "$json"
+    return "$rc"
+}
+
 # Downloads and installs sing-box-extended, replacing /usr/bin/sing-box.
 # Echoes a JSON result on stdout.
 #
@@ -644,7 +914,7 @@ updates_restart_netshift() {
 #     live binary FIRST to reclaim overlay space; then stream-extract the new
 #     member directly onto the final path so only ONE binary ever occupies
 #     overlay. On any failure the tmpfs backup is moved back into place.
-updates_install_sing_box_extended() {
+_updates_install_sing_box_extended_core() {
     local tmp_dir archive releases tag rel asset_url
     local binary_path cronet_path
     local backup_binary="" backup_cronet="" new_version
@@ -796,15 +1066,93 @@ updates_install_sing_box_extended() {
     return 0
 }
 
+# Public entry: install the stock (stable) sing-box with the connectivity
+# self-heal preamble + the always-run restore epilogue around the real worker.
+#
+# CRITICAL ordering (learned from the on-hardware brick): the stable path
+# removes/replaces the binary via the package manager, which needs working feed
+# connectivity. So we MUST confirm a reachable feed (pre-flight, then self-heal)
+# BEFORE the worker touches the binary. If the heal fails, we abort here —
+# nothing has been removed, so the router keeps its working (extended) core.
+#
+# The epilogue is guaranteed via a SINGLE cleanup path: the core worker echoes
+# its JSON to a capture file and returns an rc; we then ALWAYS call
+# updates_restore_after_swap once, re-emit the captured JSON, and return the rc.
+updates_install_sing_box_stable() {
+    local rc out json
+
+    UPDATES_HEAL_RESOLV_REPLACED=0
+    UPDATES_HEAL_REDIRECT_DOWN=0
+
+    if ! updates_ensure_connectivity "stable"; then
+        # Heal failed BEFORE the binary was touched: do NOT proceed to the
+        # package install. The router keeps its current working core.
+        updates_restore_after_swap
+        updates_log "Aborting stable install: package feeds unreachable and self-heal failed (binary NOT removed; existing core left intact)" "error"
+        echo "{\"success\":false,\"message\":\"Package feeds unreachable and connectivity self-heal failed; core switch aborted (existing sing-box left intact)\"}"
+        return 1
+    fi
+
+    out="/tmp/netshift-sbstable-result.$$"
+    _updates_install_sing_box_stable_core >"$out" 2>/dev/null
+    rc=$?
+    json="$(cat "$out" 2>/dev/null)"
+    rm -f "$out" 2>/dev/null
+
+    updates_restore_after_swap
+
+    [ -n "$json" ] && printf '%s\n' "$json"
+    return "$rc"
+}
+
 # Reinstalls the stock (stable) sing-box via the system package manager,
 # reverting an "extended" install. Unlike the extended path this never touches
 # the GitHub API. Echoes a JSON result on stdout.
 #
+# Backup/rollback parity with the extended path (task-009): the current binary
+# (and libcronet.so if present) is backed up to TMPFS before the install. If
+# the package install fails OR the post-install non-extended validation fails,
+# the tmpfs backup is restored so the router keeps a working core (it stays on
+# the extended build rather than ending core-less). The backup is dropped only
+# after a confirmed-good install.
+#
 # The install result is checked (no silent "|| true" that always reports
 # success), and the outcome is validated to be a NON-extended build so a failed
 # downgrade is surfaced honestly instead of masquerading as success.
-updates_install_sing_box_stable() {
+_updates_install_sing_box_stable_core() {
     local new_version installed=1
+    local tmp_dir backup_binary="" backup_cronet=""
+
+    # Remove stale temp dirs from an interrupted earlier run (tmpfs is small).
+    rm -rf /tmp/netshift-sbstable.* 2>/dev/null
+
+    tmp_dir="$(mktemp -d /tmp/netshift-sbstable.XXXXXX 2>/dev/null)"
+    if [ -z "$tmp_dir" ]; then
+        updates_log "Failed to create temporary directory" "error"
+        echo "{\"success\":false,\"message\":\"Failed to create temporary directory\"}"
+        return 1
+    fi
+
+    # Back up the current binary/lib ON TMPFS (/tmp) BEFORE the package manager
+    # touches anything, so a failed install can be rolled back to a working core.
+    if [ -e "$UPDATES_SING_BOX_BIN" ]; then
+        backup_binary="$tmp_dir/sing-box.backup"
+        if ! cp -p "$UPDATES_SING_BOX_BIN" "$backup_binary" 2>/dev/null; then
+            rm -rf "$tmp_dir"
+            updates_log "Failed to backup current sing-box binary" "error"
+            echo "{\"success\":false,\"message\":\"Failed to backup current sing-box binary\"}"
+            return 1
+        fi
+    fi
+    if [ -e "$UPDATES_LIBCRONET_LIB" ]; then
+        backup_cronet="$tmp_dir/libcronet.so.backup"
+        if ! cp -p "$UPDATES_LIBCRONET_LIB" "$backup_cronet" 2>/dev/null; then
+            rm -rf "$tmp_dir"
+            updates_log "Failed to backup current libcronet.so" "error"
+            echo "{\"success\":false,\"message\":\"Failed to backup current libcronet.so\"}"
+            return 1
+        fi
+    fi
 
     if command -v apk >/dev/null 2>&1; then
         updates_log "Updating apk package lists"
@@ -822,39 +1170,74 @@ updates_install_sing_box_stable() {
             opkg install --force-downgrade sing-box </dev/null >/dev/null 2>&1 || installed=0
         fi
     else
+        rm -rf "$tmp_dir"
         updates_log "No supported package manager (apk/opkg) found" "error"
         echo "{\"success\":false,\"message\":\"No supported package manager found\"}"
         return 1
     fi
 
     if [ "$installed" -eq 0 ]; then
-        updates_log "Failed to install stable sing-box via package manager" "error"
-        echo "{\"success\":false,\"message\":\"Failed to install stable sing-box (package manager error; check connectivity/repositories)\"}"
+        # Package install failed (it may have already removed/half-replaced the
+        # binary). Restore the tmpfs backup so a working core remains.
+        updates_stable_rollback "$backup_binary" "$backup_cronet"
+        rm -rf "$tmp_dir"
+        updates_log "Failed to install stable sing-box via package manager; previous binary restored" "error"
+        echo "{\"success\":false,\"message\":\"Failed to install stable sing-box (package manager error); previous binary restored\"}"
         return 1
-    fi
-
-    # The extended path side-loads /usr/lib/libcronet.so next to the binary.
-    # Stock sing-box does not use it; remove the leftover so the rollback is
-    # clean. The package manager never installs this file, so this is safe.
-    if [ -e /usr/lib/libcronet.so ]; then
-        updates_log "Removing leftover libcronet.so from extended install"
-        rm -f /usr/lib/libcronet.so 2>/dev/null || true
     fi
 
     updates_restart_netshift
     new_version="$(get_sing_box_version)"
 
     # Validate the rollback actually took effect: the running binary must no
-    # longer be an "extended" build.
+    # longer be an "extended" build. If it still is, the install did not land —
+    # restore the backup so the router keeps a known-good core.
     if is_sing_box_extended "$new_version"; then
-        updates_log "Stable install reported success but sing-box is still extended ($new_version)" "error"
-        echo "{\"success\":false,\"message\":\"sing-box is still the extended build after install; rollback did not take effect\"}"
+        updates_stable_rollback "$backup_binary" "$backup_cronet"
+        rm -rf "$tmp_dir"
+        updates_log "Stable install reported success but sing-box is still extended ($new_version); previous binary restored" "error"
+        echo "{\"success\":false,\"message\":\"sing-box is still the extended build after install; rollback did not take effect (previous binary restored)\"}"
         return 1
     fi
 
+    # Confirmed-good install. The extended path side-loads /usr/lib/libcronet.so
+    # next to the binary; stock sing-box does not use it, so drop the leftover.
+    if [ -e "$UPDATES_LIBCRONET_LIB" ]; then
+        updates_log "Removing leftover libcronet.so from extended install"
+        rm -f "$UPDATES_LIBCRONET_LIB" 2>/dev/null || true
+    fi
+
+    # Drop the backup only now that the install is confirmed good.
+    rm -rf "$tmp_dir"
     updates_log "Stable sing-box installed: ${new_version:-unknown}"
     echo "{\"success\":true,\"version\":\"$new_version\"}"
     return 0
+}
+
+# Restores the tmpfs backup of /usr/bin/sing-box (and libcronet.so) into place.
+# Used by the stable path when the package install or validation fails so the
+# router never ends core-less. Best-effort; logs the outcome.
+updates_stable_rollback() {
+    local backup_binary="$1"
+    local backup_cronet="$2"
+
+    if [ -n "$backup_binary" ] && [ -e "$backup_binary" ]; then
+        rm -f "$UPDATES_SING_BOX_BIN" 2>/dev/null
+        if mv -f "$backup_binary" "$UPDATES_SING_BOX_BIN" 2>/dev/null; then
+            chmod 0755 "$UPDATES_SING_BOX_BIN" 2>/dev/null || true
+            updates_log "Rollback: restored previous sing-box binary from tmpfs backup"
+        else
+            updates_log "Rollback: FAILED to restore sing-box binary from backup" "error"
+        fi
+    fi
+
+    if [ -n "$backup_cronet" ] && [ -e "$backup_cronet" ]; then
+        rm -f "$UPDATES_LIBCRONET_LIB" 2>/dev/null
+        if mv -f "$backup_cronet" "$UPDATES_LIBCRONET_LIB" 2>/dev/null; then
+            chmod 0644 "$UPDATES_LIBCRONET_LIB" 2>/dev/null || true
+            updates_log "Rollback: restored previous libcronet.so from tmpfs backup"
+        fi
+    fi
 }
 
 # Checks whether a newer sing-box-extended release is available.

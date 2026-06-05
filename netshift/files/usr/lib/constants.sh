@@ -38,6 +38,21 @@ NFT_OUTBOUND_MARK="0x00200000"
 
 ## sing-box
 SB_REQUIRED_VERSION="1.12.0"
+# Core-switch connectivity self-heal (task-009). Hosts probed before a core
+# swap, depending on direction: the stable (stock) install pulls from the
+# OpenWrt package feeds, the extended install pulls from the GitHub API.
+UPDATES_FEED_PROBE_HOST="downloads.openwrt.org"
+UPDATES_GITHUB_PROBE_HOST="api.github.com"
+# Temporary public resolvers written to /etc/resolv.conf when DNS healing is
+# needed (the user's upstream may itself be the now-dead VPN).
+UPDATES_HEAL_RESOLVERS="1.1.1.1 9.9.9.9"
+# tmpfs backup path for the original /etc/resolv.conf during a heal.
+UPDATES_RESOLV_BACKUP="/tmp/netshift-resolv.conf.bak"
+# Installed core paths (indirected so the stable backup/rollback path is unit
+# testable without clobbering the real binary). These are the real on-device
+# locations; tests override them.
+UPDATES_SING_BOX_BIN="/usr/bin/sing-box"
+UPDATES_LIBCRONET_LIB="/usr/lib/libcronet.so"
 # DNS
 SB_DNS_SERVER_TAG="dns-server"
 SB_FAKEIP_DNS_SERVER_TAG="fakeip-server"

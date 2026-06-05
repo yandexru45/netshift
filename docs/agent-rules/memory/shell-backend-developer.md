@@ -187,3 +187,56 @@ findings; keep under ~200 lines.
   "$2" "$3" ;;` and `component_action_status) component_action_status "$2" ;;`
   replaced the old naive `"$0" component_action ... > /tmp/...json &` hack. ACL
   needs NO change (`/usr/bin/netshift` is exec-allowed wholesale).
+
+## task-009: core-switch connectivity self-heal + rollback (anti-brick)
+
+- Root cause of the on-hardware brick: `updates_install_sing_box_stable`
+  removed/replaced /usr/bin/sing-box via opkg/apk with NO backup, while the
+  kill-switch (nft tproxy + dnsmasq->127.0.0.42->dead sing-box) blocked feed
+  access. Binary GONE, no rollback. Extended path already had a tmpfs backup.
+- Fix shape (variant B): both install paths are now thin PUBLIC wrappers
+  (`updates_install_sing_box_extended`/`_stable`) that run
+  `updates_ensure_connectivity <dir>` (preflight; if fail -> selfheal) then call
+  the renamed private core (`_updates_install_sing_box_*_core`), then ALWAYS
+  `updates_restore_after_swap`. **Epilogue guarantee = single cleanup call**:
+  core echoes JSON to a `/tmp/...result.$$` capture file + returns rc; wrapper
+  runs restore once, re-emits the JSON, returns rc. No early return skips it (no
+  trap needed — the wrapper has exactly one core call).
+- `updates_preflight_connectivity <stable|extended>` is direction-aware: stable
+  probes `UPDATES_FEED_PROBE_HOST` (downloads.openwrt.org), extended probes
+  `UPDATES_GITHUB_PROBE_HOST` (api.github.com). Probe = DNS resolve (dig
+  `+short`, nslookup fallback; bind-dig is a dep) AND a curl `-fsSI`/wget
+  `--spider` HEAD with `--connect-timeout 5`. No jq/regex.
+- `updates_selfheal_connectivity`: (1) backup `/etc/resolv.conf` to tmpfs
+  (`UPDATES_RESOLV_BACKUP`), write temp resolver (`UPDATES_HEAL_RESOLVERS`
+  1.1.1.1+9.9.9.9) atomically, recheck; (2) if still failing, tear down redirect
+  via the EXISTING `/etc/init.d/netshift stop` (dnsmasq_restore + stop_main),
+  recheck. Records `UPDATES_HEAL_RESOLV_REPLACED`/`UPDATES_HEAL_REDIRECT_DOWN`
+  module-level flags so the epilogue restores EXACTLY what changed (restore
+  resolv.conf via mv-back, bring redirect up via `/etc/init.d/netshift start`).
+  Reused stop/start so dnsmasq UCI + shutdown_correctly bookkeeping stays right;
+  NO hand-rolled nft flush, NO sacred-constant change.
+- Stable core gained tmpfs backup/rollback (`updates_stable_rollback`) mirroring
+  the extended path: backup binary+libcronet BEFORE package install; restore on
+  install-fail OR still-extended validation. CRITICAL ordering: connectivity is
+  confirmed (preflight/heal in the wrapper) BEFORE the core touches the binary —
+  if heal fails the wrapper aborts and nothing is removed.
+- **Testability indirection**: added `UPDATES_SING_BOX_BIN`/`UPDATES_LIBCRONET_LIB`
+  constants (default the real /usr/bin/sing-box, /usr/lib/libcronet.so) and used
+  them in the STABLE core+rollback only, so the smoke test can point them at
+  /tmp mocks without clobbering the container's real binary. Extended path still
+  uses the literals (spec said mirror, not refactor).
+- New top-level smoke test `test_selfheal` (alias `selfheal`): a generated
+  driver sources updater.sh, re-pins RESOLV_CONF/probe-hosts/bin paths, stubs
+  dig/nslookup/curl/opkg via a PATH-prepended bin dir whose behaviour is keyed
+  off marker files, and installs a fake `/etc/init.d/netshift` that logs
+  stop/start/restart (absolute path can't be PATH-overridden — write+restore the
+  real one). 5 scenarios: preflight-pass, dns-heal, teardown-heal, heal-fail
+  (abort, binary intact), stable-install-fail (backup restored). Registered in
+  `all)`, case alias, usage line, docker-compose comment.
+- **`set -e` landmine (again)**: the worker returns non-zero on recoverable
+  failures (success:false). Calling it directly inside a test under `set -e`
+  aborts the WHOLE suite mid-run (only the passes before it print, summary never
+  runs, rc=1 with no FAIL line). Wrap the invocation `... || true` — assertions
+  read JSON/file-state, not rc. (Distinct from the task-007 `$(...)`-capture
+  variant.)
