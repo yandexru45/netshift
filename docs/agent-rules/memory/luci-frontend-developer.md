@@ -378,3 +378,47 @@ append findings; keep under ~200 lines.
   translations retained in source ru.po — harmless, additive-preserving).
 - yarn was classic 1.22.22 → `yarn ci` safe; verified `git diff --exit-code --
   yarn.lock` clean and NO `.yarn`/`.yarnrc.yml`. No vitest referenced the field.
+
+## validateUrl accepts IP host + subscription_insecure checkbox (task-021a)
+
+- `validateUrl.ts` REWRITE: old regex required an ALPHA TLD so an IPv4/IPv6 host
+  was rejected ("Invalid URL format"). New approach mirrors `validateSocksUrl`:
+  keep the protocol check (default `['http:','https:']`), then a pure
+  module-private `extractHost(url)` strips `scheme://` (indexOf '://'), the
+  `/path?query#frag` (`rest.search(/[/?#]/)` — first of `/ ? #`), optional
+  `userinfo@` (`lastIndexOf('@')`), and the `:port`. BRACKETED IPv6:
+  if `rest.startsWith('[')`, return the substring between `[` and the first `]`
+  (so `[2001:db8::1]:2096` → `2001:db8::1`); else strip trailing `:port` via
+  `lastIndexOf(':')`. Then accept if `validateIPV4(host).valid ||
+  validateIPV6(host).valid || validateDomain(host).valid`. Kept the 3 existing
+  messages verbatim (`Invalid URL format`, the protocol message, `Valid`).
+- NB `validateIPV6` ALREADY unwraps brackets internally (`.replace(/^\[/,'')`),
+  but extractHost must unwrap anyway so the `:port` after `]` is dropped before
+  the validator sees it. `extractHost` is NOT barrel-exported (module-private) →
+  no `main.*` leak; main.js diff is +30/-4 (the helper + the host-check), second
+  build BYTE-IDENTICAL, banner + `return baseclass.extend({` intact.
+- This single fix covers ALL FOUR callers (subscription_url, urltest_testing_url,
+  remote_domain_lists, remote_subnet_lists) — callers unchanged.
+- TESTS: `validateDomain` accepts a trailing path (`example.com/path` regex has
+  `(?:\/[^\s]*)?$`), so existing domain-with-path valid cases still pass through
+  the domain branch. Added valid: `https://91.199.111.52:2096/sub/abc`,
+  `http://10.0.0.1/x`, `https://[2001:db8::1]:2096/sub`. Added invalid:
+  `https://999.1.1.1/x` (bad IPv4 → not domain either), `ftp://1.2.3.4` (protocol
+  fails first), `https://` (extractHost → '' → "Invalid URL format"). Kept
+  `https://google` invalid (no TLD, not an IP).
+- section.js (HAND-WRITTEN, NOT bundled → 0 in main.js): added `form.Flag`
+  `subscription_insecure` right AFTER subscription_url (~line 113), default `"0"`,
+  `rmempty=false`, `depends({connection_type:'proxy',proxy_config_type:
+  'subscription'})` exactly like its siblings (no `subscription_user_agent` exists
+  here despite the spec mention). Multi-sentence description = three `_()` calls
+  joined with `+ " " +` OUTSIDE `_()` (F-02 rule). UCI contract option name
+  `subscription_insecure` (0|1) consumed by backend 021b.
+- locales: `node {extract-calls,generate-pot,generate-po ru,distribute-locales}.js`
+  (NOT yarn). 4 new msgids (1 label + 3 description sentences), PURELY additive
+  (4 added, 0 removed at msgid level). Filled RU in SOURCE `locales/netshift.ru.po`
+  then distributed → po/ru + po/templates byte-identical to source. Only the PO
+  HEADER msgstr stays empty (`grep -nB1 'msgstr ""'` shows just line 6/7).
+- yarn classic 1.22.22 → `yarn ci` green (format/lint --max-warnings=0/471 tests/
+  build); verified yarn.lock unchanged + NO `.yarn`/`.yarnrc.yml`. The
+  `netshift/files/**` + `tests/**` changes in git status are 021b (other agent),
+  not mine.

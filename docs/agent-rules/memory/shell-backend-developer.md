@@ -612,3 +612,42 @@ findings; keep under ~200 lines.
   checks), NOT a routing/config change — nft model unchanged. shellcheck -S error
   clean; `smoke-tests all` = 104 passed / 0 failed (unchanged baseline); UTF-8
   intact (iconv round-trip OK, 0 рџ/в”/вЂ mojibake).
+
+## task-021b: opt-in insecure subscription fetch (--no-check-certificate)
+
+- Cross-layer UCI contract (STABLE, shared with 021a frontend):
+  `option subscription_insecure '0'` (0|1), per `config section`. Default OFF =
+  unchanged secure behavior. On device wget=uclient-fetch supports
+  `--no-check-certificate` (confirmed) — for IP-host panels with invalid/
+  self-signed/missing-SAN HTTPS certs.
+- `download_subscription` (helpers.sh) had SIX identical wget invocations (4 in
+  the main loop: ipv4/normal × proxy/no-proxy + 2 in the IPv4 retry), each with
+  the same 7 `--header` set. Refactored ALL six through a new private helper
+  `_wget_subscription_request "$cert_flag" UA HWID MODEL KERNEL OUT ERR URL --
+  <leading flags>`: it runs `wget $cert_flag "$@" -O "$out" <headers> "$url"
+  2>"$err"`. The `$cert_flag` is the ONE intentional unquoted expansion
+  (`# shellcheck disable=SC2086` on that line): empty string word-splits to ZERO
+  args (byte-identical secure default), `--no-check-certificate` adds exactly
+  one. NO eval. Per-branch `-4`/`-T <timeout>` are passed as the trailing
+  `"$@"` flags; proxy env (`http_proxy=`/`https_proxy=`) still set on the call
+  line. Retry/fallback/rc/mv/errfile logic untouched.
+- 8th positional `insecure="${8:-0}"`; `cert_flag` derived once at top
+  (`[ "$insecure" = "1" ]`).
+- bin/netshift `download_subscription_into_cache`: read
+  `subscription_insecure="$(uci -q get "netshift.${section}.subscription_insecure"
+  2>/dev/null)"`, default 0, log ONE redacted `warn`
+  (`...uses --no-check-certificate (TLS verification disabled): url=$(redact_url_for_log ...)`)
+  when =1, pass as the NEW 8th arg after the existing
+  `... 3 2 10 "$effective_user_agent"`. Declared `local subscription_insecure`.
+- UCI example: added commented `#option subscription_insecure '0'` + 3-line
+  comment near the `subscription_url` example in `etc/config/netshift`.
+- Smoke: NEW top-level `test_insecure_fetch` (alias `insecure`, 6 cases). A
+  PATH-prepended fake `wget` records full argv (`printf '%s\n' "$*"`) and writes
+  a dummy body to its `-O` target so attempt-1 succeeds (no retry). Driver
+  sources REAL helpers.sh, stubs log/metadata helpers + `should_force_wget_ipv4`
+  (per-scenario normal vs ipv4) + inert `has_ipv4_default_route`/
+  `wget_supports_ipv4_flag`. Asserts `--no-check-certificate` ABSENT@insecure=0 /
+  PRESENT@insecure=1 across normal+proxy+ipv4 branches (`-4` co-present on ipv4).
+  Registered all 5 points (all)/case alias/usage line/docker-compose comment).
+  shellcheck -S error clean; `smoke-tests all` = 110 passed / 0 failed (104
+  baseline + 6 new); UTF-8/LF intact. Additive, NO runtime-contract change.

@@ -134,6 +134,30 @@ function validateDNS(value) {
 }
 
 // src/validators/validateUrl.ts
+function extractHost(url) {
+  const schemeIndex = url.indexOf("://");
+  let rest = schemeIndex === -1 ? url : url.slice(schemeIndex + 3);
+  const pathIndex = rest.search(/[/?#]/);
+  if (pathIndex !== -1) {
+    rest = rest.slice(0, pathIndex);
+  }
+  const atIndex = rest.lastIndexOf("@");
+  if (atIndex !== -1) {
+    rest = rest.slice(atIndex + 1);
+  }
+  if (rest.startsWith("[")) {
+    const closeIndex = rest.indexOf("]");
+    if (closeIndex !== -1) {
+      return rest.slice(1, closeIndex);
+    }
+    return rest.slice(1).split(":")[0];
+  }
+  const colonIndex = rest.lastIndexOf(":");
+  if (colonIndex !== -1) {
+    rest = rest.slice(0, colonIndex);
+  }
+  return rest;
+}
 function validateUrl(url, protocols = ["http:", "https:"]) {
   if (!url.length) {
     return { valid: false, message: _("Invalid URL format") };
@@ -144,10 +168,12 @@ function validateUrl(url, protocols = ["http:", "https:"]) {
       valid: false,
       message: _("URL must use one of the following protocols:") + " " + protocols.join(", ")
     };
-  const regex = new RegExp(
-    `^(?:${protocols.map((p) => p.replace(":", "")).join("|")})://(?:[A-Za-z0-9-]+\\.)+[A-Za-z]{2,}(?::\\d+)?(?:/[^\\s]*)?$`
-  );
-  if (regex.test(url)) {
+  const host = extractHost(url);
+  if (!host) {
+    return { valid: false, message: _("Invalid URL format") };
+  }
+  const isValidHost = validateIPV4(host).valid || validateIPV6(host).valid || validateDomain(host).valid;
+  if (isValidHost) {
     return { valid: true, message: _("Valid") };
   }
   return { valid: false, message: _("Invalid URL format") };

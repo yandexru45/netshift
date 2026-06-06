@@ -111,6 +111,20 @@ function createSectionContent(section) {
   };
 
   o = section.option(
+    form.Flag,
+    "subscription_insecure",
+    _("Allow insecure TLS for subscription fetch"),
+    _("Disables TLS certificate verification when downloading the subscription.") +
+      " " +
+      _("Use only for IP-host panels that serve an invalid or self-signed certificate.") +
+      " " +
+      _("This is a security trade-off: an attacker could intercept the fetch."),
+  );
+  o.default = "0";
+  o.rmempty = false;
+  o.depends({ connection_type: "proxy", proxy_config_type: "subscription" });
+
+  o = section.option(
     form.ListValue,
     "subscription_update_interval",
     _("Subscription Update Interval"),

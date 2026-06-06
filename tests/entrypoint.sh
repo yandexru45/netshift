@@ -1542,6 +1542,151 @@ FBEOF
 }
 
 # ─────────────────────────────────────────────────────────────────
+# Test: Insecure subscription fetch flag (task-021b)
+#
+# Exercises download_subscription's 8th positional arg (insecure 0|1). A
+# PATH-prepended fake `wget` records its full argv to a log and writes a dummy
+# body to its -O target (so the FIRST attempt succeeds → no retry/fallback).
+# A driver sources the REAL helpers.sh (real download_subscription +
+# _wget_subscription_request), stubs the metadata/logging helpers, and pins
+# should_force_wget_ipv4 per scenario to drive the normal vs ipv4 branch. We
+# assert --no-check-certificate is ABSENT when insecure=0 and PRESENT when
+# insecure=1, across the normal and proxy branches (plus the ipv4 branch).
+# Tokens use the same name:OK/FAIL convention as test_subscription.
+# ─────────────────────────────────────────────────────────────────
+test_insecure_fetch() {
+    header "Insecure Subscription Fetch Flag (task-021b)"
+
+    local helpers="${NETSHIFT_LIB_DIR}/helpers.sh"
+    if [ ! -r "$helpers" ]; then
+        skip "helpers.sh not found in ${NETSHIFT_LIB_DIR}"
+        return
+    fi
+
+    local work="/tmp/netshift-insecure-$$"
+    rm -rf "$work"
+    mkdir -p "$work/bin"
+
+    # Fake wget: append the FULL argv to $WGET_ARGV_LOG (one line, NUL-free),
+    # then satisfy download_subscription's success check by writing a non-empty
+    # body to whatever follows -O. Always exit 0 so the first attempt wins.
+    cat > "$work/bin/wget" << 'WGETEOF'
+#!/bin/sh
+# Record argv as a single space-joined line for substring assertions.
+printf '%s\n' "$*" >> "$WGET_ARGV_LOG"
+# Find the -O target and write a dummy body there.
+out=""
+prev=""
+for a in "$@"; do
+    [ "$prev" = "-O" ] && { out="$a"; break; }
+    prev="$a"
+done
+[ -n "$out" ] && printf 'dummy-body' > "$out"
+exit 0
+WGETEOF
+    chmod 0755 "$work/bin/wget"
+
+    local drv="$work/driver.sh"
+    cat > "$drv" << 'IFEOF'
+# Quiet logging + deterministic metadata stubs (no real device probing).
+log() { :; }
+echolog() { :; }
+nolog() { :; }
+get_sing_box_version() { echo "1.12.0"; }
+get_device_model() { echo "test-model"; }
+get_kernel_version() { echo "test-kernel"; }
+generate_hwid() { echo "test-hwid"; }
+get_subscription_user_agent() { echo "singbox/test"; }
+
+# Real download_subscription + _wget_subscription_request from helpers.sh.
+. "HELPERS_PATH"
+
+# Scenario knobs: $1 = branch (normal|ipv4), rest of the call is fixed.
+case "$1" in
+ipv4)   should_force_wget_ipv4() { return 0; } ;;
+*)      should_force_wget_ipv4() { return 1; } ;;
+esac
+# IPv4 fallback retry helpers — keep them inert so a success on attempt 1 is
+# unambiguous (the fake wget always succeeds anyway).
+has_ipv4_default_route() { return 1; }
+wget_supports_ipv4_flag() { return 1; }
+
+branch="$1"
+proxy="$2"
+insecure="$3"
+out="$WGET_OUT_FILE"
+rm -f "$out"
+: > "$WGET_ARGV_LOG"
+
+# url, tmpfile, proxy, retries=1, wait=0, timeout=5, user_agent, insecure
+download_subscription "https://1.2.3.4:2096/sub/abc" "$out" "$proxy" 1 0 5 "singbox/test" "$insecure"
+echo "DONE"
+IFEOF
+    sed -i "s|HELPERS_PATH|$helpers|g" "$drv"
+
+    export WGET_ARGV_LOG="$work/wget.argv"
+    export WGET_OUT_FILE="$work/sub.json"
+
+    # Helper: run one scenario, return the recorded argv on stdout.
+    _if_run() {
+        : > "$WGET_ARGV_LOG"
+        PATH="$work/bin:$PATH" ash "$drv" "$1" "$2" "$3" > /dev/null 2>&1
+        cat "$WGET_ARGV_LOG" 2>/dev/null
+    }
+
+    local argv
+
+    # ── normal branch, insecure=0 → NO --no-check-certificate ──
+    argv="$(_if_run normal "" 0)"
+    case "$argv" in
+        *--no-check-certificate*) fail "if-normal-off: flag present (should be absent): $argv" ;;
+        *) pass "if-normal-off: no --no-check-certificate (secure default)" ;;
+    esac
+
+    # ── normal branch, insecure=1 → HAS --no-check-certificate ──
+    argv="$(_if_run normal "" 1)"
+    case "$argv" in
+        *--no-check-certificate*) pass "if-normal-on: --no-check-certificate present" ;;
+        *) fail "if-normal-on: flag missing (should be present): $argv" ;;
+    esac
+
+    # ── proxy branch, insecure=0 → NO --no-check-certificate ──
+    argv="$(_if_run normal "127.0.0.1:4534" 0)"
+    case "$argv" in
+        *--no-check-certificate*) fail "if-proxy-off: flag present (should be absent): $argv" ;;
+        *) pass "if-proxy-off: no --no-check-certificate (secure default)" ;;
+    esac
+
+    # ── proxy branch, insecure=1 → HAS --no-check-certificate ──
+    argv="$(_if_run normal "127.0.0.1:4534" 1)"
+    case "$argv" in
+        *--no-check-certificate*) pass "if-proxy-on: --no-check-certificate present" ;;
+        *) fail "if-proxy-on: flag missing (should be present): $argv" ;;
+    esac
+
+    # ── ipv4 branch, insecure=1 → HAS both -4 and --no-check-certificate ──
+    argv="$(_if_run ipv4 "" 1)"
+    case "$argv" in
+        *--no-check-certificate*)
+            case "$argv" in
+                *-4*) pass "if-ipv4-on: -4 and --no-check-certificate both present" ;;
+                *) fail "if-ipv4-on: -4 missing: $argv" ;;
+            esac
+            ;;
+        *) fail "if-ipv4-on: flag missing (should be present): $argv" ;;
+    esac
+
+    # ── ipv4 branch, insecure=0 → -4 present, NO --no-check-certificate ──
+    argv="$(_if_run ipv4 "" 0)"
+    case "$argv" in
+        *--no-check-certificate*) fail "if-ipv4-off: flag present (should be absent): $argv" ;;
+        *) pass "if-ipv4-off: no --no-check-certificate (secure default)" ;;
+    esac
+
+    rm -rf "$work"
+}
+
+# ─────────────────────────────────────────────────────────────────
 # Test: Async component-action job state (updater.sh)
 # ─────────────────────────────────────────────────────────────────
 # Exercises the jq job-state machinery from updater.sh with a STUBBED worker
@@ -3126,6 +3271,7 @@ main() {
             test_nft_ipv6
             test_diagnostics
             test_subscription
+            test_insecure_fetch
             test_rejected_hash
             test_jobstate
             test_selfheal
@@ -3143,6 +3289,7 @@ main() {
         nftv6)       test_nft_ipv6 ;;
         diagnostics) test_diagnostics ;;
         subscription) test_subscription ;;
+        insecure)    test_insecure_fetch ;;
         rejected)    test_rejected_hash ;;
         jobstate)    test_jobstate ;;
         selfheal)    test_selfheal ;;
@@ -3156,7 +3303,7 @@ main() {
         sb)          test_sing_box_config ;;
         *)
             echo "Unknown test: $target"
-            echo "Available: all deps syntax config helpers jq cm sb nft nftv6 diagnostics subscription rejected jobstate selfheal dnsdetour globalproxy stablecheck extcheck selfupdate"
+            echo "Available: all deps syntax config helpers jq cm sb nft nftv6 diagnostics subscription insecure rejected jobstate selfheal dnsdetour globalproxy stablecheck extcheck selfupdate"
             exit 1
             ;;
     esac

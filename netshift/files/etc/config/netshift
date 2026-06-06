@@ -48,6 +48,10 @@ config section 'main'
 #        option connection_type 'proxy'
 #        option proxy_config_type 'subscription'
 #        option subscription_url 'https://example.com/api/sub'
+#        # Allow insecure TLS for the subscription fetch (default 0). Set to 1 to
+#        # add wget --no-check-certificate for IP-host panels whose HTTPS cert is
+#        # invalid/self-signed/missing-SAN. Disables certificate verification.
+#        #option subscription_insecure '0'
 #        option subscription_update_interval '1h'
 #        #option subscription_group_by_countries '0'
 #        #option urltest_check_interval '3m'

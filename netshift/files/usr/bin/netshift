@@ -388,6 +388,7 @@ download_subscription_into_cache() {
     local tmpfile persist_tmpfile url_tmpfile rejected_cache_path tmp_hash rejected_hash validation_reason file_size fallback_tmp
     local configured_user_agent user_agent_cache_path cached_user_agent candidates_file
     local effective_user_agent download_ok winning_user_agent ua_tmpfile
+    local subscription_insecure
 
     ensure_subscription_cache_dir || {
         log "Failed to prepare persistent subscription cache directory '$SUBSCRIPTION_CACHE_FOLDER' for section '$section'" "error"
@@ -416,6 +417,15 @@ download_subscription_into_cache() {
         return 11
     fi
 
+    # Opt-in per-section insecure TLS fetch (default OFF = secure). When enabled
+    # download_subscription adds wget --no-check-certificate so IP-host panels
+    # with invalid/self-signed/missing-SAN certs work. Log once (redacted).
+    subscription_insecure="$(uci -q get "netshift.${section}.subscription_insecure" 2>/dev/null)"
+    [ -n "$subscription_insecure" ] || subscription_insecure=0
+    if [ "$subscription_insecure" = "1" ]; then
+        log "Subscription fetch for section '$section' uses --no-check-certificate (TLS verification disabled): url=$(redact_url_for_log "$subscription_url")" "warn"
+    fi
+
     download_ok=0
     winning_user_agent=""
     fallback_tmp="${tmpfile}.fb"
@@ -426,7 +436,7 @@ download_subscription_into_cache() {
 
         log "Trying subscription User-Agent for section '$section': $effective_user_agent" "info"
 
-        if ! download_subscription "$subscription_url" "$tmpfile" "$service_proxy_address" 3 2 10 "$effective_user_agent"; then
+        if ! download_subscription "$subscription_url" "$tmpfile" "$service_proxy_address" 3 2 10 "$effective_user_agent" "$subscription_insecure"; then
             log "Subscription download failed for section '$section' with User-Agent '$effective_user_agent'; trying next candidate" "warn"
             continue
         fi

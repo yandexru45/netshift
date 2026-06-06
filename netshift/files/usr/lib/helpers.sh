@@ -762,6 +762,43 @@ $candidate
     done
 }
 
+# Runs a single wget subscription request with the shared client-mimicking
+# headers and an optional --no-check-certificate flag, so all branches of
+# download_subscription stay byte-identical.
+# Arguments:
+#   $1       - cert flag ("" or "--no-check-certificate")
+#   $2       - User-Agent header value
+#   $3       - X-HWID header value
+#   $4       - X-Device-Model header value
+#   $5       - X-Ver-OS header value
+#   $6       - output file path (passed to wget -O)
+#   $7       - error file path (wget stderr is redirected here)
+#   $8       - subscription URL
+#   $9..     - leading wget flags (e.g. -4, -T, <timeout>)
+# Caller is responsible for exporting http_proxy/https_proxy when needed.
+_wget_subscription_request() {
+    local cert_flag="$1"
+    local req_user_agent="$2"
+    local req_hwid="$3"
+    local req_device_model="$4"
+    local req_kernel_version="$5"
+    local req_outfile="$6"
+    local req_errfile="$7"
+    local req_url="$8"
+    shift 8
+
+    # shellcheck disable=SC2086
+    wget $cert_flag "$@" -O "$req_outfile" \
+        --header "User-Agent: $req_user_agent" \
+        --header "X-HWID: $req_hwid" \
+        --header "X-Device-OS: OpenWrt Linux" \
+        --header "X-Device-Model: $req_device_model" \
+        --header "X-Ver-OS: $req_kernel_version" \
+        --header "Accept-Language: ru-RU,en,*" \
+        --header "X-Device-Locale: EN" \
+        "$req_url" 2>"$req_errfile"
+}
+
 # Downloads a subscription body from the given URL with client-mimicking headers
 # Arguments:
 #   $1 - subscription URL
@@ -771,6 +808,7 @@ $candidate
 #   $5 - wait between retries (optional, default 2)
 #   $6 - timeout seconds (optional, default 10)
 #   $7 - User-Agent (optional; default "singbox/<version>")
+#   $8 - insecure (optional, default 0; when 1 adds --no-check-certificate)
 download_subscription() {
     local url="$1"
     local filepath="$2"
@@ -779,6 +817,7 @@ download_subscription() {
     local wait="${5:-2}"
     local timeout="${6:-10}"
     local user_agent="${7:-}"
+    local insecure="${8:-0}"
 
     local sb_version device_model kernel_version hwid
     sb_version="$(get_sing_box_version)"
@@ -786,6 +825,14 @@ download_subscription() {
     kernel_version="$(get_kernel_version)"
     hwid="$(generate_hwid)"
     [ -n "$user_agent" ] || user_agent="$(get_subscription_user_agent)"
+
+    # Optional TLS-verification bypass for IP-host panels with broken certs.
+    # Empty string keeps the secure default; word-splitting it into the wget
+    # argv (via _wget_subscription_request) yields zero extra args when off.
+    local cert_flag=""
+    if [ "$insecure" = "1" ]; then
+        cert_flag="--no-check-certificate"
+    fi
 
     local tmpfile errfile rc family
     tmpfile="${filepath}.part.$$"
@@ -798,48 +845,24 @@ download_subscription() {
             family="ipv4"
             if [ -n "$http_proxy_address" ]; then
                 http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
-                    wget -4 -T "$timeout" -O "$tmpfile" \
-                        --header "User-Agent: $user_agent" \
-                        --header "X-HWID: $hwid" \
-                        --header "X-Device-OS: OpenWrt Linux" \
-                        --header "X-Device-Model: $device_model" \
-                        --header "X-Ver-OS: $kernel_version" \
-                        --header "Accept-Language: ru-RU,en,*" \
-                        --header "X-Device-Locale: EN" \
-                        "$url" 2>"$errfile"
+                    _wget_subscription_request "$cert_flag" "$user_agent" "$hwid" \
+                        "$device_model" "$kernel_version" "$tmpfile" "$errfile" "$url" \
+                        -4 -T "$timeout"
             else
-                wget -4 -T "$timeout" -O "$tmpfile" \
-                    --header "User-Agent: $user_agent" \
-                    --header "X-HWID: $hwid" \
-                    --header "X-Device-OS: OpenWrt Linux" \
-                    --header "X-Device-Model: $device_model" \
-                    --header "X-Ver-OS: $kernel_version" \
-                    --header "Accept-Language: ru-RU,en,*" \
-                    --header "X-Device-Locale: EN" \
-                    "$url" 2>"$errfile"
+                _wget_subscription_request "$cert_flag" "$user_agent" "$hwid" \
+                    "$device_model" "$kernel_version" "$tmpfile" "$errfile" "$url" \
+                    -4 -T "$timeout"
             fi
         else
             if [ -n "$http_proxy_address" ]; then
                 http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
-                    wget -T "$timeout" -O "$tmpfile" \
-                        --header "User-Agent: $user_agent" \
-                        --header "X-HWID: $hwid" \
-                        --header "X-Device-OS: OpenWrt Linux" \
-                        --header "X-Device-Model: $device_model" \
-                        --header "X-Ver-OS: $kernel_version" \
-                        --header "Accept-Language: ru-RU,en,*" \
-                        --header "X-Device-Locale: EN" \
-                        "$url" 2>"$errfile"
+                    _wget_subscription_request "$cert_flag" "$user_agent" "$hwid" \
+                        "$device_model" "$kernel_version" "$tmpfile" "$errfile" "$url" \
+                        -T "$timeout"
             else
-                wget -T "$timeout" -O "$tmpfile" \
-                    --header "User-Agent: $user_agent" \
-                    --header "X-HWID: $hwid" \
-                    --header "X-Device-OS: OpenWrt Linux" \
-                    --header "X-Device-Model: $device_model" \
-                    --header "X-Ver-OS: $kernel_version" \
-                    --header "Accept-Language: ru-RU,en,*" \
-                    --header "X-Device-Locale: EN" \
-                    "$url" 2>"$errfile"
+                _wget_subscription_request "$cert_flag" "$user_agent" "$hwid" \
+                    "$device_model" "$kernel_version" "$tmpfile" "$errfile" "$url" \
+                    -T "$timeout"
             fi
         fi
 
@@ -866,25 +889,13 @@ download_subscription() {
             log "Retrying subscription download over IPv4-only" "warn"
             if [ -n "$http_proxy_address" ]; then
                 http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
-                    wget -4 -T "$timeout" -O "$tmpfile" \
-                        --header "User-Agent: $user_agent" \
-                        --header "X-HWID: $hwid" \
-                        --header "X-Device-OS: OpenWrt Linux" \
-                        --header "X-Device-Model: $device_model" \
-                        --header "X-Ver-OS: $kernel_version" \
-                        --header "Accept-Language: ru-RU,en,*" \
-                        --header "X-Device-Locale: EN" \
-                        "$url" 2>"$errfile"
+                    _wget_subscription_request "$cert_flag" "$user_agent" "$hwid" \
+                        "$device_model" "$kernel_version" "$tmpfile" "$errfile" "$url" \
+                        -4 -T "$timeout"
             else
-                wget -4 -T "$timeout" -O "$tmpfile" \
-                    --header "User-Agent: $user_agent" \
-                    --header "X-HWID: $hwid" \
-                    --header "X-Device-OS: OpenWrt Linux" \
-                    --header "X-Device-Model: $device_model" \
-                    --header "X-Ver-OS: $kernel_version" \
-                    --header "Accept-Language: ru-RU,en,*" \
-                    --header "X-Device-Locale: EN" \
-                    "$url" 2>"$errfile"
+                _wget_subscription_request "$cert_flag" "$user_agent" "$hwid" \
+                    "$device_model" "$kernel_version" "$tmpfile" "$errfile" "$url" \
+                    -4 -T "$timeout"
             fi
             rc=$?
             if [ "$rc" -eq 0 ] && [ -s "$tmpfile" ]; then
