@@ -2730,6 +2730,101 @@ DRVEOF
 }
 
 # ─────────────────────────────────────────────────────────────────
+# Test: Extended sing-box Update Check — v-prefix regression (task-019)
+# ─────────────────────────────────────────────────────────────────
+# Sources the REAL updates_check_sing_box_extended from updater.sh and stubs its
+# three dependencies (get_sing_box_version, updates_fetch_sing_box_extended_releases,
+# updates_extended_release_tag) via markers so the comparison + emitted JSON can
+# be driven deterministically. The regression: installed "1.13.12-extended-2.3.2"
+# (no v) vs GitHub tag "v1.13.12-extended-2.3.2" (with v) must report
+# status:"latest" (NOT "outdated"), with current_version/latest_version both
+# emitted v-stripped and equal.
+test_check_update_extended() {
+    header "Extended sing-box Update Check — v-prefix (task-019)"
+
+    if ! command -v jq > /dev/null 2>&1; then
+        skip "jq not available"
+        return
+    fi
+
+    local updater="${NETSHIFT_LIB_DIR}/updater.sh"
+    if [ ! -r "$updater" ]; then
+        skip "updater.sh not found in ${NETSHIFT_LIB_DIR}"
+        return
+    fi
+
+    local work="/tmp/netshift-extcheck-$$"
+    rm -rf "$work"
+    mkdir -p "$work"
+
+    # Driver: source updater.sh, silence logging, OVERRIDE the three deps after
+    # sourcing (so the real updates_check_sing_box_extended calls our stubs), run
+    # the check. STUBEXT_INSTALLED = get_sing_box_version output;
+    # STUBEXT_RELEASES = the raw releases blob (empty → fetch-failure branch);
+    # STUBEXT_TAG = the resolved release tag (with the leading v, as GitHub gives).
+    local drv="$work/driver.sh"
+    cat > "$drv" << 'DRVEOF'
+log() { :; }
+echolog() { :; }
+nolog() { :; }
+. "DRV_HELPERS"
+. "DRV_UPDATER"
+get_sing_box_version() { printf '%s' "$STUBEXT_INSTALLED"; }
+updates_fetch_sing_box_extended_releases() { printf '%s' "$STUBEXT_RELEASES"; }
+updates_extended_release_tag() { printf '%s' "$STUBEXT_TAG"; }
+updates_check_sing_box_extended
+DRVEOF
+    sed -i "s|DRV_UPDATER|$updater|g;s|DRV_HELPERS|${NETSHIFT_LIB_DIR}/helpers.sh|g" "$drv"
+
+    local out="$work/out.json"
+    run_extcheck() {
+        ash "$drv" > "$out" 2>/dev/null || true
+    }
+
+    # ── Case 1: installed == latest, only the tag carries a leading v → latest ──
+    # THE regression: must NOT be "outdated"; both versions emitted v-stripped+eq.
+    export STUBEXT_INSTALLED="1.13.12-extended-2.3.2"
+    export STUBEXT_RELEASES='[{"tag_name":"v1.13.12-extended-2.3.2"}]'
+    export STUBEXT_TAG="v1.13.12-extended-2.3.2"
+    run_extcheck
+    if jq -e '.success == true and .status == "latest"
+            and .current_version == "1.13.12-extended-2.3.2"
+            and .latest_version == "1.13.12-extended-2.3.2"
+            and .current_version == .latest_version' "$out" > /dev/null 2>&1; then
+        pass "extcheck-vprefix-installed-eq-latest:OK"
+    else
+        fail "extcheck-vprefix-installed-eq-latest:FAIL" "$(cat "$out" 2>/dev/null)"
+    fi
+
+    # ── Case 2: installed older than the latest tag → outdated ──────────────────
+    export STUBEXT_INSTALLED="1.13.10-extended-2.3.0"
+    export STUBEXT_RELEASES='[{"tag_name":"v1.13.12-extended-2.3.2"}]'
+    export STUBEXT_TAG="v1.13.12-extended-2.3.2"
+    run_extcheck
+    if jq -e '.success == true and .status == "outdated"
+            and .current_version == "1.13.10-extended-2.3.0"
+            and .latest_version == "1.13.12-extended-2.3.2"' "$out" > /dev/null 2>&1; then
+        pass "extcheck-older-outdated:OK"
+    else
+        fail "extcheck-older-outdated:FAIL" "$(cat "$out" 2>/dev/null)"
+    fi
+
+    # ── Case 3: releases fetch failure (empty blob) → success:false ─────────────
+    export STUBEXT_INSTALLED="1.13.12-extended-2.3.2"
+    export STUBEXT_RELEASES=""
+    export STUBEXT_TAG=""
+    run_extcheck
+    if jq -e '.success == false and (.message | length) > 0' "$out" > /dev/null 2>&1; then
+        pass "extcheck-fetch-failure-successfalse:OK"
+    else
+        fail "extcheck-fetch-failure-successfalse:FAIL" "$(cat "$out" 2>/dev/null)"
+    fi
+
+    unset STUBEXT_INSTALLED STUBEXT_RELEASES STUBEXT_TAG
+    rm -rf "$work"
+}
+
+# ─────────────────────────────────────────────────────────────────
 # Test: NetShift self-update (task-017)
 # ─────────────────────────────────────────────────────────────────
 # Exercises updates_self_update_netshift (public wrapper + private core) through
@@ -3037,6 +3132,7 @@ main() {
             test_dns_via_outbound
             test_global_proxy
             test_check_update_stable
+            test_check_update_extended
             test_self_update_netshift
             ;;
         deps)        test_deps ;;
@@ -3053,13 +3149,14 @@ main() {
         dnsdetour)   test_dns_via_outbound ;;
         globalproxy) test_global_proxy ;;
         stablecheck) test_check_update_stable ;;
+        extcheck)    test_check_update_extended ;;
         selfupdate)  test_self_update_netshift ;;
         jq)          test_jq_helpers ;;
         cm)          test_config_manager ;;
         sb)          test_sing_box_config ;;
         *)
             echo "Unknown test: $target"
-            echo "Available: all deps syntax config helpers jq cm sb nft nftv6 diagnostics subscription rejected jobstate selfheal dnsdetour globalproxy stablecheck selfupdate"
+            echo "Available: all deps syntax config helpers jq cm sb nft nftv6 diagnostics subscription rejected jobstate selfheal dnsdetour globalproxy stablecheck extcheck selfupdate"
             exit 1
             ;;
     esac

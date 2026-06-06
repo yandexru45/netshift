@@ -1243,7 +1243,7 @@ updates_stable_rollback() {
 # Checks whether a newer sing-box-extended release is available.
 # Echoes a JSON status (latest|outdated) on stdout.
 updates_check_sing_box_extended() {
-    local current_version releases tag status
+    local current_version releases tag status cur_norm tag_norm
 
     current_version="$(get_sing_box_version)"
 
@@ -1259,12 +1259,26 @@ updates_check_sing_box_extended() {
         return 1
     fi
 
-    status="outdated"
-    case "$current_version" in
-    *"$tag"*) status="latest" ;;
-    esac
+    # Normalize a single leading "v" off BOTH sides before comparing/emitting.
+    # get_sing_box_version yields "1.13.12-extended-2.3.2" (no v) while the
+    # GitHub .tag_name is "v1.13.12-extended-2.3.2" (with v), so the old
+    # substring match never fired and reported a false "outdated". ${x#v} strips
+    # exactly one leading "v" if present and leaves the string otherwise — safe
+    # for both forms. NB: `tag` itself (with v) is untouched and is NOT used by
+    # the install/asset path here; the installer re-derives its own tag.
+    cur_norm="${current_version#v}"
+    tag_norm="${tag#v}"
 
-    echo "{\"success\":true,\"current_version\":\"$current_version\",\"latest_version\":\"$tag\",\"status\":\"$status\"}"
+    # EXACT equality after the v-strip: the extended version string is the full
+    # token (e.g. "1.13.12-extended-2.3.2"), so an exact match is correct and
+    # avoids the accidental partial matches the old `case *"$tag"*` form allowed.
+    status="outdated"
+    if [ "$cur_norm" = "$tag_norm" ]; then
+        status="latest"
+    fi
+
+    # Emit BOTH versions v-stripped so the UI shows a consistent string.
+    echo "{\"success\":true,\"current_version\":\"$cur_norm\",\"latest_version\":\"$tag_norm\",\"status\":\"$status\"}"
     return 0
 }
 

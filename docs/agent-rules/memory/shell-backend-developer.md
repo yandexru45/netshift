@@ -137,8 +137,7 @@ findings; keep under ~200 lines.
   the worker mid-extract (after `tar -O > /usr/bin/sing-box`, before
   `chmod 0755`). The JS-side `timeout: 600000` does NOT help (server-side limit).
   Fix = fork the worker detached; return a job_id in <<30s; poll status.
-- Job-state machinery lives in `updater.sh` (jq, no ucode — podkop-plus uses
-  `json_utils_ucode` which we don't have). State dir `/var/run/netshift/
+- Job-state machinery lives in `updater.sh` (jq, no ucode). State dir `/var/run/netshift/
   component-actions` (tmpfs). Constants: `UPDATES_JOB_DIR`,
   `UPDATES_JOB_FINISHED_TTL_MINUTES=60`, `UPDATES_JOB_ORPHAN_OUTPUT_TTL_MINUTES=60`,
   `UPDATES_JOB_STALE_GRACE_SECONDS=15`.
@@ -547,3 +546,40 @@ findings; keep under ~200 lines.
   netshift` (absolute write+restore). Registered all 5 points (all)/case/usage/
   compose). Used task-009 `... || true` set -e guard. shellcheck -S error clean;
   `smoke-tests all` = 101 passed / 0 failed (was 84 baseline; +17 new).
+
+## task-019: extended-check false "outdated" — v-prefix mismatch (Variant A)
+
+- Root cause: `updates_check_sing_box_extended` (updater.sh ~:1245) compared
+  installed `get_sing_box_version` (`1.13.12-extended-2.3.2`, NO v) against the
+  GitHub `.tag_name` (`v1.13.12-extended-2.3.2`, WITH v) via `case
+  "$current_version" in *"$tag"*)`. The `v` prefix means the substring never
+  matched → fell through to `outdated` for a user ALREADY on the latest. (Stock
+  check + self-update were already correct: stock candidates have no v;
+  `_updates_self_update_netshift_core` already does `${installed#v}` ==
+  `${latest#v}`.)
+- Fix (Variant A, ONLY this function): strip a single leading v off BOTH sides
+  (`cur_norm="${current_version#v}"; tag_norm="${tag#v}"`; `${x#v}` removes one
+  leading v if present, no-op otherwise), then EXACT-compare `[ "$cur_norm" =
+  "$tag_norm" ]` (the extended version is the full token — exact-after-v-strip is
+  correct and avoids the partial matches the old `case *"$tag"*` allowed). Emit
+  BOTH `current_version` and `latest_version` v-stripped so the UI shows a
+  consistent string. JSON shape/keys/order unchanged (STABLE for task-018);
+  `success:false` branches (fetch fail, no tag) untouched. New vars `local`,
+  POSIX ash, never exits.
+- CRITICAL isolation: the install/asset path is a SEPARATE function
+  (`_updates_install_sing_box_extended_core`, ~:942-957) that re-derives its OWN
+  `tag` from `updates_extended_release_tag` (raw, WITH v) and feeds it to
+  `updates_extended_release_object` (`.tag_name == $t`) + `updates_extended_asset_url`.
+  In the check, `tag` (raw) is NO LONGER fed anywhere downstream — only `cur_norm`/
+  `tag_norm`. Did NOT touch `_release_tag`/`_release_object`/`_asset_url`/wrappers.
+- Smoke: NEW top-level `test_check_update_extended` (alias `extcheck`, 3 cases).
+  updater.sh is a sourceable lib, so the driver sources updater.sh + helpers.sh,
+  silences log/echolog/nolog, then OVERRIDES the 3 deps AFTER sourcing
+  (`get_sing_box_version`, `updates_fetch_sing_box_extended_releases`,
+  `updates_extended_release_tag`) reading marker env (`STUBEXT_INSTALLED/RELEASES/TAG`)
+  — simpler than awk-extract since it's not in bin/netshift. Cases: (1) installed
+  == latest, only tag has v → latest + both v-stripped+equal (THE regression);
+  (2) installed older → outdated; (3) empty releases → success:false. Registered
+  all 5 points (all)/case/usage/docker-compose comment). shellcheck -S error clean
+  (bin+libs+install.sh); `smoke-tests all` = 104 passed / 0 failed (101 baseline
+  + 3 new). `extcheck` alone = 3/0.

@@ -280,7 +280,7 @@ append findings; keep under ~200 lines.
   Dashboard/Diagnostic. Styles use theme vars WITH fallbacks; CBI selector is
   `#cbi-netshift-manager-_mount_node > div` + hide `#cbi-netshift-manager > h3`.
 - LIFECYCLE: mirror diagnostic exactly but guard re-init with module-level
-  `*Registered`/`*Initialized`/`*Mounted` booleans (podkop-plus style) since the
+  `*Registered`/`*Initialized`/`*Mounted` booleans since the
   lazy-mount listener can fire repeatedly. `onMount('manager-status')` →
   `registerLifecycleListeners()` (subscribe on `tabService.current==='manager'`)
   → `onPageMount` subscribes store + renders + fetches systemInfo;

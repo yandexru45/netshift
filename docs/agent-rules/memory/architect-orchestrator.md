@@ -104,8 +104,8 @@ save+`sing-box check` -> cron jobs -> start sing-box -> dnsmasq_configure ->
   `sing-box version` fine WITHOUT LD_LIBRARY_PATH (libcronet only needed at
   runtime for naive); `chmod 0755` itself works under umask 0077. The code's
   chmod/validate is correct; it just never gets to run.
-- FIX DIRECTION (matches podkop-plus): make core-switch ASYNCHRONOUS — podkop-plus
-  has `component_action_async` (writes output to a file, forks the work) +
+- FIX DIRECTION: make core-switch ASYNCHRONOUS — has `component_action_async` 
+  (writes output to a file, forks the work) +
   `component_action_status` (UI polls). NetShift's updater is synchronous and has
   no async/status path. Port that model: fork the install, return immediately,
   poll status; UI shows progress instead of hitting the 30s rpcd wall.
@@ -360,14 +360,6 @@ save+`sing-box check` -> cron jobs -> start sing-box -> dnsmasq_configure ->
   (NetShift / sing-box stock / sing-box extended) with installed version shown
   immediately + on-demand "Check update" + status badges + update/core-switch/
   self-update actions. Core-switch MOVED out of Diagnostics into here.
-- Reference impl = `podkop-plus/` (operator clones it to repo root when needed;
-  it is UNTRACKED and NOT gitignored — must NOT be added to a commit). Paths:
-  `podkop-plus/fe-app-podkop/src/podkop/tabs/updates/{index,render,initController,
-  styles}.ts` + `podkop-plus/luci-app-podkop-plus/htdocs/.../view/podkop/updates.js`
-  (note `luci-app-podkop-plus` dir + `view.podkop_plus.main`; OUR view requires
-  `view.netshift.main`). The card/styles pattern is the theme-CSS-vars-with-
-  fallback approach (var(--success-color-medium, green) etc) — safe for custom
-  LuCI themes.
 - Backend (task-017, updater.sh): two NEW component_action sub-cases (the
   dispatcher is component_action() :1272, a `case "$comp:$action"`; that is the
   ONLY extension point — component_action_async/_status are component-agnostic,
