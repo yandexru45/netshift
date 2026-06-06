@@ -266,3 +266,90 @@ save+`sing-box check` -> cron jobs -> start sing-box -> dnsmasq_configure ->
 - UI: two `form.DynamicList` in `section.js` after `subscription_group_by_countries`,
   rmempty=true, NO validator (keep emoji/space verbatim); `string[]?` fields on
   `ConfigProxySubscriptionSection` in types.ts; ru/en via locale tooling.
+
+## PR review workflow + PR #11 findings (review-001, 2026-06-06)
+
+- Reviewing an external PR (no `gh` CLI installed): fetch via API
+  `curl https://api.github.com/repos/yandexru45/netshift/pulls/N` (meta),
+  `.../files` (per-file stats), and `-H "Accept: application/vnd.github.v3.diff"`
+  for the raw diff. Then `git fetch origin pull/N/head:pr-N` to get a local ref
+  diffable vs `main`. Workspace `.pr-review/` + `*.txt` are gitignored (untracked).
+- Decompose review by LAYER (backend / frontend+i18n / tests-packaging) into
+  separate diff txt files; launch one `explore` subagent per layer IN PARALLEL
+  (layers don't share files), then consolidate with the formal `code-reviewer`.
+  Give each subagent an architect "systemic notes" file of HYPOTHESES to verify.
+- **nftables landmine (VERIFIED on nft v1.1.3):** `tproxy ip6 to <addr>:<port>`
+  REQUIRES bracketed `[addr]:port`. The unbracketed form (e.g. `::1:1603`) PASSES
+  `nft -c` AND `sing-box check`, but nft normalizes it to a BARE address with NO
+  port (`::1:1603` -> `[::0.1.22.3]`). Only on-device / `unshare -rn nft -f` +
+  `nft list ruleset` reveals it. IPv4 `addr:port` is fine unbracketed; v6 is not.
+- **Local nft verification trick (no root):** `unshare -rn nft -c -f file` /
+  `unshare -rn sh -c 'nft -f f && nft list ruleset'` gives netlink in a private
+  netns so you can load+inspect normalized rules. Plain `nft -c` fails with
+  "cache initialization failed: Operation not permitted" without it.
+- PR #11 ("Синхронизация с netshift", spgsroot, +2314/-1364, 23 files) verdict:
+  **REQUIRES CHANGES**. Doc at `.pr-review/REVIEW-pr-11.md` (canonical copy would
+  be `docs/tasks/sync-netshift-review-001.md`). Headline = IPv6 + DoH-block +
+  global_proxy + sing-box health monitor + check_proxy rework.
+  * BLOCKER B-01: unbracketed v6 tproxy rule (above).
+  * Majors: nft model shift (mangle now marks ALL interface traffic, split moved
+    to sing-box route rules) — `mangle_output` lost router-originated @common/
+    fakeip marking (regression); `@netshift_subnets`/@common still populated each
+    `list_update` but matched by NO rule (dead import path); 8x `SUBNETS_*_V6`
+    dead constants; `start()` spawns `monitor_sing_box` with no pidfile+kill-0
+    guard (orphan leak); over-permissive `validateIPV6` regex (accepts `:::`,
+    `1::2::3`, etc.) shared by subnet+dns validators, no negative tests; 3 new
+    flag descriptions concat'd inside `_()` -> ship untranslated.
+  * GOOD: generated `main.js` is a faithful DRIFT-FREE rebuild (CI no-diff should
+    pass); NO Oniguruma jq; UTF-8 emoji intact; i18n catalogs machine-consistent.
+  * Coverage gap: the nft model shift has NO smoke test (test_global_proxy only
+    checks sing-box route-rule SHAPE; test_nft byte-identical to base) — that's
+    why B-01 slipped. Any nft-rule PR should add an `nft list ruleset` assertion.
+
+## PR #11 fix-to-perfect cycle (2026-06-06, after operator merged the PR)
+
+- Operator merged PR #11 to main, then asked to fix everything to perfection.
+  Decomposed the review-doc issues into 3 task specs (docs/tasks/task-014 backend,
+  -015 frontend, -016 packaging) + delegated to the 3 dev subagents, ran the
+  dev<->code-reviewer loop per layer until all APPROVED. NOTE: `docs/tasks/` is
+  gitignored (line 7 `docs/tasks`), so task specs are session artifacts (like
+  .pr-review/), not committed — that's by project design (only TEMPLATE-*.md are
+  force-tracked).
+- Operator design decisions for the nft model shift: B-02=A (router-originated
+  traffic stays DIRECT in the new mark-everything-in-prerouting model; document
+  only, don't restore mangle_output marking) and B-03/B-04=A (remove the dead
+  @netshift_subnets populate path + dead SUBNETS_*_V6). Rule: dead-code removal
+  for a SET requires first PROVING every populated source is carried by a sing-box
+  rule_set; the dev produced a coverage map (community->$SRS_MAIN_URL/<svc>.srs,
+  user/local/remote subnets->rule_sets). DISCORD set is RETAINED (it has a
+  dport-restricted mangle rule `udp dport {19000-20000,50000-65535}` that a
+  sing-box route rule cannot express). M1/M2 left as non-blocking follow-ups
+  (orphaned rulesets.sh helpers + unused IPv4 SUBNETS_* under SC2034).
+- **dnsmasq "we-own-it" guard landmine (B-08):** a guard that infers netshift
+  ownership from the PRESENCE of `netshift_*` BACKUP markers is WRONG, because
+  `backup_dnsmasq_config_option` only writes a marker when the ORIGINAL value was
+  non-empty. On stock/default dnsmasq (empty server/noresolv/cachesize) NO markers
+  exist, so on the redundant `dnsmasq_configure force` path (monitor recovery /
+  double-start) the guard flips false, re-runs backup, and records netshift's OWN
+  live values (noresolv=1/cachesize=0) as the "backup" -> restore later sets
+  noresolv=1/cachesize=0 instead of defaults 0/150 -> router DNS broken after stop.
+  FIX: an explicit unconditional sentinel `netshift_configured=1` set in
+  dnsmasq_configure, gating the short-circuit, cleared in dnsmasq_restore.
+- **nft v6 NEGATIVE-guard test landmine:** the buggy unbracketed `::1:1603`
+  normalizes DIFFERENTLY per nft build: `[::0.1.22.3]` on nftables v1.1.3 (WSL),
+  but `[::1:1603]` on OpenWRT 24.10.6's nft (the smoke container). So a negative
+  grep for `::0` OR even `\[::0` is a DEAD always-passing assertion in the smoke
+  env. ROBUST pattern: `grep 'tproxy ip6 to \[' | grep -qv '\[::1\]:1603'` (any
+  bracketed dest that ISN'T the correct one). Always self-prove a regression guard
+  by temporarily reintroducing the bug and confirming the test FAILS.
+- Environment (WSL2 Debian 12): Docker daemon socket-activation can leave a
+  self-referential symlink (`/var/run/docker.sock -> /run/docker.sock` where
+  /var/run IS /run); fix = `sudo rm -f /run/docker.sock; sudo systemctl restart
+  docker.socket docker.service`. shellcheck not installed -> grab the static
+  binary to ~/.local/bin (koalaman release tar.xz). yarn is classic 1.22.x via
+  corepack (safe, no yarn.lock migration); deps install clean with --frozen-lockfile.
+- FINAL integrated gates after the cycle: shellcheck (error) clean; yarn ci 439
+  tests pass (was 395) + main.js idempotent rebuild (two builds byte-identical);
+  smoke `all` = 84 passed / 0 failed (was 81; +3 nft v6 regression assertions);
+  whole-chain `unshare -rn` confirms v6 tproxy normalizes to [::1]:1603. All 3
+  layers code-reviewer APPROVED. Ready for human commit (agents never auto-commit).

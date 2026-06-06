@@ -26,12 +26,22 @@ export const validIPv6 = [
   ['Compressed', '2001:db8::1'],
   ['Full form', '2001:0db8:85a3:0000:0000:8a2e:0370:7334'],
   ['Bracketed', '[2001:db8::1]'],
+  ['Unspecified', '::'],
+  ['Compressed middle', '2001:db8:0:0:1::1'],
+  ['IPv4-mapped', '::ffff:192.168.1.1'],
+  ['IPv4-embedded', '2001:db8::192.168.1.1'],
 ];
 
 export const invalidIPv6 = [
   ['Invalid hex', '2001:db8::zzzz'],
   ['Group too long', '12345::1'],
   ['Too many groups', '2001:db8:85a3:0:0:8a2e:370:7334:1234'],
+  ['Triple colon only', ':::'],
+  ['Colon run inside', '1:2:::3'],
+  ['Multiple compressions', '1::2::3'],
+  ['Incomplete (7 groups, no ::)', '1:2:3:4:5:6:7'],
+  ['Bad hex group', 'gggg::1'],
+  ['Too many groups (9)', '1:2:3:4:5:6:7:8:9'],
 ];
 
 describe('validateIPV4', () => {

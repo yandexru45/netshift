@@ -307,12 +307,15 @@ function createSectionContent(section) {
     form.Flag,
     "global_proxy",
     _("Global Proxy"),
-    _(
-      "Route all unmatched traffic through this section's outbound. " +
-        "When enabled, traffic not matching any other section's lists will go through this proxy. " +
-        "Use with Exclusion sections to route specific domains directly. " +
-        "Only one section can be global at a time.",
-    ),
+    _("Route all unmatched traffic through this section's outbound.") +
+      " " +
+      _(
+        "When enabled, traffic not matching any other section's lists will go through this proxy.",
+      ) +
+      " " +
+      _("Use with Exclusion sections to route specific domains directly.") +
+      " " +
+      _("Only one section can be global at a time."),
   );
   o.default = "0";
   o.rmempty = false;

@@ -223,3 +223,42 @@ append findings; keep under ~200 lines.
   DNS через прокси/VPN"; "DNS outbound section"→"Секция outbound для DNS";
   "Main DNS via outbound"→"Основной DNS через outbound"; long descriptions
   translated equivalently.
+
+## validateIPV6 rewrite + concat-_() i18n (task-015 PR#11 fixes)
+
+- The OLD `validateIPV6` (two loose regexes + `colons>=2&&<=7` guard) WRONGLY
+  accepted `:::`, `1:2:::3`, `1::2::3` (multiple `::`), `1:2:3:4:5:6:7`
+  (incomplete 7-group). Replaced with a small functional checker (no `any`):
+  count `::` via `stripped.split('::').length-1` (reject >1); split into
+  head/tail, `countGroups(side)` splits on `:` and validates each as
+  `/^[0-9a-fA-F]{1,4}$/` hextet; group-count rule = exactly 8 when no `::`,
+  ≤7 when one `::` (it stands for ≥1 zero group). `''` side → 0 groups (so `::`
+  unspecified and `::1` work). Helpers `isHextet`/`countGroups`/`isEmbeddedIPv4`
+  are module-private (NOT in barrel) → no `main.*` export leak; verified diff
+  has no new bare export lines.
+- F-04 DECISION: ACCEPT IPv4-embedded IPv6 (`::ffff:192.168.1.1`,
+  `2001:db8::192.168.1.1`) — valid per RFC 4291. `countGroups` treats a LAST
+  group containing `.` as an embedded IPv4 (validated via `validateIPV4`) that
+  occupies TWO 16-bit groups (so it adds +1 to the group count). Tested both
+  positive and the malformed negatives.
+- main.js diff for this is EXACTLY the validateIPV6 function body + 3 private
+  helpers (52+/7- lines); second build idempotent. Expected runtime-code diff.
+- I18N CONCAT GOTCHA (F-02): `_('foo ' + 'bar')` is NOT extracted (gettext sees
+  only literal args; the `+` makes it an expression). The established repo
+  convention (see section.js community_lists ~415) is
+  `_('foo') + ' ' + _('bar')` — the SPACE lives OUTSIDE `_()`, and each literal
+  has NO trailing/leading space. `extract-calls.js` line 55 does `arg.value.trim()`
+  so a trailing space INSIDE `_('foo ')` is trimmed in the catalog → runtime
+  lookup of `'foo '` MISSES. So ALWAYS put separators outside `_()`. Fixed
+  global_proxy (section.js ~310), block_doh + enable_ipv6 (settings.js ~463/481).
+- locales regen: ran `node {extract-calls,generate-pot,generate-po ru,
+  distribute-locales}.js` (NOT yarn). `generate-pot.js` calls
+  `git config user.name`/`user.email` and CRASHES if unset → set them locally
+  (`git config --local user.name "..."`, email may be empty string which returns
+  rc=0). POT header churns (POT-Creation-Date timezone + `<>` from empty email)
+  — cosmetic, accepted; msgid-level diff was PURELY ADDITIVE (10 added, 0
+  removed). 10 new ru msgstrs filled in SOURCE locales/netshift.ru.po then
+  distributed to po/ru + po/templates (both end up byte-identical to source).
+- The 10 new ru fragments are the split sentences of the 3 flag descriptions
+  (global proxy / block DoH / enable IPv6) — translated formally/technically
+  matching neighbours. All catalogs LF, no empty non-header msgstr remained.

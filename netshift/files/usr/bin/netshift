@@ -732,6 +732,7 @@ stop_main() {
 }
 
 start() {
+    local start_rc dont_touch_dhcp
     start_main
     start_rc=$?
 
@@ -751,8 +752,28 @@ start() {
     uci_set "netshift" "settings" "shutdown_correctly" 0
     uci commit "netshift" && config_load "$NETSHIFT_CONFIG"
 
+    start_sing_box_monitor
+}
+
+start_sing_box_monitor() {
+    local pidfile="/var/run/netshift_monitor.pid"
+    local pid
+
+    # Guard against double-start / procd re-trigger: if a monitor is already
+    # alive, do not spawn a second one (the old pid would be lost, orphaning a
+    # monitor that stop() can no longer kill). Mirror the pidfile-guard idiom
+    # used by start_subscription_startup_retry_worker.
+    if [ -f "$pidfile" ]; then
+        pid="$(cat "$pidfile" 2> /dev/null)"
+        if [ -n "$pid" ] && kill -0 "$pid" 2> /dev/null; then
+            log "sing-box health monitor is already running with PID $pid" "debug"
+            return 0
+        fi
+        rm -f "$pidfile"
+    fi
+
     monitor_sing_box &
-    echo $! > /var/run/netshift_monitor.pid
+    echo $! > "$pidfile"
     log "Started sing-box health monitor with PID $!" "info"
 }
 
@@ -782,6 +803,7 @@ stop() {
 monitor_sing_box() {
     local crash_count=0
     local backoff=0
+    local dont_touch_dhcp
 
     while true; do
         sleep "$MONITOR_CHECK_INTERVAL"
@@ -824,8 +846,7 @@ monitor_sing_box() {
 
         log "Attempting sing-box recovery restart" "warn"
         stop_main
-        start_main
-        if [ $? -eq 0 ]; then
+        if start_main; then
             config_get_bool dont_touch_dhcp "settings" "dont_touch_dhcp" 0
             if [ "$dont_touch_dhcp" -eq 0 ]; then
                 dnsmasq_configure force
@@ -968,9 +989,6 @@ create_nft_rules() {
         }'
     fi
 
-    log "Create common set"
-    nft_create_ipv4_set "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
-
     log "Create interface set"
     nft_init_interfaces_set
 
@@ -990,10 +1008,19 @@ create_nft_rules() {
     nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto tcp tproxy ip to "$SB_TPROXY_INBOUND_ADDRESS:$SB_TPROXY_INBOUND_PORT" counter
     nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto udp tproxy ip to "$SB_TPROXY_INBOUND_ADDRESS:$SB_TPROXY_INBOUND_PORT" counter
     if netshift_ipv6_enabled; then
-        nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto tcp tproxy ip6 to "$SB_TPROXY_INBOUND_ADDRESS_V6:$SB_TPROXY_INBOUND_PORT_V6" counter
-        nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto udp tproxy ip6 to "$SB_TPROXY_INBOUND_ADDRESS_V6:$SB_TPROXY_INBOUND_PORT_V6" counter
+        nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto tcp tproxy ip6 to "[$SB_TPROXY_INBOUND_ADDRESS_V6]:$SB_TPROXY_INBOUND_PORT_V6" counter
+        nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto udp tproxy ip6 to "[$SB_TPROXY_INBOUND_ADDRESS_V6]:$SB_TPROXY_INBOUND_PORT_V6" counter
     fi
 
+    # Router-originated (locally generated) traffic is left DIRECT on purpose.
+    # The model marks only LAN/forwarded traffic in `mangle` (prerouting) above
+    # and delegates the proxy/direct split to sing-box route rules; the router's
+    # own outgoing traffic is NOT proxied. These mangle_output rules only handle
+    # the returns needed to keep that traffic direct: local/loopback daddr returns
+    # and the outbound-mark return (sing-box-originated packets carrying
+    # NFT_OUTBOUND_MARK must not be re-marked into the tproxy path -> avoids a
+    # routing loop). Proxying router-originated traffic (the old mangle_output
+    # @common/FakeIP daddr marking) was dropped deliberately to avoid such loops.
     nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "@$NFT_LOCALV4_SET_NAME" return
     if netshift_ipv6_enabled; then
         nft add rule inet "$NFT_TABLE_NAME" mangle_output ip6 daddr "@$NFT_LOCALV6_SET_NAME" return
@@ -1028,20 +1055,22 @@ uci_remove_quiet() {
 }
 
 dnsmasq_is_configured_for_netshift() {
-    local servers server noresolv cachesize has_netshift_server=0
+    local configured
 
-    servers="$(uci_get "dhcp" "@dnsmasq[0]" "server")"
-    for server in $servers; do
-        if [ "$server" = "$SB_DNS_INBOUND_ADDRESS" ]; then
-            has_netshift_server=1
-            break
-        fi
-    done
-
-    noresolv="$(uci_get "dhcp" "@dnsmasq[0]" "noresolv")"
-    cachesize="$(uci_get "dhcp" "@dnsmasq[0]" "cachesize")"
-
-    [ "$has_netshift_server" -eq 1 ] && [ "$noresolv" = "1" ] && [ "$cachesize" = "0" ]
+    # The authoritative "netshift owns this dnsmasq config" flag is the
+    # netshift_configured sentinel that dnsmasq_configure sets unconditionally
+    # AFTER applying our config, and dnsmasq_restore clears on teardown. We do
+    # NOT infer ownership from the live server/noresolv/cachesize values: on a
+    # stock dnsmasq with no original server/noresolv/cachesize, dnsmasq_configure
+    # writes no backup markers, and after it runs the live values ARE netshift's
+    # own (noresolv=1, cachesize=0) — so a value-based or marker-based check
+    # could not distinguish "we configured it" from "an admin coincidentally set
+    # the same values", and the redundant `dnsmasq_configure force` path (monitor
+    # recovery / double-start) would re-run "backup" and capture netshift's own
+    # values as the backup, corrupting the later restore. The sentinel is the
+    # single source of truth.
+    configured="$(uci_get "dhcp" "@dnsmasq[0]" "netshift_configured")"
+    [ "$configured" = "1" ]
 }
 
 dnsmasq_configure() {
@@ -1076,6 +1105,10 @@ dnsmasq_configure() {
     uci_add_list "dhcp" "@dnsmasq[0]" "server" "$SB_DNS_INBOUND_ADDRESS"
     uci_set "dhcp" "@dnsmasq[0]" "noresolv" 1
     uci_set "dhcp" "@dnsmasq[0]" "cachesize" 0
+    # Authoritative ownership sentinel (see dnsmasq_is_configured_for_netshift):
+    # marks that netshift, not the admin, applied this dnsmasq config. Set
+    # unconditionally after our config is applied; cleared in dnsmasq_restore.
+    uci_set "dhcp" "@dnsmasq[0]" "netshift_configured" 1
     uci_commit "dhcp"
 
     /etc/init.d/dnsmasq restart
@@ -1129,6 +1162,11 @@ dnsmasq_restore() {
     else
         log "Backup DNS servers and default resolvfile not found, possible resolving issues" "warn"
     fi
+
+    # Clear the ownership sentinel so a fresh future dnsmasq_configure
+    # re-establishes ownership cleanly (and dnsmasq_is_configured_for_netshift
+    # no longer short-circuits once we have torn down).
+    uci_remove_quiet "dhcp" "@dnsmasq[0]" "netshift_configured"
 
     uci_commit "dhcp"
 
@@ -2377,7 +2415,6 @@ configure_user_subnet_list() {
     items="$(parse_domain_or_subnet_string_to_commas_string "$items" "subnets")"
     json_array="$(comma_string_to_json_array "$items")"
     patch_source_ruleset_rules "$ruleset_filepath" "ip_cidr" "$json_array"
-    nft_add_set_elements "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME" "$items"
 }
 
 configure_local_domain_lists() {
@@ -2420,7 +2457,6 @@ import_local_subnets_list_handler() {
     fi
 
     import_plain_subnet_list_to_local_source_ruleset_chunked "$local_subnet_list_filepath" "$ruleset_filepath"
-    nft_add_set_elements_from_file_chunked "$local_subnet_list_filepath" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
 }
 
 configure_remote_domain_or_subnet_list_handler() {
@@ -2617,31 +2653,14 @@ import_community_subnet_lists() {
 import_community_service_subnet_list_handler() {
     local service="$1"
 
+    # Routing for every community service is carried by a sing-box remote rule
+    # set (see configure_community_list_handler -> $SRS_MAIN_URL/<service>.srs).
+    # Only discord still needs an nft path here: it has a live dport-restricted
+    # mangle rule (@netshift_discord_subnets udp dport {...}) that a sing-box
+    # route rule cannot express, so its subnets must populate that nft set.
+    # The other services formerly populated @netshift_subnets, but that set was
+    # matched by NO nft rule (dead path) and is no longer created/populated.
     case "$service" in
-    "twitter")
-        URL=$SUBNETS_TWITTER
-        ;;
-    "meta")
-        URL=$SUBNETS_META
-        ;;
-    "telegram")
-        URL=$SUBNETS_TELERAM
-        ;;
-    "cloudflare")
-        URL=$SUBNETS_CLOUDFLARE
-        ;;
-    "hetzner")
-        URL=$SUBNETS_HETZNER
-        ;;
-    "ovh")
-        URL=$SUBNETS_OVH
-        ;;
-    "digitalocean")
-        URL=$SUBNETS_DIGITALOCEAN
-        ;;
-    "cloudfront")
-        URL=$SUBNETS_CLOUDFRONT
-        ;;
     "discord")
         URL=$SUBNETS_DISCORD
         if ! nft list set inet "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME" > /dev/null 2>&1; then
@@ -2652,9 +2671,6 @@ import_community_service_subnet_list_handler() {
             nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr \
                 "@$NFT_DISCORD_SET_NAME" udp dport '{ 19000-20000, 50000-65535 }' meta mark set "$NFT_FAKEIP_MARK" counter
         fi
-        ;;
-    "roblox")
-        URL=$SUBNETS_ROBLOX
         ;;
     *) return 0 ;;
     esac
@@ -2670,11 +2686,7 @@ import_community_service_subnet_list_handler() {
         return 1
     fi
 
-    if [ "$service" = "discord" ]; then
-        nft_add_set_elements_from_file_chunked "$tmpfile" "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME"
-    else
-        nft_add_set_elements_from_file_chunked "$tmpfile" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
-    fi
+    nft_add_set_elements_from_file_chunked "$tmpfile" "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME"
 
     rm -f "$tmpfile"
 }
@@ -2752,64 +2764,18 @@ import_subnets_from_remote_subnet_list_handler() {
     file_extension="$(url_get_file_extension "$url")"
     log "Detected file extension: '$file_extension'" "debug"
     case "$file_extension" in
-    json)
-        log "Import subnets from a remote JSON list" "info"
-        import_subnets_from_remote_json_file "$url"
-        ;;
-    srs)
-        log "Import subnets from a remote SRS list" "info"
-        import_subnets_from_remote_srs_file "$url"
+    json | srs)
+        # JSON/SRS remote subnet lists are routed via a sing-box remote rule set
+        # (configure_remote_domain_or_subnet_list_handler -> sing_box_cm_add_remote_ruleset),
+        # and sing-box manages their updates automatically. The previous import
+        # here only fed the dead nft @netshift_subnets set, so it is dropped.
+        log "No subnet import needed for $file_extension list - sing-box manages updates automatically."
         ;;
     *)
         log "Import subnets from a remote plain-text list" "info"
         import_subnets_from_remote_plain_file "$url" "$section"
         ;;
     esac
-}
-
-import_subnets_from_remote_json_file() {
-    local url="$1"
-    local json_tmpfile subnets_tmpfile http_proxy_address
-    json_tmpfile="$(mktemp)"
-    subnets_tmpfile="$(mktemp)"
-    http_proxy_address="$(get_service_proxy_address)"
-
-    download_to_file "$url" "$json_tmpfile" "$http_proxy_address"
-
-    if [ $? -ne 0 ] || [ ! -s "$json_tmpfile" ]; then
-        log "Download $url list failed" "error"
-        return 1
-    fi
-
-    extract_ip_cidr_from_json_ruleset_to_file "$json_tmpfile" "$subnets_tmpfile"
-    nft_add_set_elements_from_file_chunked "$subnets_tmpfile" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
-    rm -f "$json_tmpfile" "$subnets_tmpfile"
-}
-
-import_subnets_from_remote_srs_file() {
-    local url="$1"
-
-    local binary_tmpfile json_tmpfile subnets_tmpfile http_proxy_address
-    binary_tmpfile="$(mktemp)"
-    json_tmpfile="$(mktemp)"
-    subnets_tmpfile="$(mktemp)"
-    http_proxy_address="$(get_service_proxy_address)"
-
-    download_to_file "$url" "$binary_tmpfile" "$http_proxy_address"
-
-    if [ $? -ne 0 ] || [ ! -s "$binary_tmpfile" ]; then
-        log "Download $url list failed" "error"
-        return 1
-    fi
-
-    if ! decompile_binary_ruleset "$binary_tmpfile" "$json_tmpfile"; then
-        log "Failed to decompile binary rule set file" "error"
-        return 1
-    fi
-
-    extract_ip_cidr_from_json_ruleset_to_file "$json_tmpfile" "$subnets_tmpfile"
-    nft_add_set_elements_from_file_chunked "$subnets_tmpfile" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
-    rm -f "$binary_tmpfile" "$json_tmpfile" "$subnets_tmpfile"
 }
 
 import_subnets_from_remote_plain_file() {
@@ -2832,7 +2798,6 @@ import_subnets_from_remote_plain_file() {
     ruleset_tag=$(get_ruleset_tag "$section" "remote" "subnets")
     ruleset_filepath="$TMP_RULESET_FOLDER/$ruleset_tag.json"
     import_plain_subnet_list_to_local_source_ruleset_chunked "$tmpfile" "$ruleset_filepath"
-    nft_add_set_elements_from_file_chunked "$tmpfile" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
 
     rm -f "$tmpfile"
 }
@@ -3241,7 +3206,7 @@ check_nft() {
 
     if [ "$found_hetzner" -eq 1 ] || [ "$found_ovh" -eq 1 ]; then
 
-        local sets="netshift_subnets netshift_domains interfaces netshift_discord_subnets localv4"
+        local sets="netshift_domains interfaces netshift_discord_subnets localv4"
 
         nolog "Sets statistics:"
         for set_name in $sets; do

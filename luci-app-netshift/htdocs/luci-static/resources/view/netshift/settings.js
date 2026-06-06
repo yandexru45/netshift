@@ -460,12 +460,19 @@ function createSettingsContent(section) {
     form.Flag,
     "block_doh",
     _("Block DoH Servers"),
-    _(
-      "Block direct connections to known public DNS-over-HTTPS (DoH) servers. " +
-        "This prevents applications from bypassing the router's DNS filtering by using their own encrypted DNS. " +
-        "Affects Cloudflare, Google, Quad9, OpenDNS, AdGuard, and Yandex public DoH servers. " +
+    _("Block direct connections to known public DNS-over-HTTPS (DoH) servers.") +
+      " " +
+      _(
+        "This prevents applications from bypassing the router's DNS filtering by using their own encrypted DNS.",
+      ) +
+      " " +
+      _(
+        "Affects Cloudflare, Google, Quad9, OpenDNS, AdGuard, and Yandex public DoH servers.",
+      ) +
+      " " +
+      _(
         "Note: if your upstream DNS type is set to 'DoH', enable this only after switching to UDP or DoT.",
-    ),
+      ),
   );
   o.default = "0";
   o.rmempty = false;
@@ -474,10 +481,9 @@ function createSettingsContent(section) {
     form.Flag,
     "enable_ipv6",
     _("Enable IPv6 Support"),
-    _(
-      "Enable IPv6 TProxy routing, IPv6 DNS inbound, and IPv6 FakeIP support. " +
-        "Use this only when the router has working IPv6 connectivity.",
-    ),
+    _("Enable IPv6 TProxy routing, IPv6 DNS inbound, and IPv6 FakeIP support.") +
+      " " +
+      _("Use this only when the router has working IPv6 connectivity."),
   );
   o.default = "0";
   o.rmempty = false;

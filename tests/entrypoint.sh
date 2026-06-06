@@ -329,6 +329,104 @@ test_nft() {
 }
 
 # ─────────────────────────────────────────────────────────────────
+# Test: NFT IPv6 TProxy regression (B-01 blocker guard)
+#
+# The PR #11 IPv6 tproxy rule was emitted UNBRACKETED
+# (`tproxy ip6 to ::1:1603`), which nft silently normalizes to a
+# portless bare address (observed forms: `[::0.1.22.3]` on nftables
+# v1.1.3 where 1603 == 0x1603, and `[::1:1603]` on OpenWRT 24.10.6).
+# Either way the port is lost. The backend fix emits the BRACKETED
+# form `[::1]:1603`. This test pins that
+# contract at the real nft level so any revert fails the suite.
+# Constants drive rule construction; the expected normalized
+# `[::1]:1603` literal is the contract we deliberately hardcode.
+# ─────────────────────────────────────────────────────────────────
+test_nft_ipv6() {
+    header "NFT IPv6 TProxy Regression"
+
+    if ! command -v nft > /dev/null 2>&1; then
+        skip "nft not available"
+        return
+    fi
+
+    local constants="${NETSHIFT_LIB_DIR}/constants.sh"
+    if [ ! -f "$constants" ]; then
+        fail "constants.sh not found at $constants"
+        return
+    fi
+
+    # Source the real runtime contract values (v6 tproxy addr/port).
+    # shellcheck disable=SC1090
+    . "$constants"
+
+    if [ -z "$SB_TPROXY_INBOUND_ADDRESS_V6" ] || [ -z "$SB_TPROXY_INBOUND_PORT_V6" ]; then
+        fail "v6 tproxy constants missing (SB_TPROXY_INBOUND_ADDRESS_V6/_PORT_V6)"
+        return
+    fi
+
+    local test_table="netshift_v6_test_$$"
+
+    # ── ipv6_addr interval set + v6 element (mirrors the ipv4 set test) ──
+    if nft add table inet "$test_table" 2>/dev/null && \
+       nft add set inet "$test_table" testset6 '{ type ipv6_addr; flags interval; auto-merge; }' 2>/dev/null && \
+       nft add element inet "$test_table" testset6 '{ fc00::/7 }' 2>/dev/null; then
+        pass "nft-v6-set-element:OK (ipv6_addr interval set + fc00::/7)"
+    else
+        fail "nft-v6-set-element:FAIL (ipv6_addr interval set / element insert failed)"
+    fi
+    nft delete table inet "$test_table" 2>/dev/null
+
+    # ── v6 tproxy rule: build EXACTLY as the backend emits, list back ──
+    # Capability-gate: if adding the rule errors for a kernel/capability
+    # reason (no ip6 tproxy support), skip instead of false-failing.
+    local add_err=""
+    nft add table inet "$test_table" 2>/dev/null
+    nft add chain inet "$test_table" proxy \
+        '{ type filter hook prerouting priority -100; policy accept; }' 2>/dev/null
+    # A v6 daddr return rule (exclusion) coexisting with the tproxy rule.
+    nft add rule inet "$test_table" proxy ip6 daddr fc00::/7 counter return 2>/dev/null
+
+    if add_err="$(nft add rule inet "$test_table" proxy meta l4proto tcp \
+            tproxy ip6 to "[$SB_TPROXY_INBOUND_ADDRESS_V6]:$SB_TPROXY_INBOUND_PORT_V6" counter 2>&1)"; then
+        local listed=""
+        listed="$(nft list chain inet "$test_table" proxy 2>/dev/null)"
+
+        # Positive: MUST normalize to the bracketed [::1]:1603 form.
+        if echo "$listed" | grep -q 'tproxy ip6 to \[::1\]:1603'; then
+            pass "nft-v6-tproxy-bracketed:OK (normalizes to [::1]:1603)"
+        else
+            fail "nft-v6-tproxy-bracketed:FAIL (expected [::1]:1603)" \
+                "$(echo "$listed" | grep -i 'tproxy ip6' || echo "$listed")"
+        fi
+
+        # Negative guard: a buggy/portless bare v6 dest must NOT appear.
+        # The unbracketed `::1:1603` is parsed as a bare address (no port);
+        # nft re-prints it bracketed but mangled. Observed normalizations:
+        #   nftables v1.1.3:  tproxy ip6 to [::0.1.22.3]   (1603 -> 0x1603)
+        #   OpenWRT 24.10.6:  tproxy ip6 to [::1:1603]     (no `]:` port sep)
+        # So the robust marker is: a `tproxy ip6 to [...]` line that is NOT
+        # the correct `[::1]:1603`. Such a line is the bug; its absence is OK.
+        if echo "$listed" | grep 'tproxy ip6 to \[' | grep -qv '\[::1\]:1603'; then
+            fail "nft-v6-tproxy-no-bare:FAIL (buggy portless bare form present)" \
+                "$(echo "$listed" | grep -i 'tproxy ip6')"
+        else
+            pass "nft-v6-tproxy-no-bare:OK (no portless bare ip6 form)"
+        fi
+    else
+        case "$add_err" in
+            *[Nn]ot\ supported*|*[Oo]peration\ not\ supported*|*[Nn]o\ such\ file*)
+                skip "nft-v6-tproxy: kernel lacks ip6 tproxy support ($add_err)"
+                ;;
+            *)
+                fail "nft-v6-tproxy:FAIL (rule add failed unexpectedly)" "$add_err"
+                ;;
+        esac
+    fi
+
+    nft delete table inet "$test_table" 2>/dev/null
+}
+
+# ─────────────────────────────────────────────────────────────────
 # Test: sing-box Config Generation
 # ─────────────────────────────────────────────────────────────────
 test_sing_box_config() {
@@ -685,7 +783,7 @@ echo "$out2" | jq -e '.outbounds[0].alter_id == 64' >/dev/null 2>&1 && echo 'cm-
 doh_cfg='{"route":{"rules":[],"rule_set":[]}}'
 doh_out=$(sing_box_cm_add_doh_block_route_rule "$doh_cfg" "doh-block" "tproxy-in" \
     "1.1.1.1/32 8.8.8.8/32" "2606:4700:4700::1111/128 2001:4860:4860::8888/128")
-echo "$doh_out" | jq -e '.route.rule_set[0].rules[0].ip_cidr | index("1.1.1.1/32") and index("2606:4700:4700::1111/128")' >/dev/null 2>&1 && echo 'cm-doh-cidrs-v4-v6:OK' || echo 'cm-doh-cidrs-v4-v6:FAIL'
+echo "$doh_out" | jq -e '.route.rule_set[0].rules[0].ip_cidr | (index("1.1.1.1/32") != null) and (index("2606:4700:4700::1111/128") != null)' >/dev/null 2>&1 && echo 'cm-doh-cidrs-v4-v6:OK' || echo 'cm-doh-cidrs-v4-v6:FAIL'
 echo "$doh_out" | jq -e '.route.rules[0].action == "reject" and .route.rules[0].rule_set == "doh-block-ruleset" and .route.rules[0].inbound == "tproxy-in"' >/dev/null 2>&1 && echo 'cm-doh-route-rule:OK' || echo 'cm-doh-route-rule:FAIL'
 
 echo 'DONE'
@@ -2520,6 +2618,7 @@ main() {
             test_config_manager
             test_sing_box_config
             test_nft
+            test_nft_ipv6
             test_diagnostics
             test_subscription
             test_rejected_hash
@@ -2533,6 +2632,7 @@ main() {
         config)      test_config ;;
         helpers)     test_helpers ;;
         nft)         test_nft ;;
+        nftv6)       test_nft_ipv6 ;;
         diagnostics) test_diagnostics ;;
         subscription) test_subscription ;;
         rejected)    test_rejected_hash ;;
@@ -2545,7 +2645,7 @@ main() {
         sb)          test_sing_box_config ;;
         *)
             echo "Unknown test: $target"
-            echo "Available: all deps syntax config helpers jq cm sb nft diagnostics subscription rejected jobstate selfheal dnsdetour globalproxy"
+            echo "Available: all deps syntax config helpers jq cm sb nft nftv6 diagnostics subscription rejected jobstate selfheal dnsdetour globalproxy"
             exit 1
             ;;
     esac

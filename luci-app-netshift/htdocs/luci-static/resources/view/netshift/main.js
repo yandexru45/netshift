@@ -13,17 +13,62 @@ function validateIPV4(ip) {
   }
   return { valid: false, message: _("Invalid IP address") };
 }
-function validateIPV6(ip) {
-  const stripped = ip.replace(/^\[/, "").replace(/\]$/, "");
-  const ipv6Regex = /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/;
-  const ipv6CompressedRegex = /^([0-9a-fA-F]{0,4}:)*:([0-9a-fA-F]{0,4}:)*[0-9a-fA-F]{0,4}$/;
-  if (ipv6Regex.test(stripped) || ipv6CompressedRegex.test(stripped)) {
-    const colons = (stripped.match(/:/g) || []).length;
-    if (colons >= 2 && colons <= 7) {
-      return { valid: true, message: _("Valid") };
+var HEXTET_REGEX = /^[0-9a-fA-F]{1,4}$/;
+function isHextet(group) {
+  return HEXTET_REGEX.test(group);
+}
+function isEmbeddedIPv4(group) {
+  return validateIPV4(group).valid;
+}
+function countGroups(side, allowEmbeddedIPv4) {
+  if (side === "") {
+    return 0;
+  }
+  const groups = side.split(":");
+  for (let i = 0; i < groups.length; i++) {
+    const group = groups[i];
+    const isLast = i === groups.length - 1;
+    if (allowEmbeddedIPv4 && isLast && group.includes(".")) {
+      if (!isEmbeddedIPv4(group)) {
+        return null;
+      }
+      continue;
+    }
+    if (!isHextet(group)) {
+      return null;
     }
   }
-  return { valid: false, message: _("Invalid IPv6 address") };
+  const lastGroup = groups[groups.length - 1];
+  const embeddedExtra = allowEmbeddedIPv4 && lastGroup.includes(".") && isEmbeddedIPv4(lastGroup) ? 1 : 0;
+  return groups.length + embeddedExtra;
+}
+function validateIPV6(ip) {
+  const stripped = ip.replace(/^\[/, "").replace(/\]$/, "");
+  const invalid = {
+    valid: false,
+    message: _("Invalid IPv6 address")
+  };
+  const doubleColonCount = stripped.split("::").length - 1;
+  if (doubleColonCount > 1) {
+    return invalid;
+  }
+  if (doubleColonCount === 1) {
+    const [head, tail] = stripped.split("::");
+    const headGroups = countGroups(head, true);
+    const tailGroups = countGroups(tail, true);
+    if (headGroups === null || tailGroups === null) {
+      return invalid;
+    }
+    if (headGroups + tailGroups > 7) {
+      return invalid;
+    }
+    return { valid: true, message: _("Valid") };
+  }
+  const totalGroups = countGroups(stripped, true);
+  if (totalGroups === 8) {
+    return { valid: true, message: _("Valid") };
+  }
+  return invalid;
 }
 function validateIP(ip) {
   const ipv4 = validateIPV4(ip);

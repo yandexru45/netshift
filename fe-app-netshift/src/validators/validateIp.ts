@@ -11,21 +11,93 @@ export function validateIPV4(ip: string): ValidationResult {
   return { valid: false, message: _('Invalid IP address') };
 }
 
-export function validateIPV6(ip: string): ValidationResult {
-  const stripped = ip.replace(/^\[/, '').replace(/\]$/, '');
-  const ipv6Regex = /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/;
-  const ipv6CompressedRegex =
-    /^([0-9a-fA-F]{0,4}:)*:([0-9a-fA-F]{0,4}:)*[0-9a-fA-F]{0,4}$/;
+const HEXTET_REGEX = /^[0-9a-fA-F]{1,4}$/;
 
-  if (ipv6Regex.test(stripped) || ipv6CompressedRegex.test(stripped)) {
-    const colons = (stripped.match(/:/g) || []).length;
+function isHextet(group: string): boolean {
+  return HEXTET_REGEX.test(group);
+}
 
-    if (colons >= 2 && colons <= 7) {
-      return { valid: true, message: _('Valid') };
+function isEmbeddedIPv4(group: string): boolean {
+  return validateIPV4(group).valid;
+}
+
+// Validates one side (the part before or after "::") as a list of hextets.
+// The trailing group may be a dotted IPv4 (embedded/IPv4-mapped IPv6), which
+// counts as TWO 16-bit groups. Returns the 16-bit group count, or null on any
+// invalid group.
+function countGroups(side: string, allowEmbeddedIPv4: boolean): number | null {
+  if (side === '') {
+    return 0;
+  }
+
+  const groups = side.split(':');
+
+  for (let i = 0; i < groups.length; i++) {
+    const group = groups[i];
+    const isLast = i === groups.length - 1;
+
+    if (allowEmbeddedIPv4 && isLast && group.includes('.')) {
+      if (!isEmbeddedIPv4(group)) {
+        return null;
+      }
+
+      continue;
+    }
+
+    if (!isHextet(group)) {
+      return null;
     }
   }
 
-  return { valid: false, message: _('Invalid IPv6 address') };
+  // An embedded IPv4 tail occupies two 16-bit groups instead of one.
+  const lastGroup = groups[groups.length - 1];
+  const embeddedExtra =
+    allowEmbeddedIPv4 && lastGroup.includes('.') && isEmbeddedIPv4(lastGroup)
+      ? 1
+      : 0;
+
+  return groups.length + embeddedExtra;
+}
+
+export function validateIPV6(ip: string): ValidationResult {
+  const stripped = ip.replace(/^\[/, '').replace(/\]$/, '');
+  const invalid: ValidationResult = {
+    valid: false,
+    message: _('Invalid IPv6 address'),
+  };
+
+  // At most one "::" compression is allowed.
+  const doubleColonCount = stripped.split('::').length - 1;
+  if (doubleColonCount > 1) {
+    return invalid;
+  }
+
+  if (doubleColonCount === 1) {
+    const [head, tail] = stripped.split('::');
+
+    const headGroups = countGroups(head, true);
+    const tailGroups = countGroups(tail, true);
+
+    if (headGroups === null || tailGroups === null) {
+      return invalid;
+    }
+
+    // "::" must replace at least one group, so the explicit groups can total
+    // at most 7 (it stands in for one or more zero groups).
+    if (headGroups + tailGroups > 7) {
+      return invalid;
+    }
+
+    return { valid: true, message: _('Valid') };
+  }
+
+  // No "::" → must be exactly 8 groups, all explicit.
+  const totalGroups = countGroups(stripped, true);
+  if (totalGroups === 8) {
+    return { valid: true, message: _('Valid') };
+  }
+
+  return invalid;
 }
 
 export function validateIP(ip: string): ValidationResult {

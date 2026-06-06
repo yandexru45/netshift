@@ -400,3 +400,81 @@ findings; keep under ~200 lines.
   passed / 0 failed (suite total unchanged because the per-line `pass` runs in a
   piped `while` subshell — same counter quirk as test_subscription; the per-test
   ✓ marks are the source of truth, here 15 green for dnsdetour).
+
+## task-014 (PR#11 backend fixes): nft v6 bracket + dead-code removal
+
+- **nft IPv6 `tproxy ... to` MUST bracket the address** — `tproxy ip6 to
+  "$ADDR_V6:$PORT_V6"` expands to `::1:1603`, which nftables v1.1.3 parses as a
+  BARE IPv6 address (`[::0.1.22.3]`, port 1603 read as 0x1603 hextet) with NO
+  port. `nft -c` PASSES and `sing-box check` is unrelated — neither gate catches
+  it; only on-device IPv6 breaks. Fix: `tproxy ip6 to "[$ADDR_V6]:$PORT_V6"`.
+  Verify with the no-root trick: write the rule to /tmp/t.nft and
+  `unshare -rn sh -c 'nft -f /tmp/t.nft && nft list ruleset' | grep tproxy` —
+  bracketed form normalizes to `tproxy ip6 to [::1]:1603` (correct). The IPv4
+  `tproxy ip to "$ADDR:$PORT"` is fine (IPv4 has no `:` ambiguity). sing-box
+  inbounds (`sing_box_cm_add_*_inbound` address+port as SEPARATE jq args ->
+  JSON `listen`/`listen_port`) have NO bracket defect — don't "fix" them.
+- **Router-originated traffic is DIRECT by design** (operator decision A). The
+  PR's model marks only LAN/forwarded traffic in `mangle` (prerouting) and
+  splits proxy/direct in sing-box; `mangle_output` only carries local/loopback
+  daddr returns + the `NFT_OUTBOUND_MARK` return (so sing-box-originated packets
+  don't loop back into tproxy). Documented with a comment; no behavior change.
+- **The `@netshift_subnets` (`NFT_COMMON_SET_NAME`) nft set was fully dead** —
+  created + populated at 6 sites but matched by NO nft rule after PR#11. SAFE to
+  remove because every subnet source is independently carried into a sing-box
+  rule_set: user_subnets -> `patch_source_ruleset_rules ip_cidr` + local source
+  ruleset; local_subnet_lists -> `import_plain_subnet_list_to_local_source_ruleset_chunked`;
+  community_lists -> `configure_community_list_handler` (`$SRS_MAIN_URL/<svc>.srs`
+  remote ruleset); remote json/srs subnets -> `configure_remote_domain_or_subnet_list_handler`
+  (`sing_box_cm_add_remote_ruleset`); remote plain -> `prepare_source_ruleset` +
+  plain import. DISCORD is the ONE exception that still needs an nft set
+  (`NFT_DISCORD_SET_NAME`) — it has a live dport-restricted mangle rule
+  (`@netshift_discord_subnets udp dport {19000-20000,50000-65535}`) that a
+  sing-box route rule can't express. Removed: set creation (~972), all 6
+  `nft_add_set_elements*` populate calls, the now-orphaned
+  `import_subnets_from_remote_json_file`/`_srs_file` (json/srs now log
+  "sing-box manages updates" like the domains path), `netshift_subnets` from the
+  diagnostics `sets` list, and the `NFT_COMMON_SET_NAME` constant. Left the 9
+  IPv4 `SUBNETS_*` constants (only `SUBNETS_DISCORD` used) in place — constants.sh
+  is `# shellcheck disable=SC2034` so unused-looking vars don't fail lint, and
+  trimming them was out of declared scope.
+- **8 `SUBNETS_*_V6` constants had zero consumers** (`git grep` only matched
+  definitions + a memory doc) — removed.
+- **B-09 dead predicates**: `is_ip`/`is_ipv6_cidr`/`is_ipv6` in helpers.sh were
+  all unused (`is_ipv6` only called by the other two; tests use only `is_ipv4`/
+  `url_is_ipv6_literal`/`is_ipv4_ip_or_ipv4_cidr`). Removed all three.
+- **Monitor spawn guard (B-05)**: extracted `start_sing_box_monitor` mirroring
+  the `start_subscription_startup_retry_worker` pidfile-guard — if
+  `/var/run/netshift_monitor.pid` exists and `kill -0 "$pid"` succeeds, skip the
+  spawn (else `rm` stale pidfile then spawn). Prevents a procd double-start from
+  orphaning a monitor that `stop()` can no longer kill.
+- **B-08 dnsmasq guard (review-001 FIX — sentinel, not markers)**: my first B-08
+  attempt gated `dnsmasq_is_configured_for_netshift` on the presence of a private
+  backup marker (`netshift_server`/`netshift_noresolv`/`netshift_cachesize`).
+  That was WRONG and regressed STOCK dnsmasq: on a default box with no original
+  server/noresolv/cachesize, `dnsmasq_configure` writes NO markers
+  (`backup_dnsmasq_config_option` only writes when the original value is
+  non-empty; the server-backup loop is skipped when current servers are empty).
+  So the guard returned false, and the redundant `dnsmasq_configure force` path
+  (monitor recovery restart, double-start) re-ran "backup" — but the LIVE values
+  were now netshift's OWN (noresolv=1, cachesize=0), so it captured those as the
+  backup -> `dnsmasq_restore` later restored 1/0 instead of the OpenWRT defaults
+  (0/150) -> router DNS broken after stop/uninstall.
+  CORRECT fix = an explicit netshift-owned SENTINEL: `dnsmasq_configure` does
+  `uci_set "dhcp" "@dnsmasq[0]" "netshift_configured" 1` UNCONDITIONALLY right
+  after applying our config (before the commit); `dnsmasq_is_configured_for_netshift`
+  short-circuits iff `netshift_configured == 1` (authoritative ownership flag, no
+  value/marker inference); `dnsmasq_restore` clears it with `uci_remove_quiet`
+  before its commit so a fresh future configure re-establishes ownership. The
+  sentinel is a distinct option name (not in the `server` list), so it never
+  leaks into the server/backup iteration. Verified all 3 scenarios via an
+  awk-extracted-functions harness (use an EXACT-match UCI stub — `awk -F'\t'
+  $1==k`, NOT grep/sed, because the literal `@dnsmasq[0]` key contains `[0]`
+  which a regex reads as a char class and silently mis-reads every lookup):
+  (A) stock -> sentinel set, no spurious backup, force-again short-circuits,
+  restore=0/150, sentinel cleared; (B) admin-had-config -> real values backed up
+  & restored intact; (C) coincidental admin match w/o sentinel -> NOT treated as
+  owned. shellcheck clean; smoke 81/0.
+- shellcheck -S error clean (bin + libs + install.sh); `smoke-tests all` = 81
+  passed / 0 failed (unchanged baseline). No new smoke test (separate packaging
+  task owns nft/v6 coverage per spec). No sacred constant VALUES changed.
