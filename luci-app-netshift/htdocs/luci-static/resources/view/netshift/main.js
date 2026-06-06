@@ -13,6 +13,25 @@ function validateIPV4(ip) {
   }
   return { valid: false, message: _("Invalid IP address") };
 }
+function validateIPV6(ip) {
+  const stripped = ip.replace(/^\[/, "").replace(/\]$/, "");
+  const ipv6Regex = /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/;
+  const ipv6CompressedRegex = /^([0-9a-fA-F]{0,4}:)*:([0-9a-fA-F]{0,4}:)*[0-9a-fA-F]{0,4}$/;
+  if (ipv6Regex.test(stripped) || ipv6CompressedRegex.test(stripped)) {
+    const colons = (stripped.match(/:/g) || []).length;
+    if (colons >= 2 && colons <= 7) {
+      return { valid: true, message: _("Valid") };
+    }
+  }
+  return { valid: false, message: _("Invalid IPv6 address") };
+}
+function validateIP(ip) {
+  const ipv4 = validateIPV4(ip);
+  if (ipv4.valid) {
+    return ipv4;
+  }
+  return validateIPV6(ip);
+}
 
 // src/validators/validateDomain.ts
 function validateDomain(domain, allowDotTLD = false) {
@@ -40,9 +59,22 @@ function validateDNS(value) {
   if (!value) {
     return { valid: false, message: _("DNS server address cannot be empty") };
   }
-  const cleanedValueWithoutPort = value.replace(/:(\d+)(?=\/|$)/, "");
-  const cleanedIpWithoutPath = cleanedValueWithoutPort.split("/")[0];
+  const valueBeforePath = value.split("/")[0];
+  let cleanedValueWithoutPort = value;
+  let cleanedIpWithoutPath = valueBeforePath;
+  if (valueBeforePath.startsWith("[")) {
+    const closingBracketIndex = valueBeforePath.indexOf("]");
+    if (closingBracketIndex > 0) {
+      cleanedIpWithoutPath = valueBeforePath.slice(1, closingBracketIndex);
+    }
+  } else if ((valueBeforePath.match(/:/g) || []).length < 2) {
+    cleanedValueWithoutPort = value.replace(/:(\d+)(?=\/|$)/, "");
+    cleanedIpWithoutPath = cleanedValueWithoutPort.split("/")[0];
+  }
   if (validateIPV4(cleanedIpWithoutPath).valid) {
+    return { valid: true, message: _("Valid") };
+  }
+  if (validateIPV6(cleanedIpWithoutPath).valid) {
     return { valid: true, message: _("Valid") };
   }
   if (validateDomain(cleanedValueWithoutPort).valid) {
@@ -51,7 +83,7 @@ function validateDNS(value) {
   return {
     valid: false,
     message: _(
-      "Invalid DNS server format. Examples: 8.8.8.8 or dns.example.com or dns.example.com/nicedns for DoH"
+      "Invalid DNS server format. Examples: 8.8.8.8, [::1], dns.example.com, or dns.example.com/dns-query for DoH"
     )
   };
 }
@@ -102,30 +134,48 @@ function validatePath(value) {
 // src/validators/validateSubnet.ts
 function validateSubnet(value) {
   const subnetRegex = /^(\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?$/;
-  if (!subnetRegex.test(value)) {
-    return {
-      valid: false,
-      message: _("Invalid format. Use X.X.X.X or X.X.X.X/Y")
-    };
-  }
-  const [ip, cidr] = value.split("/");
-  if (ip === "0.0.0.0") {
-    return { valid: false, message: _("IP address 0.0.0.0 is not allowed") };
-  }
-  const ipCheck = validateIPV4(ip);
-  if (!ipCheck.valid) {
-    return ipCheck;
-  }
-  if (cidr) {
-    const cidrNum = parseInt(cidr, 10);
-    if (cidrNum < 0 || cidrNum > 32) {
-      return {
-        valid: false,
-        message: _("CIDR must be between 0 and 32")
-      };
+  if (subnetRegex.test(value)) {
+    const [ip, cidr] = value.split("/");
+    if (ip === "0.0.0.0") {
+      return { valid: false, message: _("IP address 0.0.0.0 is not allowed") };
     }
+    const ipCheck = validateIPV4(ip);
+    if (!ipCheck.valid) {
+      return ipCheck;
+    }
+    if (cidr) {
+      const cidrNum = parseInt(cidr, 10);
+      if (cidrNum < 0 || cidrNum > 32) {
+        return {
+          valid: false,
+          message: _("CIDR must be between 0 and 32")
+        };
+      }
+    }
+    return { valid: true, message: _("Valid") };
   }
-  return { valid: true, message: _("Valid") };
+  const ipv6CidrRegex = /^([0-9a-fA-F:]+(?:\/[0-9]{1,3})?)$/;
+  if (ipv6CidrRegex.test(value)) {
+    const [ip, cidr] = value.split("/");
+    const ipCheck = validateIPV6(ip);
+    if (!ipCheck.valid) {
+      return ipCheck;
+    }
+    if (cidr) {
+      const cidrNum = parseInt(cidr, 10);
+      if (cidrNum < 0 || cidrNum > 128) {
+        return {
+          valid: false,
+          message: _("IPv6 CIDR must be between 0 and 128")
+        };
+      }
+    }
+    return { valid: true, message: _("Valid") };
+  }
+  return {
+    valid: false,
+    message: _("Invalid format. Use X.X.X.X/Y or IPv6/Y")
+  };
 }
 
 // src/validators/bulkValidate.ts
@@ -1173,7 +1223,10 @@ var DNS_SERVER_OPTIONS = {
   "9.9.9.9": "9.9.9.9 (Quad9)",
   "dns.adguard-dns.com": "dns.adguard-dns.com (AdGuard Default)",
   "unfiltered.adguard-dns.com": "unfiltered.adguard-dns.com (AdGuard Unfiltered)",
-  "family.adguard-dns.com": "family.adguard-dns.com (AdGuard Family)"
+  "family.adguard-dns.com": "family.adguard-dns.com (AdGuard Family)",
+  "2001:4860:4860::8888": "2001:4860:4860::8888 (Google IPv6)",
+  "2606:4700:4700::1111": "2606:4700:4700::1111 (Cloudflare IPv6)",
+  "2620:fe::fe": "2620:fe::fe (Quad9 IPv6)"
 };
 var BOOTSTRAP_DNS_SERVER_OPTIONS = {
   "77.88.8.8": "77.88.8.8 (Yandex DNS)",
@@ -1183,7 +1236,9 @@ var BOOTSTRAP_DNS_SERVER_OPTIONS = {
   "8.8.8.8": "8.8.8.8 (Google DNS)",
   "8.8.4.4": "8.8.4.4 (Google DNS)",
   "9.9.9.9": "9.9.9.9 (Quad9 DNS)",
-  "9.9.9.11": "9.9.9.11 (Quad9 DNS)"
+  "9.9.9.11": "9.9.9.11 (Quad9 DNS)",
+  "2001:4860:4860::8888": "2001:4860:4860::8888 (Google DNS IPv6)",
+  "2606:4700:4700::1111": "2606:4700:4700::1111 (Cloudflare DNS IPv6)"
 };
 var DIAGNOSTICS_UPDATE_INTERVAL = 1e4;
 var CACHE_TIMEOUT = DIAGNOSTICS_UPDATE_INTERVAL - 1e3;
@@ -5244,7 +5299,9 @@ return baseclass.extend({
   svgEl,
   validateDNS,
   validateDomain,
+  validateIP,
   validateIPV4,
+  validateIPV6,
   validateOutboundJson,
   validatePath,
   validateProxyUrl,

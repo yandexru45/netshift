@@ -12,11 +12,21 @@ export const additionalValidDns = [
   ['DoH IP with port 443', '1.1.1.1:443/dns-query'],
   ['DoH domain', 'cloudflare-dns.com/dns-query'],
   ['DoH domain with port 443', 'cloudflare-dns.com:443/dns-query'],
+  ['IPv6 address', '2001:db8::1'],
+  ['Bracketed IPv6', '[2001:db8::1]'],
+  ['Bracketed IPv6 with port', '[2001:db8::1]:853'],
+  ['IPv6 DoH path', '2001:db8::1/dns-query'],
+  ['Bracketed IPv6 DoH path with port', '[2001:db8::1]:443/dns-query'],
+];
+
+export const additionalInvalidDns = [
+  ['IPv6 invalid hex', '2001:db8::zzzz'],
+  ['IPv6 group too long', '12345::1'],
 ];
 
 const validDns = [...validIPs, ...validDomains, ...additionalValidDns];
 
-const invalidDns = [...invalidIPs, ...invalidDomains];
+const invalidDns = [...invalidIPs, ...invalidDomains, ...additionalInvalidDns];
 
 describe('validateDns', () => {
   describe.each(validDns)('Valid dns: %s', (_desc, domain) => {

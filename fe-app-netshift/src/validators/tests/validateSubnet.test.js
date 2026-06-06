@@ -8,6 +8,10 @@ export const validSubnets = [
   ['CIDR /32', '172.16.0.1/32'],
   ['Loopback', '127.0.0.1'],
   ['Broadcast with mask', '255.255.255.255/32'],
+  ['IPv6 loopback', '::1'],
+  ['IPv6 with CIDR /0', '::/0'],
+  ['IPv6 with CIDR /32', '2001:db8::/32'],
+  ['IPv6 with CIDR /128', '2001:db8::1/128'],
 ];
 
 export const invalidSubnets = [
@@ -22,6 +26,10 @@ export const invalidSubnets = [
   ['Invalid CIDR (negative)', '192.168.1.1/-1'],
   ['CIDR not number', '192.168.1.1/abc'],
   ['Forbidden 0.0.0.0', '0.0.0.0'],
+  ['IPv6 invalid hex', '2001:db8::zzzz'],
+  ['IPv6 CIDR too high', '2001:db8::1/129'],
+  ['IPv6 CIDR negative', '2001:db8::1/-1'],
+  ['IPv6 CIDR not number', '2001:db8::1/abc'],
 ];
 
 describe('validateSubnet', () => {

@@ -387,7 +387,7 @@ test_sing_box_config() {
     # Test with inline ruleset (DoH blocking)
     jq '.route.rule_set += [{
         type: "inline", tag: "doh-block",
-        rules: [{ ip_cidr: ["1.1.1.1/32", "8.8.8.8/32"] }]
+        rules: [{ ip_cidr: ["1.1.1.1/32", "8.8.8.8/32", "2606:4700:4700::1111/128", "2001:4860:4860::8888/128"] }]
     }]' "$test_config" > "${test_config}.4"
 
     if sing-box -c "${test_config}.4" check > /dev/null 2>&1; then
@@ -681,6 +681,12 @@ out2=$(sing_box_cm_add_vmess_outbound "$base_config" "vmess-out" "example.com" "
     "bf000d23-0752-40b4-affe-68f7707a9661" "aes-128-gcm" "64")
 echo "$out2" | jq -e '.outbounds[0].security == "aes-128-gcm"' >/dev/null 2>&1 && echo 'cm-vmess-security-explicit:OK' || echo 'cm-vmess-security-explicit:FAIL'
 echo "$out2" | jq -e '.outbounds[0].alter_id == 64' >/dev/null 2>&1 && echo 'cm-vmess-aid-number:OK' || echo 'cm-vmess-aid-number:FAIL'
+
+doh_cfg='{"route":{"rules":[],"rule_set":[]}}'
+doh_out=$(sing_box_cm_add_doh_block_route_rule "$doh_cfg" "doh-block" "tproxy-in" \
+    "1.1.1.1/32 8.8.8.8/32" "2606:4700:4700::1111/128 2001:4860:4860::8888/128")
+echo "$doh_out" | jq -e '.route.rule_set[0].rules[0].ip_cidr | index("1.1.1.1/32") and index("2606:4700:4700::1111/128")' >/dev/null 2>&1 && echo 'cm-doh-cidrs-v4-v6:OK' || echo 'cm-doh-cidrs-v4-v6:FAIL'
+echo "$doh_out" | jq -e '.route.rules[0].action == "reject" and .route.rules[0].rule_set == "doh-block-ruleset" and .route.rules[0].inbound == "tproxy-in"' >/dev/null 2>&1 && echo 'cm-doh-route-rule:OK' || echo 'cm-doh-route-rule:FAIL'
 
 echo 'DONE'
 CMEOF
@@ -2385,6 +2391,114 @@ DDEOF
 }
 
 # ─────────────────────────────────────────────────────────────────
+# Test: global_proxy route rule semantics
+# ─────────────────────────────────────────────────────────────────
+test_global_proxy() {
+    header "Global Proxy Route Semantics"
+
+    if ! command -v jq > /dev/null 2>&1; then
+        skip "jq not available"
+        return
+    fi
+
+    local cm_lib="${NETSHIFT_LIB_DIR}/sing_box_config_manager.sh"
+    local constants_lib="${NETSHIFT_LIB_DIR}/constants.sh"
+    local jq_helpers="${NETSHIFT_LIB_DIR}/helpers.jq"
+    if [ ! -r "$cm_lib" ] || [ ! -r "$constants_lib" ] || [ ! -r "$jq_helpers" ]; then
+        skip "config manager / constants / helpers.jq not found"
+        return
+    fi
+
+    # sing_box_cm_patch_route_rule imports helpers.jq from the runtime path.
+    mkdir -p /usr/lib/netshift
+    ln -sf "$jq_helpers" /usr/lib/netshift/helpers.jq
+
+    local cfg tmp
+    tmp="/tmp/netshift-global-proxy-$$.json"
+
+    . "$constants_lib"
+    . "$cm_lib"
+
+    local global_out ruleset_tag ipv6_excluded_rule_tag
+    global_out="global-out"
+    ruleset_tag="global-user-domains"
+    ipv6_excluded_rule_tag="global-ipv6-excluded"
+
+    cfg=$(jq -n \
+        --arg direct "$SB_DIRECT_OUTBOUND_TAG" \
+        --arg global "$global_out" \
+        --arg tproxy "$SB_TPROXY_INBOUND_TAG" \
+        --arg listen "$SB_TPROXY_INBOUND_ADDRESS" \
+        --argjson port "$SB_TPROXY_INBOUND_PORT" \
+        --arg ruleset "$ruleset_tag" \
+        '{
+        log: { disabled: false, level: "warn", timestamp: true },
+        dns: { servers: [], rules: [], final: $direct, strategy: "prefer_ipv4", independent_cache: true },
+        ntp: {},
+        inbounds: [
+            { type: "tproxy", tag: $tproxy, listen: $listen, listen_port: $port }
+        ],
+        outbounds: [
+            { type: "direct", tag: $direct },
+            { type: "direct", tag: $global }
+        ],
+        route: {
+            rules: [],
+            rule_set: [{ type: "inline", tag: $ruleset, rules: [{ domain_suffix: ["example.com"] }] }],
+            final: $global,
+            auto_detect_interface: true
+        }
+    }')
+
+    cfg=$(sing_box_cm_add_route_rule "$cfg" "$SB_EXCLUSION_RULE_TAG" "$SB_TPROXY_INBOUND_TAG" "$SB_DIRECT_OUTBOUND_TAG")
+    cfg=$(sing_box_cm_patch_route_rule "$cfg" "$SB_EXCLUSION_RULE_TAG" "rule_set" "$ruleset_tag")
+    cfg=$(sing_box_cm_add_route_rule "$cfg" "$ipv6_excluded_rule_tag" "$SB_TPROXY_INBOUND_TAG" "$SB_DIRECT_OUTBOUND_TAG")
+    cfg=$(sing_box_cm_patch_route_rule "$cfg" "$ipv6_excluded_rule_tag" "source_ip_cidr" "fd00:ec3a::123/128")
+
+    if echo "$cfg" | jq -e --arg global "$global_out" '.route.final == $global' > /dev/null 2>&1; then
+        pass "global_proxy route.final points to global-out"
+    else
+        fail "global_proxy route.final is not global-out" "$(echo "$cfg" | jq -r '.route.final // "missing"' 2>/dev/null)"
+    fi
+
+    if echo "$cfg" | jq -e --arg tag "$SB_EXCLUSION_RULE_TAG" \
+            '[.route.rules[] | select(.__service_tag == $tag and (has("rule_set") | not))] | length == 0' \
+            > /dev/null 2>&1; then
+        pass "global_proxy exclusion route rule is constrained by rule_set"
+    else
+        fail "global_proxy exclusion route rule lacks rule_set" "$(echo "$cfg" | jq -c '.route.rules' 2>/dev/null)"
+    fi
+
+    if echo "$cfg" | jq -e --arg tag "$SB_EXCLUSION_RULE_TAG" --arg direct "$SB_DIRECT_OUTBOUND_TAG" --arg ruleset "$ruleset_tag" \
+            '[.route.rules[] | select(.__service_tag == $tag and .outbound == $direct and .rule_set == $ruleset)] | length == 1' \
+            > /dev/null 2>&1; then
+        pass "global_proxy exclusion rule routes global-user-domains direct-out"
+    else
+        fail "global_proxy exclusion direct rule shape wrong" "$(echo "$cfg" | jq -c '.route.rules' 2>/dev/null)"
+    fi
+
+    if echo "$cfg" | jq -e --arg tag "$ipv6_excluded_rule_tag" --arg direct "$SB_DIRECT_OUTBOUND_TAG" \
+            '[.route.rules[] | select(.__service_tag == $tag and .outbound == $direct and .source_ip_cidr == "fd00:ec3a::123/128")] | length == 1' \
+            > /dev/null 2>&1; then
+        pass "global_proxy routing_excluded_ips supports IPv6 source_ip_cidr"
+    else
+        fail "global_proxy IPv6 source_ip_cidr rule shape wrong" "$(echo "$cfg" | jq -c '.route.rules' 2>/dev/null)"
+    fi
+
+    if command -v sing-box > /dev/null 2>&1; then
+        sing_box_cm_save_config_to_file "$cfg" "$tmp"
+        if sing-box -c "$tmp" check > /dev/null 2>&1; then
+            pass "sing-box validates global_proxy route config"
+        else
+            fail "sing-box rejects global_proxy route config" "$(sing-box -c "$tmp" check 2>&1)"
+        fi
+        rm -f "$tmp"
+    else
+        skip "sing-box not installed — skipping global_proxy config check"
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────
 main() {
@@ -2412,6 +2526,7 @@ main() {
             test_jobstate
             test_selfheal
             test_dns_via_outbound
+            test_global_proxy
             ;;
         deps)        test_deps ;;
         syntax)      test_syntax ;;
@@ -2424,12 +2539,13 @@ main() {
         jobstate)    test_jobstate ;;
         selfheal)    test_selfheal ;;
         dnsdetour)   test_dns_via_outbound ;;
+        globalproxy) test_global_proxy ;;
         jq)          test_jq_helpers ;;
         cm)          test_config_manager ;;
         sb)          test_sing_box_config ;;
         *)
             echo "Unknown test: $target"
-            echo "Available: all deps syntax config helpers jq cm sb nft diagnostics subscription rejected jobstate selfheal dnsdetour"
+            echo "Available: all deps syntax config helpers jq cm sb nft diagnostics subscription rejected jobstate selfheal dnsdetour globalproxy"
             exit 1
             ;;
     esac

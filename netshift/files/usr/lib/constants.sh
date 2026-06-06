@@ -30,6 +30,7 @@ RT_TABLE_NAME="netshift"
 ## nft
 NFT_TABLE_NAME="NetShiftTable"
 NFT_LOCALV4_SET_NAME="localv4"
+NFT_LOCALV6_SET_NAME="localv6"
 NFT_COMMON_SET_NAME="netshift_subnets"
 NFT_DISCORD_SET_NAME="netshift_discord_subnets"
 NFT_INTERFACE_SET_NAME="interfaces"
@@ -38,6 +39,11 @@ NFT_OUTBOUND_MARK="0x00200000"
 
 ## sing-box
 SB_REQUIRED_VERSION="1.12.0"
+# Monitoring
+MONITOR_CHECK_INTERVAL=10
+MONITOR_MAX_CRASHES=5
+MONITOR_BACKOFF_BASE=10
+MONITOR_BACKOFF_MAX=300
 # Core-switch connectivity self-heal (task-009). Hosts probed before a core
 # swap, depending on direction: the stable (stock) install pulls from the
 # OpenWrt package feeds, the extended install pulls from the GitHub API.
@@ -57,6 +63,7 @@ UPDATES_LIBCRONET_LIB="/usr/lib/libcronet.so"
 SB_DNS_SERVER_TAG="dns-server"
 SB_FAKEIP_DNS_SERVER_TAG="fakeip-server"
 SB_FAKEIP_INET4_RANGE="198.18.0.0/15"
+SB_FAKEIP_INET6_RANGE="fd00:ec3a::/32"
 SB_BOOTSTRAP_SERVER_TAG="bootstrap-dns-server"
 SB_FAKEIP_DNS_RULE_TAG="fakeip-dns-rule-tag"
 SB_INVERT_FAKEIP_DNS_RULE_TAG="invert-fakeip-dns-rule-tag"
@@ -64,9 +71,13 @@ SB_INVERT_FAKEIP_DNS_RULE_TAG="invert-fakeip-dns-rule-tag"
 SB_TPROXY_INBOUND_TAG="tproxy-in"
 SB_TPROXY_INBOUND_ADDRESS="127.0.0.1"
 SB_TPROXY_INBOUND_PORT=1602
+SB_TPROXY_INBOUND_ADDRESS_V6="::1"
+SB_TPROXY_INBOUND_PORT_V6=1603
 SB_DNS_INBOUND_TAG="dns-in"
 SB_DNS_INBOUND_ADDRESS="127.0.0.42"
 SB_DNS_INBOUND_PORT=53
+SB_DNS_INBOUND_ADDRESS_V6="::1"
+SB_DNS_INBOUND_PORT_V6=5354
 SB_SERVICE_MIXED_INBOUND_TAG="service-mixed-in"
 SB_SERVICE_MIXED_INBOUND_ADDRESS="127.0.0.1"
 SB_SERVICE_MIXED_INBOUND_PORT=4534
@@ -75,8 +86,13 @@ SB_DIRECT_OUTBOUND_TAG="direct-out"
 # Route
 SB_REJECT_RULE_TAG="reject-rule-tag"
 SB_EXCLUSION_RULE_TAG="exclusion-rule-tag"
+SB_DOH_BLOCK_RULE_TAG="doh-block-rule-tag"
 # Experimental
 SB_CLASH_API_CONTROLLER_PORT=9090
+
+## DoH blocking
+DOH_BLOCK_IPV4_CIDRS="1.1.1.1/32 1.0.0.1/32 8.8.8.8/32 8.8.4.4/32 9.9.9.9/32 9.9.9.11/32 149.112.112.112/32 208.67.222.222/32 208.67.220.220/32 94.140.14.14/32 94.140.15.15/32 77.88.8.8/32 77.88.8.1/32"
+DOH_BLOCK_IPV6_CIDRS="2606:4700:4700::1111/128 2606:4700:4700::1001/128 2001:4860:4860::8888/128 2001:4860:4860::8844/128 2620:fe::fe/128 2620:fe::9/128 2620:119:35::35/128 2620:119:53::53/128 2a10:50c0::ad1:ff/128 2a10:50c0::ad2:ff/128 2a02:6b8::feed:0ff/128 2a02:6b8:0:1::feed:0ff/128"
 
 ## Lists
 GITHUB_RAW_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main"
@@ -91,4 +107,12 @@ SUBNETS_HETZNER="${GITHUB_RAW_URL}/Subnets/IPv4/hetzner.lst"
 SUBNETS_OVH="${GITHUB_RAW_URL}/Subnets/IPv4/ovh.lst"
 SUBNETS_DIGITALOCEAN="${GITHUB_RAW_URL}/Subnets/IPv4/digitalocean.lst"
 SUBNETS_CLOUDFRONT="${GITHUB_RAW_URL}/Subnets/IPv4/cloudfront.lst"
+SUBNETS_TWITTER_V6="${GITHUB_RAW_URL}/Subnets/IPv6/twitter.lst"
+SUBNETS_META_V6="${GITHUB_RAW_URL}/Subnets/IPv6/meta.lst"
+SUBNETS_DISCORD_V6="${GITHUB_RAW_URL}/Subnets/IPv6/discord.lst"
+SUBNETS_CLOUDFLARE_V6="${GITHUB_RAW_URL}/Subnets/IPv6/cloudflare.lst"
+SUBNETS_HETZNER_V6="${GITHUB_RAW_URL}/Subnets/IPv6/hetzner.lst"
+SUBNETS_OVH_V6="${GITHUB_RAW_URL}/Subnets/IPv6/ovh.lst"
+SUBNETS_DIGITALOCEAN_V6="${GITHUB_RAW_URL}/Subnets/IPv6/digitalocean.lst"
+SUBNETS_CLOUDFRONT_V6="${GITHUB_RAW_URL}/Subnets/IPv6/cloudfront.lst"
 COMMUNITY_SERVICES="russia_inside russia_outside ukraine_inside geoblock block porn news anime youtube hdrezka tiktok google_ai google_play hodca discord meta twitter cloudflare cloudfront digitalocean hetzner ovh telegram roblox"

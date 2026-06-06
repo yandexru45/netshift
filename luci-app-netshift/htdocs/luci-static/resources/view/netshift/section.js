@@ -35,7 +35,9 @@ function createSectionContent(section) {
     form.TextValue,
     "proxy_string",
     _("Proxy Configuration URL"),
-    _("vless://, vmess://, ss://, trojan://, socks4/5://, hy2/hysteria2:// links")
+    _(
+      "vless://, vmess://, ss://, trojan://, socks4/5://, hy2/hysteria2:// links",
+    ),
   );
   o.depends({ connection_type: "proxy", proxy_config_type: "url" });
   o.rows = 5;
@@ -87,7 +89,9 @@ function createSectionContent(section) {
     form.Value,
     "subscription_url",
     _("Subscription URL"),
-    _("Enter the subscription URL to fetch proxy configurations from your provider"),
+    _(
+      "Enter the subscription URL to fetch proxy configurations from your provider",
+    ),
   );
   o.depends({ connection_type: "proxy", proxy_config_type: "subscription" });
   o.placeholder = "https://example.com/api/sub";
@@ -125,7 +129,9 @@ function createSectionContent(section) {
     form.Flag,
     "subscription_group_by_countries",
     _("Группировать по странам"),
-    _("Группирует прокси подписки по флагу страны в начале тега в отдельные URLTest-группы"),
+    _(
+      "Группирует прокси подписки по флагу страны в начале тега в отдельные URLTest-группы",
+    ),
   );
   o.default = "0";
   o.rmempty = false;
@@ -135,7 +141,9 @@ function createSectionContent(section) {
     form.DynamicList,
     "subscription_filter_include_keywords",
     _("Include servers by keyword"),
-    _("Keep only subscription servers whose name contains at least one of these keywords (case-insensitive). Leave empty to keep all."),
+    _(
+      "Keep only subscription servers whose name contains at least one of these keywords (case-insensitive). Leave empty to keep all.",
+    ),
   );
   o.depends({ connection_type: "proxy", proxy_config_type: "subscription" });
   o.rmempty = true;
@@ -144,7 +152,9 @@ function createSectionContent(section) {
     form.DynamicList,
     "subscription_filter_exclude_keywords",
     _("Exclude servers by keyword"),
-    _("Drop subscription servers whose name contains any of these keywords (case-insensitive)."),
+    _(
+      "Drop subscription servers whose name contains any of these keywords (case-insensitive).",
+    ),
   );
   o.depends({ connection_type: "proxy", proxy_config_type: "subscription" });
   o.rmempty = true;
@@ -153,7 +163,9 @@ function createSectionContent(section) {
     form.DynamicList,
     "selector_proxy_links",
     _("Selector Proxy Links"),
-    _("vless://, vmess://, ss://, trojan://, socks4/5://, hy2/hysteria2:// links")
+    _(
+      "vless://, vmess://, ss://, trojan://, socks4/5://, hy2/hysteria2:// links",
+    ),
   );
   o.depends({ connection_type: "proxy", proxy_config_type: "selector" });
   o.rmempty = false;
@@ -176,7 +188,9 @@ function createSectionContent(section) {
     form.DynamicList,
     "urltest_proxy_links",
     _("URLTest Proxy Links"),
-    _("vless://, vmess://, ss://, trojan://, socks4/5://, hy2/hysteria2:// links")
+    _(
+      "vless://, vmess://, ss://, trojan://, socks4/5://, hy2/hysteria2:// links",
+    ),
   );
   o.depends({ connection_type: "proxy", proxy_config_type: "urltest" });
   o.rmempty = false;
@@ -199,7 +213,7 @@ function createSectionContent(section) {
     form.ListValue,
     "urltest_check_interval",
     _("URLTest Check Interval"),
-    _("The interval between connectivity tests")
+    _("The interval between connectivity tests"),
   );
   o.value("30s", _("Every 30 seconds"));
   o.value("1m", _("Every 1 minute"));
@@ -213,7 +227,9 @@ function createSectionContent(section) {
     form.Value,
     "urltest_tolerance",
     _("URLTest Tolerance"),
-    _("The maximum difference in response times (ms) allowed when comparing servers")
+    _(
+      "The maximum difference in response times (ms) allowed when comparing servers",
+    ),
   );
   o.default = "50";
   o.rmempty = false;
@@ -226,23 +242,38 @@ function createSectionContent(section) {
 
     const parsed = parseFloat(value);
 
-    if (/^[0-9]+$/.test(value) && !isNaN(parsed) && isFinite(parsed) && parsed >= 50 && parsed <= 1000) {
+    if (
+      /^[0-9]+$/.test(value) &&
+      !isNaN(parsed) &&
+      isFinite(parsed) &&
+      parsed >= 50 &&
+      parsed <= 1000
+    ) {
       return true;
     }
 
-    return _('Must be a number in the range of 50 - 1000');
+    return _("Must be a number in the range of 50 - 1000");
   };
 
   o = section.option(
     form.Value,
     "urltest_testing_url",
     _("URLTest Testing URL"),
-    _("The URL used to test server connectivity")
+    _("The URL used to test server connectivity"),
   );
-  o.value("https://www.gstatic.com/generate_204", "https://www.gstatic.com/generate_204 (Google)");
-  o.value("https://cp.cloudflare.com/generate_204", "https://cp.cloudflare.com/generate_204 (Cloudflare)");
+  o.value(
+    "https://www.gstatic.com/generate_204",
+    "https://www.gstatic.com/generate_204 (Google)",
+  );
+  o.value(
+    "https://cp.cloudflare.com/generate_204",
+    "https://cp.cloudflare.com/generate_204 (Cloudflare)",
+  );
   o.value("https://captive.apple.com", "https://captive.apple.com (Apple)");
-  o.value("https://connectivity-check.ubuntu.com", "https://connectivity-check.ubuntu.com (Ubuntu)")
+  o.value(
+    "https://connectivity-check.ubuntu.com",
+    "https://connectivity-check.ubuntu.com (Ubuntu)",
+  );
   o.default = "https://www.gstatic.com/generate_204";
   o.rmempty = false;
   o.depends({ connection_type: "proxy", proxy_config_type: "urltest" });
@@ -270,6 +301,20 @@ function createSectionContent(section) {
   );
   o.default = "0";
   o.depends("connection_type", "proxy");
+  o.rmempty = false;
+
+  o = section.option(
+    form.Flag,
+    "global_proxy",
+    _("Global Proxy"),
+    _(
+      "Route all unmatched traffic through this section's outbound. " +
+        "When enabled, traffic not matching any other section's lists will go through this proxy. " +
+        "Use with Exclusion sections to route specific domains directly. " +
+        "Only one section can be global at a time.",
+    ),
+  );
+  o.default = "0";
   o.rmempty = false;
 
   o = section.option(
@@ -368,7 +413,7 @@ function createSectionContent(section) {
     "community_lists",
     _("Community Lists"),
     _("Select a predefined list for routing") +
-    ' <a href="https://github.com/itdoginfo/allow-domains" target="_blank">github.com/itdoginfo/allow-domains</a>',
+      ' <a href="https://github.com/itdoginfo/allow-domains" target="_blank">github.com/itdoginfo/allow-domains</a>',
   );
   o.placeholder = "Service list";
   Object.entries(main.DOMAIN_LIST_OPTIONS).forEach(([key, label]) => {
@@ -575,7 +620,7 @@ function createSectionContent(section) {
     _("User Subnets List"),
     _(
       "Enter subnets in CIDR notation or single IP addresses, separated by commas, spaces, or newlines. " +
-      "You can add comments using //",
+        "You can add comments using //",
     ),
   );
   o.placeholder =
@@ -748,7 +793,7 @@ function createSectionContent(section) {
     _("Mixed Proxy Port"),
     _(
       "Specify the port number on which the mixed proxy will run for this section. " +
-      "Make sure the selected port is not used by another service",
+        "Make sure the selected port is not used by another service",
     ),
   );
   o.default = "2080";

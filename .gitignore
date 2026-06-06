@@ -14,3 +14,4 @@ yarn-error.log*
 fe-app-netshift/.yarn/
 fe-app-netshift/.yarnrc.yml
 fe-app-netshift/.pnp.*
+agent/

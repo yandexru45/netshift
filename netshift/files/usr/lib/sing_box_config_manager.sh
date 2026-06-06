@@ -223,15 +223,20 @@ sing_box_cm_add_fakeip_dns_server() {
     local config="$1"
     local tag="$2"
     local inet4_range="$3"
+    local inet6_range="$4"
 
     echo "$config" | jq \
         --arg tag "$tag" \
         --arg inet4_range "$inet4_range" \
-        '.dns.servers += [{
-			type: "fakeip",
-			tag: $tag,
-			inet4_range: $inet4_range,
-		}]'
+        --arg inet6_range "$inet6_range" \
+        '.dns.servers += [(
+            {
+                type: "fakeip",
+                tag: $tag,
+                inet4_range: $inet4_range
+            }
+            + (if $inet6_range != "" then { inet6_range: $inet6_range } else {} end)
+        )]'
 }
 
 #######################################
@@ -1349,6 +1354,51 @@ sing_box_cm_add_reject_route_rule() {
         '.route.rules += [{
             action: "reject",
             inbound: $inbound,
+            $service_tag: $tag
+        }]'
+}
+
+#######################################
+# Add a DoH blocking reject route rule with an inline ruleset containing known
+# public DoH server IP ranges.
+# Arguments:
+#   config: string (JSON), sing-box configuration to modify
+#   tag: string, identifier for the route rule and ruleset
+#   inbound: string, inbound tag to match
+#   doh_ipv4_cidrs: string, space-separated IPv4 CIDRs to block
+#   doh_ipv6_cidrs: string, space-separated IPv6 CIDRs to block
+# Outputs:
+#   Writes updated JSON configuration to stdout
+#######################################
+sing_box_cm_add_doh_block_route_rule() {
+    local config="$1"
+    local tag="$2"
+    local inbound="$3"
+    local doh_ipv4_cidrs="$4"
+    local doh_ipv6_cidrs="${5:-}"
+
+    local ruleset_tag cidrs_json
+    ruleset_tag="${tag}-ruleset"
+    cidrs_json=$(printf '%s %s' "$doh_ipv4_cidrs" "$doh_ipv6_cidrs" | jq -R 'split(" ") | map(select(. != ""))')
+
+    config=$(echo "$config" | jq \
+        --arg tag "$ruleset_tag" \
+        --argjson ip_cidr "$cidrs_json" \
+        '.route.rule_set += [{
+            type: "inline",
+            tag: $tag,
+            rules: [{ ip_cidr: $ip_cidr }]
+        }]')
+
+    echo "$config" | jq \
+        --arg service_tag "$SERVICE_TAG" \
+        --arg tag "$tag" \
+        --arg inbound "$inbound" \
+        --arg ruleset_tag "$ruleset_tag" \
+        '.route.rules += [{
+            action: "reject",
+            inbound: $inbound,
+            rule_set: $ruleset_tag,
             $service_tag: $tag
         }]'
 }

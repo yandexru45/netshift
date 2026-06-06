@@ -193,9 +193,7 @@ function createSettingsContent(section) {
     }
 
     // Reject lan*
-    if (
-        value.startsWith("lan")
-    ) {
+    if (value.startsWith("lan")) {
       return false;
     }
 
@@ -289,7 +287,9 @@ function createSettingsContent(section) {
     form.Flag,
     "enable_yacd_wan_access",
     _("Enable YACD WAN Access"),
-    _("Allows access to YACD from the WAN. Make sure to open the appropriate port in your firewall."),
+    _(
+      "Allows access to YACD from the WAN. Make sure to open the appropriate port in your firewall.",
+    ),
   );
   o.depends("enable_yacd", "1");
   o.default = "0";
@@ -299,7 +299,9 @@ function createSettingsContent(section) {
     form.Value,
     "yacd_secret_key",
     _("YACD Secret Key"),
-    _("Secret key for authenticating remote access to YACD when WAN access is enabled."),
+    _(
+      "Secret key for authenticating remote access to YACD when WAN access is enabled.",
+    ),
   );
   o.depends("enable_yacd_wan_access", "1");
   o.rmempty = false;
@@ -356,7 +358,11 @@ function createSettingsContent(section) {
 
     for (const secName in sections) {
       const sec = sections[secName];
-      if (sec[".type"] === "section" && sec['connection_type'] !== 'block' && sec['connection_type'] !== 'exclusion') {
+      if (
+        sec[".type"] === "section" &&
+        sec["connection_type"] !== "block" &&
+        sec["connection_type"] !== "exclusion"
+      ) {
         this.keylist.push(secName);
         this.vallist.push(secName);
       }
@@ -427,9 +433,7 @@ function createSettingsContent(section) {
     form.ListValue,
     "log_level",
     _("Log Level"),
-    _(
-      "Select the log level for sing-box",
-    ),
+    _("Select the log level for sing-box"),
   );
   o.value("trace", "Trace");
   o.value("debug", "Debug");
@@ -453,6 +457,32 @@ function createSettingsContent(section) {
   o.rmempty = false;
 
   o = section.option(
+    form.Flag,
+    "block_doh",
+    _("Block DoH Servers"),
+    _(
+      "Block direct connections to known public DNS-over-HTTPS (DoH) servers. " +
+        "This prevents applications from bypassing the router's DNS filtering by using their own encrypted DNS. " +
+        "Affects Cloudflare, Google, Quad9, OpenDNS, AdGuard, and Yandex public DoH servers. " +
+        "Note: if your upstream DNS type is set to 'DoH', enable this only after switching to UDP or DoT.",
+    ),
+  );
+  o.default = "0";
+  o.rmempty = false;
+
+  o = section.option(
+    form.Flag,
+    "enable_ipv6",
+    _("Enable IPv6 Support"),
+    _(
+      "Enable IPv6 TProxy routing, IPv6 DNS inbound, and IPv6 FakeIP support. " +
+        "Use this only when the router has working IPv6 connectivity.",
+    ),
+  );
+  o.default = "0";
+  o.rmempty = false;
+
+  o = section.option(
     form.DynamicList,
     "routing_excluded_ips",
     _("Routing Excluded IPs"),
@@ -466,7 +496,7 @@ function createSettingsContent(section) {
       return true;
     }
 
-    const validation = main.validateIPV4(value);
+    const validation = main.validateIP(value);
 
     if (validation.valid) {
       return true;

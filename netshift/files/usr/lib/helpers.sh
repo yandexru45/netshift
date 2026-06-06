@@ -13,6 +13,30 @@ is_ipv4_cidr() {
     echo "$ip" | grep -Eq "$regex"
 }
 
+is_ipv6() {
+    local ip="$1"
+    local regex='^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$'
+    echo "$ip" | grep -Eq "$regex"
+}
+
+is_ipv6_cidr() {
+    local ip="$1"
+    local addr mask
+    addr="${ip%/*}"
+    mask="${ip#*/}"
+
+    case "$ip" in
+    */*) ;;
+    *) return 1 ;;
+    esac
+
+    is_ipv6 "$addr" && [ "$mask" -ge 0 ] 2>/dev/null && [ "$mask" -le 128 ] 2>/dev/null
+}
+
+is_ip() {
+    is_ipv4 "$1" || is_ipv6 "$1"
+}
+
 is_ipv4_ip_or_ipv4_cidr() {
     is_ipv4 "$1" || is_ipv4_cidr "$1"
 }
@@ -147,7 +171,11 @@ url_get_host() {
     url="${url#*@}"
     url="${url%%[/?#]*}"
 
-    echo "${url%%:*}"
+    case "$url" in
+    \[*\]) echo "${url#\[}" | sed 's/\]$//' ;;
+    \[*\]*) echo "${url#\[}" | sed 's/\].*//' ;;
+    *) echo "${url%%:*}" ;;
+    esac
 }
 
 # Extracts the port number from a URL
@@ -159,6 +187,7 @@ url_get_port() {
     url="${url%%[/?#]*}"
 
     case "$url" in
+    \[*\]:*) echo "${url##*]:}" ;;
     *:*) echo "${url#*:}" ;;
     *) echo "" ;;
     esac

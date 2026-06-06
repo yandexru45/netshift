@@ -720,14 +720,12 @@ stop_main() {
     fi
 
     log "Flush ip rule"
-    if ip rule list | grep -q "netshift"; then
-        ip rule del fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105
-    fi
+    ip -4 rule del fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105 2>/dev/null
+    ip -6 rule del fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105 2>/dev/null
 
     log "Flush ip route"
-    if ip route list table "$RT_TABLE_NAME" > /dev/null 2>&1; then
-        ip route flush table "$RT_TABLE_NAME"
-    fi
+    ip -4 route flush table "$RT_TABLE_NAME" 2>/dev/null
+    ip -6 route flush table "$RT_TABLE_NAME" 2>/dev/null
 
     log "Stop sing-box"
     /etc/init.d/sing-box stop
@@ -747,14 +745,28 @@ start() {
 
     config_get_bool dont_touch_dhcp "settings" "dont_touch_dhcp" 0
     if [ "$dont_touch_dhcp" -eq 0 ]; then
-        dnsmasq_configure
+        dnsmasq_configure force
     fi
 
     uci_set "netshift" "settings" "shutdown_correctly" 0
     uci commit "netshift" && config_load "$NETSHIFT_CONFIG"
+
+    monitor_sing_box &
+    echo $! > /var/run/netshift_monitor.pid
+    log "Started sing-box health monitor with PID $!" "info"
 }
 
 stop() {
+    if [ -f /var/run/netshift_monitor.pid ]; then
+        local monitor_pid
+        monitor_pid="$(cat /var/run/netshift_monitor.pid 2>/dev/null)"
+        if [ -n "$monitor_pid" ] && kill -0 "$monitor_pid" 2>/dev/null; then
+            kill "$monitor_pid" 2>/dev/null
+            log "Stopped sing-box health monitor" "info"
+        fi
+        rm -f /var/run/netshift_monitor.pid
+    fi
+
     local dont_touch_dhcp
     config_get_bool dont_touch_dhcp "settings" "dont_touch_dhcp" 0
     if [ "$dont_touch_dhcp" -eq 0 ]; then
@@ -765,6 +777,70 @@ stop() {
 
     uci_set "netshift" "settings" "shutdown_correctly" 1
     uci commit "netshift" && config_load "$NETSHIFT_CONFIG"
+}
+
+monitor_sing_box() {
+    local crash_count=0
+    local backoff=0
+
+    while true; do
+        sleep "$MONITOR_CHECK_INTERVAL"
+
+        if sing_box_process_exists; then
+            crash_count=0
+            backoff=0
+            continue
+        fi
+
+        config_load "$NETSHIFT_CONFIG"
+        local shutdown_correctly
+        config_get shutdown_correctly "settings" "shutdown_correctly"
+        if [ "$shutdown_correctly" -eq 1 ]; then
+            log "sing-box shutdown detected, exiting monitor" "info"
+            break
+        fi
+
+        crash_count=$((crash_count + 1))
+        log "sing-box process died unexpectedly (crash #$crash_count), restoring DNS" "warn"
+
+        dnsmasq_restore
+
+        if [ "$crash_count" -ge "$MONITOR_MAX_CRASHES" ]; then
+            log "sing-box crashed $crash_count times consecutively, giving up. DNS has been restored." "error"
+            break
+        fi
+
+        backoff=$((MONITOR_BACKOFF_BASE * (1 << (crash_count - 1))))
+        [ "$backoff" -gt "$MONITOR_BACKOFF_MAX" ] && backoff="$MONITOR_BACKOFF_MAX"
+        log "Waiting ${backoff}s before attempting sing-box restart" "warn"
+        sleep "$backoff"
+
+        config_load "$NETSHIFT_CONFIG"
+        config_get shutdown_correctly "settings" "shutdown_correctly"
+        if [ "$shutdown_correctly" -eq 1 ]; then
+            log "Clean shutdown requested, exiting monitor" "info"
+            break
+        fi
+
+        log "Attempting sing-box recovery restart" "warn"
+        stop_main
+        start_main
+        if [ $? -eq 0 ]; then
+            config_get_bool dont_touch_dhcp "settings" "dont_touch_dhcp" 0
+            if [ "$dont_touch_dhcp" -eq 0 ]; then
+                dnsmasq_configure force
+            fi
+            log "NetShift recovered successfully after sing-box crash" "info"
+        else
+            log "Recovery restart failed, will retry" "error"
+        fi
+    done
+
+    rm -f /var/run/netshift_monitor.pid
+}
+
+sing_box_process_exists() {
+    pgrep "sing-box" > /dev/null 2>&1 || pidof sing-box > /dev/null 2>&1
 }
 
 reload() {
@@ -819,19 +895,33 @@ br_netfilter_disable() {
 route_table_rule_mark() {
     grep -q "105 $RT_TABLE_NAME" /etc/iproute2/rt_tables || echo "105 $RT_TABLE_NAME" >> /etc/iproute2/rt_tables
 
-    if ! ip route list table "$RT_TABLE_NAME" 2> /dev/null | grep -q "local default dev lo scope host"; then
-        log "Added route for tproxy" "debug"
-        ip route add local 0.0.0.0/0 dev lo table "$RT_TABLE_NAME"
-    else
-        log "Route for tproxy exists" "debug"
+    log "Configure IPv4 route for tproxy" "debug"
+    ip -4 route replace local 0.0.0.0/0 dev lo table "$RT_TABLE_NAME" 2>/dev/null || \
+        ip -4 route add local 0.0.0.0/0 dev lo table "$RT_TABLE_NAME" 2>/dev/null
+
+    if netshift_ipv6_enabled; then
+        log "Configure IPv6 route for tproxy" "debug"
+        ip -6 route replace local ::/0 dev lo table "$RT_TABLE_NAME" 2>/dev/null || \
+            ip -6 route add local ::/0 dev lo table "$RT_TABLE_NAME" 2>/dev/null
     fi
 
-    if ! ip rule list | grep -q "from all fwmark $NFT_FAKEIP_MARK/$NFT_FAKEIP_MARK lookup $RT_TABLE_NAME"; then
-        log "Create marking rule" "debug"
-        ip -4 rule add fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105
-    else
-        log "Marking rule exist" "debug"
+    log "Configure IPv4 marking rule" "debug"
+    ip -4 rule del fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105 2>/dev/null
+    ip -4 rule add fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105 2>/dev/null
+
+    if netshift_ipv6_enabled; then
+        log "Configure IPv6 marking rule" "debug"
+        ip -6 rule del fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105 2>/dev/null
+        ip -6 rule add fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105 2>/dev/null
     fi
+}
+
+netshift_ipv6_enabled() {
+    local enable_ipv6
+    config_get_bool enable_ipv6 "settings" "enable_ipv6" 0
+
+    [ "$enable_ipv6" -eq 1 ] || return 1
+    ip -6 addr show dev lo 2>/dev/null | grep -q '::1'
 }
 
 nft_init_interfaces_set() {
@@ -867,6 +957,17 @@ create_nft_rules() {
         240.0.0.0-255.255.255.255
     }'
 
+    if netshift_ipv6_enabled; then
+        log "Create localv6 set"
+        nft_create_ipv6_set "$NFT_TABLE_NAME" "$NFT_LOCALV6_SET_NAME"
+        nft add element inet "$NFT_TABLE_NAME" localv6 '{
+            ::1,
+            fc00::/7,
+            fe80::/10,
+            ff00::/8
+        }'
+    fi
+
     log "Create common set"
     nft_create_ipv4_set "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
 
@@ -879,20 +980,25 @@ create_nft_rules() {
     nft add chain inet "$NFT_TABLE_NAME" proxy '{ type filter hook prerouting priority -100; policy accept; }'
 
     nft add rule inet "$NFT_TABLE_NAME" mangle ct status dnat return
-    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "@$NFT_COMMON_SET_NAME" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "@$NFT_COMMON_SET_NAME" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "$SB_FAKEIP_INET4_RANGE" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "$SB_FAKEIP_INET4_RANGE" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
+    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "@$NFT_LOCALV4_SET_NAME" return
+    if netshift_ipv6_enabled; then
+        nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip6 daddr "@$NFT_LOCALV6_SET_NAME" return
+    fi
+    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
+    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
 
-    nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto tcp tproxy ip to 127.0.0.1:1602 counter
-    nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto udp tproxy ip to 127.0.0.1:1602 counter
+    nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto tcp tproxy ip to "$SB_TPROXY_INBOUND_ADDRESS:$SB_TPROXY_INBOUND_PORT" counter
+    nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto udp tproxy ip to "$SB_TPROXY_INBOUND_ADDRESS:$SB_TPROXY_INBOUND_PORT" counter
+    if netshift_ipv6_enabled; then
+        nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto tcp tproxy ip6 to "$SB_TPROXY_INBOUND_ADDRESS_V6:$SB_TPROXY_INBOUND_PORT_V6" counter
+        nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto udp tproxy ip6 to "$SB_TPROXY_INBOUND_ADDRESS_V6:$SB_TPROXY_INBOUND_PORT_V6" counter
+    fi
 
     nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "@$NFT_LOCALV4_SET_NAME" return
+    if netshift_ipv6_enabled; then
+        nft add rule inet "$NFT_TABLE_NAME" mangle_output ip6 daddr "@$NFT_LOCALV6_SET_NAME" return
+    fi
     nft add rule inet "$NFT_TABLE_NAME" mangle_output meta mark "$NFT_OUTBOUND_MARK" counter return
-    nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "@$NFT_COMMON_SET_NAME" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "@$NFT_COMMON_SET_NAME" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "$SB_FAKEIP_INET4_RANGE" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "$SB_FAKEIP_INET4_RANGE" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
 
     local exclude_ntp
     config_get_bool exclude_ntp "settings" "exclude_ntp" "0"
@@ -913,11 +1019,42 @@ backup_dnsmasq_config_option() {
     fi
 }
 
+uci_remove_quiet() {
+    local config="$1"
+    local section="$2"
+    local option="$3"
+
+    uci -q delete "$config.$section.$option" 2>/dev/null
+}
+
+dnsmasq_is_configured_for_netshift() {
+    local servers server noresolv cachesize has_netshift_server=0
+
+    servers="$(uci_get "dhcp" "@dnsmasq[0]" "server")"
+    for server in $servers; do
+        if [ "$server" = "$SB_DNS_INBOUND_ADDRESS" ]; then
+            has_netshift_server=1
+            break
+        fi
+    done
+
+    noresolv="$(uci_get "dhcp" "@dnsmasq[0]" "noresolv")"
+    cachesize="$(uci_get "dhcp" "@dnsmasq[0]" "cachesize")"
+
+    [ "$has_netshift_server" -eq 1 ] && [ "$noresolv" = "1" ] && [ "$cachesize" = "0" ]
+}
+
 dnsmasq_configure() {
-    local shutdown_correctly
+    local force shutdown_correctly
+    force="$1"
     config_get shutdown_correctly "settings" "shutdown_correctly"
-    if [ "$shutdown_correctly" -eq 0 ]; then
+    if [ "$force" != "force" ] && [ "$shutdown_correctly" -eq 0 ]; then
         log "Previous shutdown of netshift was not correct, reconfiguration of dnsmasq is not required"
+        return 0
+    fi
+
+    if dnsmasq_is_configured_for_netshift; then
+        log "dnsmasq is already configured for sing-box"
         return 0
     fi
 
@@ -929,7 +1066,7 @@ dnsmasq_configure() {
                 uci_add_list "dhcp" "@dnsmasq[0]" "netshift_server" "$server"
             fi
         done
-        uci_remove "dhcp" "@dnsmasq[0]" "server"
+        uci_remove_quiet "dhcp" "@dnsmasq[0]" "server"
     fi
 
     backup_dnsmasq_config_option "noresolv" "netshift_noresolv"
@@ -957,11 +1094,11 @@ dnsmasq_restore() {
     log "Restoring cachesize" "debug"
     cachesize="$(uci_get "dhcp" "@dnsmasq[0]" "netshift_cachesize")"
     if [ -z "$cachesize" ]; then
-        uci_remove "dhcp" "@dnsmasq[0]" "cachesize"
+        uci_remove_quiet "dhcp" "@dnsmasq[0]" "cachesize"
         uci_set "dhcp" "@dnsmasq[0]" "cachesize" 150
     else
         uci_set "dhcp" "@dnsmasq[0]" "cachesize" "$cachesize"
-        uci_remove "dhcp" "@dnsmasq[0]" "netshift_cachesize"
+        uci_remove_quiet "dhcp" "@dnsmasq[0]" "netshift_cachesize"
     fi
 
     log "Restoring noresolv" "debug"
@@ -970,18 +1107,18 @@ dnsmasq_restore() {
         uci_set "dhcp" "@dnsmasq[0]" "noresolv" 0
     else
         uci_set "dhcp" "@dnsmasq[0]" "noresolv" "$noresolv"
-        uci_remove "dhcp" "@dnsmasq[0]" "netshift_noresolv"
+        uci_remove_quiet "dhcp" "@dnsmasq[0]" "netshift_noresolv"
     fi
 
     log "Restoring DNS servers" "debug"
-    uci_remove "dhcp" "@dnsmasq[0]" "server"
+    uci_remove_quiet "dhcp" "@dnsmasq[0]" "server"
     resolvfile="/tmp/resolv.conf.d/resolv.conf.auto"
     backup_servers="$(uci_get "dhcp" "@dnsmasq[0]" "netshift_server")"
     if [ -n "$backup_servers" ]; then
         for server in $backup_servers; do
             uci_add_list "dhcp" "@dnsmasq[0]" "server" "$server"
         done
-        uci_remove "dhcp" "@dnsmasq[0]" "netshift_server"
+        uci_remove_quiet "dhcp" "@dnsmasq[0]" "netshift_server"
     elif file_exists "$resolvfile"; then
         log "Backup DNS servers not found, using default resolvfile" "debug"
         uci_set "dhcp" "@dnsmasq[0]" "resolvfile" "$resolvfile"
@@ -1399,6 +1536,18 @@ sing_box_configure_inbounds() {
     config=$(
         sing_box_cm_add_direct_inbound "$config" "$SB_DNS_INBOUND_TAG" "$SB_DNS_INBOUND_ADDRESS" "$SB_DNS_INBOUND_PORT"
     )
+    if netshift_ipv6_enabled; then
+        config=$(
+            sing_box_cm_add_tproxy_inbound \
+                "$config" "${SB_TPROXY_INBOUND_TAG}-v6" "$SB_TPROXY_INBOUND_ADDRESS_V6" "$SB_TPROXY_INBOUND_PORT_V6" true true
+        )
+        # Local processes may query this inbound directly via [::1]:5354.
+        # dnsmasq intentionally keeps using 127.0.0.42:53: router clients cannot
+        # reach loopback ::1, and the IPv4 DNS inbound resolves AAAA records too.
+        config=$(
+            sing_box_cm_add_direct_inbound "$config" "${SB_DNS_INBOUND_TAG}-v6" "$SB_DNS_INBOUND_ADDRESS_V6" "$SB_DNS_INBOUND_PORT_V6"
+        )
+    fi
 }
 
 sing_box_configure_outbounds() {
@@ -1803,13 +1952,26 @@ configure_outbound_handler() {
 
 sing_box_configure_dns() {
     log "Configure the DNS section of a sing-box JSON configuration"
-    config=$(sing_box_cm_configure_dns "$config" "$SB_DNS_SERVER_TAG" "ipv4_only" true)
+    local dns_strategy
+    if netshift_ipv6_enabled; then
+        dns_strategy="prefer_ipv4"
+    else
+        dns_strategy="ipv4_only"
+    fi
+    config=$(sing_box_cm_configure_dns "$config" "$SB_DNS_SERVER_TAG" "$dns_strategy" true)
 
     log "Adding DNS Servers" "debug"
     local dns_type dns_server bootstrap_dns_server dns_domain_resolver dns_server_address
     config_get dns_type "settings" "dns_type" "doh"
     config_get dns_server "settings" "dns_server" "1.1.1.1"
     config_get bootstrap_dns_server "settings" "bootstrap_dns_server" "77.88.8.8"
+
+    local block_doh
+    config_get_bool block_doh "settings" "block_doh" 0
+    if [ "$block_doh" -eq 1 ] && [ "$dns_type" = "doh" ]; then
+        log "DoH blocking is enabled but upstream DNS type is 'doh'. Your own DNS queries will be blocked." "warn"
+        log "Switch dns_type to 'udp' or 'dot' in NetShift settings to avoid self-blocking." "warn"
+    fi
 
     dns_server_address="$(url_get_host "$dns_server")"
     if ! is_ipv4 "$dns_server_address"; then
@@ -1824,12 +1986,17 @@ sing_box_configure_dns() {
 
     config=$(sing_box_cm_add_udp_dns_server "$config" "$SB_BOOTSTRAP_SERVER_TAG" "$bootstrap_dns_server" 53)
     config=$(sing_box_cf_add_dns_server "$config" "$dns_type" "$SB_DNS_SERVER_TAG" "$dns_server" "$dns_domain_resolver" "$dns_detour_tag")
-    config=$(sing_box_cm_add_fakeip_dns_server "$config" "$SB_FAKEIP_DNS_SERVER_TAG" "$SB_FAKEIP_INET4_RANGE")
+    if netshift_ipv6_enabled; then
+        config=$(sing_box_cm_add_fakeip_dns_server "$config" "$SB_FAKEIP_DNS_SERVER_TAG" "$SB_FAKEIP_INET4_RANGE" "$SB_FAKEIP_INET6_RANGE")
+    else
+        config=$(sing_box_cm_add_fakeip_dns_server "$config" "$SB_FAKEIP_DNS_SERVER_TAG" "$SB_FAKEIP_INET4_RANGE" "")
+    fi
 
     log "Adding DNS Rules"
     local rewrite_ttl service_domains
     config_get rewrite_ttl "settings" "dns_rewrite_ttl" "60"
 
+    log "Adding DNS-level DoH prevention rules" "debug"
     config=$(sing_box_cm_add_dns_reject_rule "$config" "query_type" "HTTPS")
     config=$(sing_box_cm_add_dns_reject_rule "$config" "domain_suffix" '"use-application-dns.net"')
     config=$(sing_box_cm_add_dns_route_rule "$config" "$SB_FAKEIP_DNS_SERVER_TAG" "$SB_FAKEIP_DNS_RULE_TAG")
@@ -1841,17 +2008,33 @@ sing_box_configure_dns() {
 sing_box_configure_route() {
     log "Configure the route section of a sing-box JSON configuration"
 
+    local route_final global_proxy_section
+    route_final="$SB_DIRECT_OUTBOUND_TAG"
+    global_proxy_section="$(get_global_proxy_section)"
+    if [ -n "$global_proxy_section" ]; then
+        if subscription_outbound_is_unavailable "$global_proxy_section"; then
+            log "Global proxy section '$global_proxy_section' is unavailable; routing unmatched traffic directly until it recovers" "warn"
+        else
+            route_final="$(get_outbound_tag_by_section "$global_proxy_section")"
+            log "Global proxy mode enabled: routing all unmatched traffic through section '$global_proxy_section' (outbound: $route_final)" "info"
+        fi
+    fi
+
     local output_network_interface
     config_get output_network_interface "settings" "output_network_interface"
     if [ -z "$output_network_interface" ]; then
-        config=$(sing_box_cm_configure_route "$config" "$SB_DIRECT_OUTBOUND_TAG" true "$SB_DNS_SERVER_TAG")
+        config=$(sing_box_cm_configure_route "$config" "$route_final" true "$SB_DNS_SERVER_TAG")
     else
-        config=$(sing_box_cm_configure_route "$config" "$SB_DIRECT_OUTBOUND_TAG" false "$SB_DNS_SERVER_TAG" \
+        config=$(sing_box_cm_configure_route "$config" "$route_final" false "$SB_DNS_SERVER_TAG" \
             "$output_network_interface")
     fi
 
-    local sniff_inbounds
-    sniff_inbounds=$(comma_string_to_json_array "$SB_TPROXY_INBOUND_TAG,$SB_DNS_INBOUND_TAG")
+    local sniff_inbounds sniff_inbounds_csv
+    sniff_inbounds_csv="$SB_TPROXY_INBOUND_TAG,$SB_DNS_INBOUND_TAG"
+    if netshift_ipv6_enabled; then
+        sniff_inbounds_csv="$sniff_inbounds_csv,${SB_TPROXY_INBOUND_TAG}-v6,${SB_DNS_INBOUND_TAG}-v6"
+    fi
+    sniff_inbounds=$(comma_string_to_json_array "$sniff_inbounds_csv")
     config=$(sing_box_cm_sniff_route_rule "$config" "inbound" "$sniff_inbounds")
 
     config=$(sing_box_cm_add_hijack_dns_route_rule "$config" "protocol" "dns")
@@ -1860,6 +2043,14 @@ sing_box_configure_route() {
     config_get_bool disable_quic "settings" "disable_quic" 0
     if [ "$disable_quic" -eq 1 ]; then
         config=$(sing_box_cf_add_single_key_reject_rule "$config" "$SB_TPROXY_INBOUND_TAG" "protocol" "quic")
+    fi
+
+    local block_doh
+    config_get_bool block_doh "settings" "block_doh" 0
+    if [ "$block_doh" -eq 1 ]; then
+        log "DoH blocking enabled: adding route-level DoH IP block rules" "info"
+        config=$(sing_box_cm_add_doh_block_route_rule "$config" "$SB_DOH_BLOCK_RULE_TAG" "$SB_TPROXY_INBOUND_TAG" \
+            "$DOH_BLOCK_IPV4_CIDRS" "$DOH_BLOCK_IPV6_CIDRS")
     fi
 
     local first_outbound_section
@@ -1933,7 +2124,7 @@ configure_common_reject_route_rule() {
 }
 
 configure_common_direct_route_rule() {
-    local exclusion_sections exclusion_section_list_enabled
+    local exclusion_sections exclusion_section_list_enabled global_proxy_direct_needed
     exclusion_sections="$(get_sections_by_connection_type "exclusion")"
     exclusion_section_list_enabled=0
 
@@ -1944,19 +2135,35 @@ configure_common_direct_route_rule() {
                 break
             fi
         done
-        if [ "$exclusion_section_list_enabled" -eq 1 ]; then
-            config=$(sing_box_cm_add_route_rule "$config" "$SB_EXCLUSION_RULE_TAG" "$SB_TPROXY_INBOUND_TAG" \
-                "$SB_DIRECT_OUTBOUND_TAG")
-        else
-            log "Exclusion sections does not have any enabled list, route rule is not required" "warn"
-        fi
+    fi
+
+    global_proxy_direct_needed=0
+    if [ "$exclusion_section_list_enabled" -eq 0 ]; then
+        config_foreach _check_global_proxy_direct_needed "section"
+    fi
+
+    if [ "$exclusion_section_list_enabled" -eq 1 ] || [ "$global_proxy_direct_needed" -eq 1 ]; then
+        config=$(sing_box_cm_add_route_rule "$config" "$SB_EXCLUSION_RULE_TAG" "$SB_TPROXY_INBOUND_TAG" \
+            "$SB_DIRECT_OUTBOUND_TAG")
+    else
+        log "No direct exclusion rules required" "warn"
+    fi
+}
+
+_check_global_proxy_direct_needed() {
+    local section="$1"
+    local global_proxy
+
+    config_get_bool global_proxy "$section" "global_proxy" 0
+    if [ "$global_proxy" -eq 1 ] && section_has_enabled_lists "$section"; then
+        global_proxy_direct_needed=1
     fi
 }
 
 include_source_ip_in_routing_handler() {
     local source_ip="$1"
     local rule_tag="$2"
-    nft_list_all_traffic_from_ip "$source_ip"
+
     config=$(sing_box_cm_patch_route_rule "$config" "$rule_tag" "source_ip_cidr" "$source_ip")
 }
 
@@ -2008,7 +2215,7 @@ configure_routing_for_section_lists() {
     fi
 
     local community_lists user_domain_list_type user_subnet_list_type local_domain_lists local_subnet_lists \
-        remote_domain_lists remote_subnet_lists section_connection_type route_rule_tag resolve_real_ip_for_routing
+        remote_domain_lists remote_subnet_lists section_connection_type route_rule_tag resolve_real_ip_for_routing outbound_tag
     config_get community_lists "$section" "community_lists"
     config_get user_domain_list_type "$section" "user_domain_list_type" "disabled"
     config_get user_subnet_list_type "$section" "user_subnet_list_type" "disabled"
@@ -2021,12 +2228,18 @@ configure_routing_for_section_lists() {
 
     case "$section_connection_type" in
     proxy | vpn)
-        route_rule_tag="$(gen_id)"
-        if subscription_outbound_is_unavailable "$section"; then
-            config="$(sing_box_cm_add_reject_route_rule "$config" "$route_rule_tag" "$SB_TPROXY_INBOUND_TAG")"
+        local global_proxy
+        config_get_bool global_proxy "$section" "global_proxy" 0
+        if [ "$global_proxy" -eq 1 ]; then
+            route_rule_tag="$SB_EXCLUSION_RULE_TAG"
         else
-            outbound_tag=$(get_outbound_tag_by_section "$section")
-            config=$(sing_box_cm_add_route_rule "$config" "$route_rule_tag" "$SB_TPROXY_INBOUND_TAG" "$outbound_tag")
+            route_rule_tag="$(gen_id)"
+            if subscription_outbound_is_unavailable "$section"; then
+                config="$(sing_box_cm_add_reject_route_rule "$config" "$route_rule_tag" "$SB_TPROXY_INBOUND_TAG")"
+            else
+                outbound_tag=$(get_outbound_tag_by_section "$section")
+                config=$(sing_box_cm_add_route_rule "$config" "$route_rule_tag" "$SB_TPROXY_INBOUND_TAG" "$outbound_tag")
+            fi
         fi
         ;;
     block)
@@ -2721,6 +2934,24 @@ get_first_outbound_section() {
     echo "$first_section"
 }
 
+_determine_global_proxy_section() {
+    local section="$1"
+    local global_proxy
+
+    config_get_bool global_proxy "$section" "global_proxy" 0
+    if [ "$global_proxy" -eq 1 ] && section_has_configured_outbound "$section"; then
+        [ -z "$global_section" ] && global_section="$section"
+    fi
+}
+
+get_global_proxy_section() {
+    local global_section=""
+
+    config_foreach _determine_global_proxy_section "section"
+
+    echo "$global_section"
+}
+
 get_sections_by_connection_type() {
     local connection_type="$1"
 
@@ -2784,22 +3015,63 @@ get_service_listen_address() {
     echo "$service_listen_address"
 }
 
-## nftables
-nft_list_all_traffic_from_ip() {
-    local ip="$1"
+# Diagnostics
+sing_box_fetch_ifconfig_with_timeout() {
+    local config_dir="$1"
+    local config_path="$2"
+    local outbound_tag="$3"
+    local output_file fetch_pid watchdog_pid fetch_status
 
-    if ! nft list chain inet "$NFT_TABLE_NAME" mangle | grep -q "ip saddr $ip"; then
-        nft insert rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip saddr "$ip" \
-            meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
-        nft insert rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip saddr "$ip" \
-            meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
-        nft insert rule inet "$NFT_TABLE_NAME" mangle ip saddr "$ip" ip daddr @localv4 return
-    fi
+    output_file="$(mktemp /tmp/netshift-check-proxy-response.XXXXXX)" || return 1
+
+    sing-box tools fetch -D "$config_dir" -c "$config_path" --outbound "$outbound_tag" ifconfig.me \
+        > "$output_file" 2>/dev/null &
+    fetch_pid=$!
+
+    (
+        sleep 20
+        kill "$fetch_pid" 2>/dev/null
+    ) &
+    watchdog_pid=$!
+
+    wait "$fetch_pid" 2>/dev/null
+    fetch_status=$?
+
+    kill "$watchdog_pid" 2>/dev/null
+    wait "$watchdog_pid" 2>/dev/null
+
+    cat "$output_file"
+    rm -f "$output_file"
+    return "$fetch_status"
 }
 
-# Diagnotics
+get_clash_selected_outbound_tag() {
+    local outbound_tag="$1"
+    local controller_address encoded_tag selected_tag i
+
+    controller_address="$(get_service_listen_address 2>/dev/null)"
+    [ -z "$controller_address" ] && controller_address="127.0.0.1"
+
+    i=0
+    while [ "$i" -lt 5 ]; do
+        encoded_tag="$(printf '%s' "$outbound_tag" | jq -sRr @uri 2>/dev/null)"
+        selected_tag="$(curl -m 3 -s "http://$controller_address:$SB_CLASH_API_CONTROLLER_PORT/proxies/$encoded_tag" \
+            | jq -r '.now // ""' 2>/dev/null)"
+
+        if [ -z "$selected_tag" ] || [ "$selected_tag" = "$outbound_tag" ]; then
+            echo "$outbound_tag"
+            return 0
+        fi
+
+        outbound_tag="$selected_tag"
+        i=$((i + 1))
+    done
+
+    echo "$outbound_tag"
+}
+
 check_proxy() {
-    local sing_box_config_path
+    local sing_box_config_path check_config_path config_dir first_outbound_section outbound_tag response ip
     config_get sing_box_config_path "settings" "config_path"
 
     if ! command -v sing-box > /dev/null 2>&1; then
@@ -2846,30 +3118,87 @@ check_proxy() {
 
     nolog "Checking proxy connection..."
 
+    first_outbound_section="$(get_first_outbound_section)"
+    if [ -z "$first_outbound_section" ]; then
+        nolog "No outbound section configured"
+        return 1
+    fi
+
+    outbound_tag="$(get_outbound_tag_by_section "$first_outbound_section")"
+    config_dir="${sing_box_config_path%/*}"
+    [ "$config_dir" = "$sing_box_config_path" ] && config_dir="."
+
+    check_config_path="$(mktemp /tmp/netshift-check-proxy.XXXXXX)" || {
+        nolog "Failed to create temporary sing-box configuration"
+        return 1
+    }
+
+    if ! jq '
+        if .experimental.cache_file then .experimental.cache_file.enabled = false else . end
+        | .dns.rules = []
+        | .route.rules = []
+        | .route.rule_set = []
+    ' "$sing_box_config_path" > "$check_config_path"; then
+        rm -f "$check_config_path"
+        nolog "Failed to prepare temporary sing-box configuration"
+        return 1
+    fi
+
+    if ! jq -e --arg tag "$outbound_tag" '.outbounds[]? | select(.tag == $tag)' \
+        "$check_config_path" > /dev/null; then
+        rm -f "$check_config_path"
+        nolog "Outbound '$outbound_tag' not found in sing-box configuration"
+        return 1
+    fi
+
+    if jq -e --arg tag "$outbound_tag" \
+        '.outbounds[]? | select(.tag == $tag and (.type == "selector" or .type == "urltest"))' \
+        "$check_config_path" > /dev/null; then
+        outbound_tag="$(get_clash_selected_outbound_tag "$outbound_tag")"
+    fi
+
+    if [ -z "$outbound_tag" ]; then
+        rm -f "$check_config_path"
+        nolog "No testable proxy outbound found in sing-box configuration"
+        return 1
+    fi
+
     for attempt in $(seq 1 5); do
-        response=$(sing-box tools fetch ifconfig.me -D /etc/sing-box 2> /dev/null)
+        response="$(sing_box_fetch_ifconfig_with_timeout "$config_dir" "$check_config_path" "$outbound_tag")"
         if echo "$response" | grep -q "^<html\|403 Forbidden"; then
+            if [ "$attempt" -eq 5 ]; then
+                nolog "Failed to get valid IP address after 5 attempts"
+                nolog "Error response: $response"
+                rm -f "$check_config_path"
+                return 1
+            fi
             continue
         fi
         if echo "$response" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
-            ip=$(echo "$response" | sed -n 's/^[0-9]\+\.[0-9]\+\.[0-9]\+\.\([0-9]\+\)$/X.X.X.\1/p')
+            ip="$(echo "$response" | sed -n 's/^[0-9]\+\.[0-9]\+\.[0-9]\+\.\([0-9]\+\)$/X.X.X.\1/p')"
             nolog "$ip - should match proxy IP"
+            rm -f "$check_config_path"
             return 0
-        elif echo "$response" | grep -q "^[0-9a-fA-F:]*::[0-9a-fA-F:]*$\|^[0-9a-fA-F:]\+$"; then
-            ip=$(echo "$response" | sed 's/\([0-9a-fA-F]\+:[0-9a-fA-F]\+:[0-9a-fA-F]\+\):.*/\1:XXXX:XXXX:XXXX/')
+        elif echo "$response" | grep -Eq '^([0-9a-fA-F]*:)[0-9a-fA-F:]+$'; then
+            ip="$(echo "$response" | sed 's/\([0-9a-fA-F]\+:[0-9a-fA-F]\+:[0-9a-fA-F]\+\):.*/\1:XXXX:XXXX:XXXX/')"
             nolog "$ip - should match proxy IP"
+            rm -f "$check_config_path"
             return 0
         fi
-        if [ $attempt -eq 5 ]; then
+        if [ "$attempt" -eq 5 ]; then
             nolog "Failed to get valid IP address after 5 attempts"
             if [ -z "$response" ]; then
                 nolog "Error: Empty response"
             else
                 nolog "Error response: $response"
             fi
+            rm -f "$check_config_path"
             return 1
         fi
     done
+
+    rm -f "$check_config_path"
+    return 1
 }
 
 check_nft() {
@@ -3374,7 +3703,7 @@ check_sing_box() {
     fi
 
     # Check if process is running
-    if pgrep "sing-box" > /dev/null 2>&1; then
+    if sing_box_process_exists; then
         sing_box_process_running=1
     fi
 
@@ -3399,7 +3728,15 @@ check_sing_box() {
 }
 
 check_fakeip() {
-    curl -m 3 -s "https://$FAKEIP_TEST_DOMAIN/check" | jq .
+    local fakeip_address
+
+    fakeip_address="$(dig +short @"$SB_DNS_INBOUND_ADDRESS" "$FAKEIP_TEST_DOMAIN" 2>/dev/null | sed -n '1p')"
+    if echo "$fakeip_address" | grep -q '^198\.18\.'; then
+        jq -n --arg ip "$fakeip_address" '{fakeip: true, IP: $ip}'
+        return 0
+    fi
+
+    jq -n --arg ip "$fakeip_address" '{fakeip: false, IP: $ip}'
 }
 
 #######################################
