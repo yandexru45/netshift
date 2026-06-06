@@ -2597,6 +2597,416 @@ test_global_proxy() {
 }
 
 # ─────────────────────────────────────────────────────────────────
+# Test: Stock sing-box update check (task-017)
+# ─────────────────────────────────────────────────────────────────
+# Exercises updates_check_sing_box_stable through the real sourced updater.sh
+# with a PATH-prepended fake opkg whose candidate version + presence of sing-box
+# are driven by env/marker files (the test_selfheal stub-harness pattern). Asserts
+# the STABLE JSON `status` for: installed == candidate -> latest; candidate newer
+# -> outdated; sing-box absent -> not_installed; feed unreachable -> success:false.
+test_check_update_stable() {
+    header "Stock sing-box Update Check (task-017)"
+
+    if ! command -v jq > /dev/null 2>&1; then
+        skip "jq not available"
+        return
+    fi
+
+    local updater="${NETSHIFT_LIB_DIR}/updater.sh"
+    if [ ! -r "$updater" ]; then
+        skip "updater.sh not found in ${NETSHIFT_LIB_DIR}"
+        return
+    fi
+
+    local work="/tmp/netshift-stablecheck-$$"
+    rm -rf "$work"
+    mkdir -p "$work/bin"
+
+    # Fake opkg: `update` always ok; `list sing-box` echoes the candidate line
+    # only when the candidate marker is set; a `sing-box` shim reports the
+    # running version only when the present marker is set.
+    cat > "$work/bin/opkg" << 'OPKGEOF'
+#!/bin/sh
+case "$1" in
+update) exit 0 ;;
+list)
+    if [ -n "$STUBCHECK_CANDIDATE" ]; then
+        printf 'sing-box - %s\n' "$STUBCHECK_CANDIDATE"
+    fi
+    exit 0
+    ;;
+esac
+exit 0
+OPKGEOF
+    cat > "$work/bin/sing-box" << 'SBEOF'
+#!/bin/sh
+case "$1" in
+version) printf 'sing-box version %s\n' "$STUBCHECK_INSTALLED" ;;
+esac
+exit 0
+SBEOF
+    chmod 0755 "$work/bin/opkg" "$work/bin/sing-box"
+
+    # Isolated PATH: symlink only the utilities the updater/helpers need into a
+    # dedicated dir so the real /usr/bin/sing-box is NOT reachable. The fake
+    # sing-box is linked in conditionally per scenario (present vs absent).
+    mkdir -p "$work/path"
+    local _tool _tool_path
+    for _tool in sh ash cat grep awk cut head sort sed printf basename ls rm mkdir cp mv chmod env jq dirname; do
+        _tool_path="$(command -v "$_tool" 2>/dev/null)" && ln -sf "$_tool_path" "$work/path/$_tool" 2>/dev/null
+    done
+    ln -sf "$work/bin/opkg" "$work/path/opkg"
+
+    # Driver: source updater.sh + helpers.sh (real is_min_package_version /
+    # get_sing_box_version), silence logging, run the check.
+    local drv="$work/driver.sh"
+    cat > "$drv" << 'DRVEOF'
+log() { :; }
+echolog() { :; }
+nolog() { :; }
+. "DRV_HELPERS"
+. "DRV_UPDATER"
+updates_check_sing_box_stable
+DRVEOF
+    sed -i "s|DRV_UPDATER|$updater|g;s|DRV_HELPERS|${NETSHIFT_LIB_DIR}/helpers.sh|g" "$drv"
+
+    local out="$work/out.json"
+    run_check() {
+        # Isolated PATH: only $work/path (no real sing-box, apk absent → opkg
+        # branch). sing-box presence is controlled by linking the fake in/out.
+        if [ -n "$STUBCHECK_PRESENT" ]; then
+            ln -sf "$work/bin/sing-box" "$work/path/sing-box" 2>/dev/null
+        else
+            rm -f "$work/path/sing-box" 2>/dev/null
+        fi
+        PATH="$work/path" ash "$drv" > "$out" 2>/dev/null || true
+    }
+
+    # ── Case 1: installed == candidate → latest ──────────────────────────────
+    export STUBCHECK_CANDIDATE="1.12.0-r1"
+    export STUBCHECK_PRESENT=1
+    export STUBCHECK_INSTALLED="1.12.0"
+    run_check
+    if jq -e '.success == true and .status == "latest"' "$out" > /dev/null 2>&1; then
+        pass "stablecheck-installed-eq-candidate-latest:OK"
+    else
+        fail "stablecheck-installed-eq-candidate-latest:FAIL" "$(cat "$out" 2>/dev/null)"
+    fi
+
+    # ── Case 2: candidate newer → outdated ───────────────────────────────────
+    export STUBCHECK_CANDIDATE="1.13.5-r1"
+    export STUBCHECK_PRESENT=1
+    export STUBCHECK_INSTALLED="1.12.0"
+    run_check
+    if jq -e '.success == true and .status == "outdated"' "$out" > /dev/null 2>&1; then
+        pass "stablecheck-candidate-newer-outdated:OK"
+    else
+        fail "stablecheck-candidate-newer-outdated:FAIL" "$(cat "$out" 2>/dev/null)"
+    fi
+
+    # ── Case 3: sing-box absent → not_installed ──────────────────────────────
+    export STUBCHECK_CANDIDATE="1.13.5-r1"
+    unset STUBCHECK_PRESENT
+    run_check
+    if jq -e '.success == true and .status == "not_installed"' "$out" > /dev/null 2>&1; then
+        pass "stablecheck-absent-not_installed:OK"
+    else
+        fail "stablecheck-absent-not_installed:FAIL" "$(cat "$out" 2>/dev/null)"
+    fi
+
+    # ── Case 4: feed unreachable (empty candidate) → success:false ───────────
+    unset STUBCHECK_CANDIDATE
+    export STUBCHECK_PRESENT=1
+    export STUBCHECK_INSTALLED="1.12.0"
+    run_check
+    if jq -e '.success == false and (.message | length) > 0' "$out" > /dev/null 2>&1; then
+        pass "stablecheck-feed-unreachable-successfalse:OK"
+    else
+        fail "stablecheck-feed-unreachable-successfalse:FAIL" "$(cat "$out" 2>/dev/null)"
+    fi
+
+    unset STUBCHECK_CANDIDATE STUBCHECK_PRESENT STUBCHECK_INSTALLED
+    rm -rf "$work"
+}
+
+# ─────────────────────────────────────────────────────────────────
+# Test: NetShift self-update (task-017)
+# ─────────────────────────────────────────────────────────────────
+# Exercises updates_self_update_netshift (public wrapper + private core) through
+# the real sourced updater.sh. Connectivity probes (dig/curl) + the GitHub fetch
+# + the asset download + the package install are all stubbed; the heal flags are
+# re-pinned to temp paths and a fake /etc/init.d/netshift (absolute path) is
+# written+restored. Asserts the anti-brick contract:
+#   * connectivity-fail  -> aborts BEFORE any change, restore ran, success:false
+#   * download-fail      -> success:false, restore ran, config backup intact
+#   * happy path         -> success:true with version, restore ran
+# Uses the task-009 `... || true` set -e guard (worker returns non-zero on a
+# recoverable failure; assertions read JSON/file-state, not rc).
+test_self_update_netshift() {
+    header "NetShift Self-Update (task-017)"
+
+    if ! command -v jq > /dev/null 2>&1; then
+        skip "jq not available"
+        return
+    fi
+
+    local updater="${NETSHIFT_LIB_DIR}/updater.sh"
+    if [ ! -r "$updater" ]; then
+        skip "updater.sh not found in ${NETSHIFT_LIB_DIR}"
+        return
+    fi
+
+    local work="/tmp/netshift-selfupdate-$$"
+    rm -rf "$work"
+    mkdir -p "$work/bin" "$work/init"
+
+    # Connectivity probes (dig/curl), keyed off markers like test_selfheal.
+    cat > "$work/bin/dig" << 'DIGEOF'
+#!/bin/sh
+[ -f "$SU_DNS_OK" ] && { echo "1.2.3.4"; exit 0; }
+exit 1
+DIGEOF
+    cat > "$work/bin/curl" << 'CURLEOF'
+#!/bin/sh
+[ -f "$SU_HTTP_OK" ] && exit 0
+exit 1
+CURLEOF
+    # Fake opkg: `install <file>` succeeds per marker and records the install.
+    cat > "$work/bin/opkg" << 'OPKGEOF'
+#!/bin/sh
+case "$1" in
+update) exit 0 ;;
+list-installed) cat "$SU_INSTALLED_LIST" 2>/dev/null; exit 0 ;;
+install)
+    shift
+    printf '%s\n' "$1" >> "$SU_INSTALL_LOG"
+    [ -f "$SU_PKG_OK" ] && exit 0
+    exit 1
+    ;;
+esac
+exit 0
+OPKGEOF
+    chmod 0755 "$work/bin/dig" "$work/bin/curl" "$work/bin/opkg"
+
+    # Fake /etc/init.d/netshift: records stop/start/restart (used by self-heal
+    # teardown/bring-up). We never re-exec /usr/bin/netshift here.
+    cat > "$work/init/netshift" << 'INITEOF'
+#!/bin/sh
+printf '%s\n' "$1" >> "$SU_INIT_LOG"
+exit 0
+INITEOF
+    chmod 0755 "$work/init/netshift"
+
+    # Driver: source updater.sh, re-pin heal/connectivity paths + constants,
+    # stub the GitHub fetch + download with markers, run the public wrapper.
+    local drv="$work/driver.sh"
+    cat > "$drv" << 'DRVEOF'
+log() { :; }
+echolog() { :; }
+nolog() { :; }
+updates_log() { :; }
+RESOLV_CONF="DRV_RESOLV"
+UPDATES_RESOLV_BACKUP="DRV_BACKUP"
+UPDATES_FEED_PROBE_HOST="feeds.test"
+UPDATES_GITHUB_PROBE_HOST="github.test"
+UPDATES_HEAL_RESOLVERS="1.1.1.1 9.9.9.9"
+NETSHIFT_VERSION="0.8.0"
+NETSHIFT_CONFIG="DRV_CONFIG"
+NETSHIFT_RELEASE_API_URL="https://api.test/latest"
+UPDATES_NETSHIFT_DOWNLOAD_DIR="DRV_DLDIR"
+UPDATES_NETSHIFT_CONFIG_BACKUP="DRV_CFGBAK"
+UPDATES_NETSHIFT_PKG_CORE="netshift"
+UPDATES_NETSHIFT_PKG_LUCI="luci-app-netshift"
+UPDATES_NETSHIFT_PKG_I18N_RU="luci-i18n-netshift-ru"
+. "DRV_UPDATER"
+# Re-pin after sourcing.
+RESOLV_CONF="DRV_RESOLV"
+UPDATES_RESOLV_BACKUP="DRV_BACKUP"
+UPDATES_FEED_PROBE_HOST="feeds.test"
+UPDATES_GITHUB_PROBE_HOST="github.test"
+UPDATES_HEAL_RESOLVERS="1.1.1.1 9.9.9.9"
+NETSHIFT_VERSION="0.8.0"
+NETSHIFT_CONFIG="DRV_CONFIG"
+NETSHIFT_RELEASE_API_URL="https://api.test/latest"
+UPDATES_NETSHIFT_DOWNLOAD_DIR="DRV_DLDIR"
+UPDATES_NETSHIFT_CONFIG_BACKUP="DRV_CFGBAK"
+UPDATES_NETSHIFT_PKG_CORE="netshift"
+UPDATES_NETSHIFT_PKG_LUCI="luci-app-netshift"
+UPDATES_NETSHIFT_PKG_I18N_RU="luci-i18n-netshift-ru"
+
+# Stub the GitHub latest-release fetch: emit a tiny JSON with a tag and asset
+# URLs only when the marker says GitHub is reachable for the fetch.
+updates_http_get_once() {
+    [ -f "$SU_GH_OK" ] || return 1
+    cat <<JSON
+{"tag_name":"$SU_LATEST_TAG",
+ "assets":[
+   {"browser_download_url":"https://dl.test/netshift-$SU_LATEST_TAG.ipk"},
+   {"browser_download_url":"https://dl.test/luci-app-netshift-$SU_LATEST_TAG.ipk"},
+   {"browser_download_url":"https://dl.test/luci-i18n-netshift-ru-$SU_LATEST_TAG.ipk"}
+ ]}
+JSON
+}
+# Stub the asset download: write a non-empty file only when the marker is set.
+updates_download_to_file() {
+    [ -f "$SU_DL_OK" ] || return 1
+    printf 'pkg-bytes\n' > "$2"
+    [ -s "$2" ]
+}
+
+updates_self_update_netshift
+DRVEOF
+    sed -i "s|DRV_UPDATER|$updater|g;s|DRV_RESOLV|$work/resolv.conf|g;s|DRV_BACKUP|$work/resolv.bak|g;s|DRV_CONFIG|$work/etc-config-netshift|g;s|DRV_DLDIR|$work/dl|g;s|DRV_CFGBAK|$work/config.bak|g" "$drv"
+
+    # Install the fake /etc/init.d/netshift (write+restore the real one).
+    local init_target="/etc/init.d/netshift"
+    local init_saved=""
+    if [ -e "$init_target" ]; then
+        init_saved="$work/netshift.realinit"
+        cp -p "$init_target" "$init_saved" 2>/dev/null || init_saved=""
+    fi
+    mkdir -p /etc/init.d 2>/dev/null || true
+    cp -p "$work/init/netshift" "$init_target" 2>/dev/null
+    chmod 0755 "$init_target" 2>/dev/null || true
+
+    export SU_DNS_OK="$work/dns_ok"
+    export SU_HTTP_OK="$work/http_ok"
+    export SU_GH_OK="$work/gh_ok"
+    export SU_DL_OK="$work/dl_ok"
+    export SU_PKG_OK="$work/pkg_ok"
+    export SU_INIT_LOG="$work/init.log"
+    export SU_INSTALL_LOG="$work/install.log"
+    export SU_INSTALLED_LIST="$work/installed.list"
+    export SU_LATEST_TAG="0.8.1"
+
+    local out="$work/out.json"
+    run_scenario() {
+        rm -f "$work/init.log" "$work/install.log"
+        PATH="$work/bin:/usr/bin:/bin" ash "$drv" > "$out" 2>/dev/null || true
+    }
+
+    # RU i18n NOT installed (so it is never downloaded/installed).
+    : > "$work/installed.list"
+
+    # ── Scenario 1: connectivity fails → abort BEFORE any change ──────────────
+    rm -f "$SU_DNS_OK" "$SU_HTTP_OK" "$SU_GH_OK" "$SU_DL_OK" "$SU_PKG_OK"
+    printf 'CONFIG-ORIG\n' > "$work/etc-config-netshift"
+    printf 'original-resolver\n' > "$work/resolv.conf"
+    run_scenario
+    if jq -e '.success == false and (.message | length) > 0' "$out" > /dev/null 2>&1; then
+        pass "selfupdate-connfail-aborts-successfalse:OK"
+    else
+        fail "selfupdate-connfail-aborts-successfalse:FAIL" "$(cat "$out" 2>/dev/null)"
+    fi
+    # No install attempted (aborted before the core).
+    if [ ! -f "$work/install.log" ]; then
+        pass "selfupdate-connfail-no-install:OK"
+    else
+        fail "selfupdate-connfail-no-install:FAIL" "install.log=$(cat "$work/install.log" 2>/dev/null)"
+    fi
+    # Epilogue restored the original resolv.conf (heal may have replaced it).
+    if [ "$(cat "$work/resolv.conf" 2>/dev/null)" = "original-resolver" ]; then
+        pass "selfupdate-connfail-resolv-restored:OK"
+    else
+        fail "selfupdate-connfail-resolv-restored:FAIL" "$(cat "$work/resolv.conf" 2>/dev/null)"
+    fi
+
+    # ── Scenario 2: download fails → success:false, config backup intact ──────
+    : > "$SU_DNS_OK"; : > "$SU_HTTP_OK"; : > "$SU_GH_OK"
+    rm -f "$SU_DL_OK" "$SU_PKG_OK"
+    printf 'CONFIG-ORIG\n' > "$work/etc-config-netshift"
+    printf 'original-resolver\n' > "$work/resolv.conf"
+    run_scenario
+    if jq -e '.success == false' "$out" > /dev/null 2>&1; then
+        pass "selfupdate-dlfail-successfalse:OK"
+    else
+        fail "selfupdate-dlfail-successfalse:FAIL" "$(cat "$out" 2>/dev/null)"
+    fi
+    # No package install ran (download failed first).
+    if [ ! -f "$work/install.log" ]; then
+        pass "selfupdate-dlfail-no-install:OK"
+    else
+        fail "selfupdate-dlfail-no-install:FAIL" "install.log=$(cat "$work/install.log" 2>/dev/null)"
+    fi
+    # /etc/config/netshift untouched (download failed before any install).
+    if [ "$(cat "$work/etc-config-netshift" 2>/dev/null)" = "CONFIG-ORIG" ]; then
+        pass "selfupdate-dlfail-config-intact:OK"
+    else
+        fail "selfupdate-dlfail-config-intact:FAIL" "$(cat "$work/etc-config-netshift" 2>/dev/null)"
+    fi
+
+    # ── Scenario 3: happy path → success:true with version, restore ran ───────
+    : > "$SU_DNS_OK"; : > "$SU_HTTP_OK"; : > "$SU_GH_OK"; : > "$SU_DL_OK"; : > "$SU_PKG_OK"
+    printf 'CONFIG-ORIG\n' > "$work/etc-config-netshift"
+    printf 'original-resolver\n' > "$work/resolv.conf"
+    run_scenario
+    if jq -e '.success == true and .version == "0.8.1"' "$out" > /dev/null 2>&1; then
+        pass "selfupdate-happy-successtrue-version:OK"
+    else
+        fail "selfupdate-happy-successtrue-version:FAIL" "$(cat "$out" 2>/dev/null)"
+    fi
+    # Core + LuCI installed; RU i18n NOT (not installed) → exactly 2 installs.
+    if [ -f "$work/install.log" ] && [ "$(grep -c . "$work/install.log" 2>/dev/null)" = "2" ] \
+            && ! grep -q 'i18n' "$work/install.log" 2>/dev/null; then
+        pass "selfupdate-happy-core-luci-installed-no-ru:OK"
+    else
+        fail "selfupdate-happy-core-luci-installed-no-ru:FAIL" "install.log=$(cat "$work/install.log" 2>/dev/null)"
+    fi
+    # Connectivity was fine → no teardown → resolv.conf untouched original.
+    if [ "$(cat "$work/resolv.conf" 2>/dev/null)" = "original-resolver" ]; then
+        pass "selfupdate-happy-resolv-untouched:OK"
+    else
+        fail "selfupdate-happy-resolv-untouched:FAIL" "$(cat "$work/resolv.conf" 2>/dev/null)"
+    fi
+    # Success cleanup: the download dir is removed.
+    if [ ! -d "$work/dl" ]; then
+        pass "selfupdate-happy-download-dir-cleaned:OK"
+    else
+        fail "selfupdate-happy-download-dir-cleaned:FAIL" "dl dir remains"
+    fi
+
+    # ── Scenario 4: already up to date (idempotent) → success:true, no install
+    : > "$SU_DNS_OK"; : > "$SU_HTTP_OK"; : > "$SU_GH_OK"; : > "$SU_DL_OK"; : > "$SU_PKG_OK"
+    printf 'CONFIG-ORIG\n' > "$work/etc-config-netshift"
+    export SU_LATEST_TAG="0.8.0"   # equals the pinned NETSHIFT_VERSION
+    run_scenario
+    export SU_LATEST_TAG="0.8.1"
+    if jq -e '.success == true and (.message | contains("up to date"))' "$out" > /dev/null 2>&1; then
+        pass "selfupdate-already-current-idempotent:OK"
+    else
+        fail "selfupdate-already-current-idempotent:FAIL" "$(cat "$out" 2>/dev/null)"
+    fi
+    if [ ! -f "$work/install.log" ]; then
+        pass "selfupdate-already-current-no-install:OK"
+    else
+        fail "selfupdate-already-current-no-install:FAIL" "install.log=$(cat "$work/install.log" 2>/dev/null)"
+    fi
+
+    # ── Scenario 5: RU i18n IS installed → it is upgraded too (3 installs) ─────
+    : > "$SU_DNS_OK"; : > "$SU_HTTP_OK"; : > "$SU_GH_OK"; : > "$SU_DL_OK"; : > "$SU_PKG_OK"
+    printf 'CONFIG-ORIG\n' > "$work/etc-config-netshift"
+    printf 'luci-i18n-netshift-ru - 0.8.0\n' > "$work/installed.list"
+    run_scenario
+    : > "$work/installed.list"
+    if [ -f "$work/install.log" ] && [ "$(grep -c . "$work/install.log" 2>/dev/null)" = "3" ] \
+            && grep -q 'i18n' "$work/install.log" 2>/dev/null; then
+        pass "selfupdate-ru-installed-upgraded:OK"
+    else
+        fail "selfupdate-ru-installed-upgraded:FAIL" "install.log=$(cat "$work/install.log" 2>/dev/null)"
+    fi
+
+    # ── Restore the real init script (if any) and clean up. ──────────────────
+    if [ -n "$init_saved" ] && [ -e "$init_saved" ]; then
+        cp -p "$init_saved" "$init_target" 2>/dev/null || true
+    else
+        rm -f "$init_target" 2>/dev/null || true
+    fi
+    unset SU_DNS_OK SU_HTTP_OK SU_GH_OK SU_DL_OK SU_PKG_OK SU_INIT_LOG \
+        SU_INSTALL_LOG SU_INSTALLED_LIST SU_LATEST_TAG
+    rm -rf "$work"
+}
+
+# ─────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────
 main() {
@@ -2626,6 +3036,8 @@ main() {
             test_selfheal
             test_dns_via_outbound
             test_global_proxy
+            test_check_update_stable
+            test_self_update_netshift
             ;;
         deps)        test_deps ;;
         syntax)      test_syntax ;;
@@ -2640,12 +3052,14 @@ main() {
         selfheal)    test_selfheal ;;
         dnsdetour)   test_dns_via_outbound ;;
         globalproxy) test_global_proxy ;;
+        stablecheck) test_check_update_stable ;;
+        selfupdate)  test_self_update_netshift ;;
         jq)          test_jq_helpers ;;
         cm)          test_config_manager ;;
         sb)          test_sing_box_config ;;
         *)
             echo "Unknown test: $target"
-            echo "Available: all deps syntax config helpers jq cm sb nft nftv6 diagnostics subscription rejected jobstate selfheal dnsdetour globalproxy"
+            echo "Available: all deps syntax config helpers jq cm sb nft nftv6 diagnostics subscription rejected jobstate selfheal dnsdetour globalproxy stablecheck selfupdate"
             exit 1
             ;;
     esac

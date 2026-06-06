@@ -316,50 +316,6 @@ async function handleShowSingBoxConfig() {
   }
 }
 
-async function handleInstallSingBox() {
-  const diagnosticsActions = store.get().diagnosticsActions;
-  store.set({
-    diagnosticsActions: {
-      ...diagnosticsActions,
-      singBoxInstall: { loading: true },
-    },
-  });
-
-  const isExtended = store.get().diagnosticsSystemInfo.sing_box_extended === 1;
-
-  showToast(
-    _('Switching sing-box core, this may take a few minutes…'),
-    'success',
-  );
-
-  try {
-    const result = await NetShiftShellMethods.singBoxComponentAction(
-      isExtended ? 'install_stable' : 'install_extended',
-    );
-
-    if (result.success) {
-      showToast(
-        _('Sing-box core changed, version: ') + (result.version || ''),
-        'success',
-      );
-    } else {
-      logger.error('[DIAGNOSTIC]', 'handleInstallSingBox - e', result);
-      showToast(result.message || _('Failed to execute!'), 'error');
-    }
-  } catch (e) {
-    logger.error('[DIAGNOSTIC]', 'handleInstallSingBox - e', e);
-    showToast(_('Failed to execute!'), 'error');
-  } finally {
-    store.set({
-      diagnosticsActions: {
-        ...diagnosticsActions,
-        singBoxInstall: { loading: false },
-      },
-    });
-    await fetchSystemInfo();
-  }
-}
-
 function renderWikiDisclaimerWidget() {
   const diagnosticsChecks = store.get().diagnosticsChecks;
 
@@ -448,15 +404,6 @@ function renderDiagnosticAvailableActionsWidget() {
       onClick: handleShowSingBoxConfig,
       disabled: atLeastOneServiceCommandLoading,
     },
-    singBoxInstall: {
-      loading: diagnosticsActions.singBoxInstall.loading,
-      visible: true,
-      onClick: handleInstallSingBox,
-      disabled:
-        atLeastOneServiceCommandLoading ||
-        diagnosticsActions.singBoxInstall.loading,
-    },
-    singBoxExtended: store.get().diagnosticsSystemInfo.sing_box_extended,
   });
 
   return preserveScrollForPage(() => {

@@ -7,8 +7,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: NETSHIFT\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-06-06 18:38+0300\n"
-"PO-Revision-Date: 2026-06-06 18:38+0300\n"
+"POT-Creation-Date: 2026-06-06 22:26+0300\n"
+"PO-Revision-Date: 2026-06-06 22:26+0300\n"
 "Last-Translator: spgsroot, yandexru45\n"
 "Language-Team: none\n"
 "Language: ru\n"
@@ -80,6 +80,9 @@ msgstr "Путь к файлу кэша не может быть пустым"
 msgid "Cannot receive checks result"
 msgstr "Не удалось получить результаты проверки"
 
+msgid "Check update"
+msgstr "Проверить обновление"
+
 msgid "Checking, please wait"
 msgstr "Проверяем, пожалуйста подождите"
 
@@ -100,6 +103,9 @@ msgstr "Закрыть"
 
 msgid "Community Lists"
 msgstr "Списки сообщества"
+
+msgid "Component Manager"
+msgstr "Менеджер компонентов"
 
 msgid "Config File Path"
 msgstr "Путь к файлу конфигурации"
@@ -139,6 +145,9 @@ msgstr "Задержка в миллисекундах перед перезаг
 
 msgid "Delay value cannot be empty"
 msgstr "Значение задержки не может быть пустым"
+
+msgid "Dev"
+msgstr "Dev"
 
 msgid "DHCP has DNS server"
 msgstr "DHCP содержит DNS сервер"
@@ -326,11 +335,11 @@ msgstr "Ошибка HTTP"
 msgid "Include servers by keyword"
 msgstr "Включать серверы по ключевому слову"
 
-msgid "Install extended"
-msgstr "Установить extended"
+msgid "Install %s"
+msgstr "Установить %s"
 
-msgid "Install stable"
-msgstr "Установить stable"
+msgid "Installed version is newer than release"
+msgstr "Установленная версия новее релиза"
 
 msgid "Interface Monitoring"
 msgstr "Мониторинг интерфейса"
@@ -509,6 +518,12 @@ msgstr "Оставлять только серверы подписки, имя 
 msgid "Latest"
 msgstr "Последняя"
 
+msgid "Latest version is installed"
+msgstr "Установлена последняя версия"
+
+msgid "Latest version is unknown"
+msgstr "Последняя версия неизвестна"
+
 msgid "List Update Frequency"
 msgstr "Частота обновления списков"
 
@@ -545,6 +560,9 @@ msgstr "NetShift"
 msgid "NetShift Settings"
 msgstr "Настройки NetShift"
 
+msgid "NetShift updated, version:"
+msgstr "NetShift обновлён, версия:"
+
 msgid "NetShift will not modify your DHCP configuration"
 msgstr "NetShift не будет изменять вашу конфигурацию DHCP"
 
@@ -556,6 +574,9 @@ msgstr "Другие правила маркировки не найдены"
 
 msgid "Not implement yet"
 msgstr "Ещё не реализовано"
+
+msgid "Not installed"
+msgstr "Не установлено"
 
 msgid "Not responding"
 msgstr "Не отвечает"
@@ -722,6 +743,9 @@ msgstr "Selector"
 msgid "Selector Proxy Links"
 msgstr "Ссылки прокси для Selector"
 
+msgid "Self-update failed"
+msgstr "Не удалось обновить"
+
 msgid "Send upstream DNS queries through a proxy/VPN outbound instead of directly. Bootstrap DNS always stays direct."
 msgstr "Отправлять запросы к основному DNS через outbound прокси/VPN вместо прямого подключения. Bootstrap DNS всегда остаётся прямым."
 
@@ -794,6 +818,12 @@ msgstr "URL подписки"
 msgid "Successfully copied!"
 msgstr "Успешно скопировано!"
 
+msgid "Switch to extended"
+msgstr "Переключить на extended"
+
+msgid "Switch to stable"
+msgstr "Переключить на stable"
+
 msgid "Switching sing-box core, this may take a few minutes…"
 msgstr "Переключение ядра sing-box, это может занять несколько минут…"
 
@@ -857,6 +887,18 @@ msgstr "неизвестно"
 msgid "Unknown error"
 msgstr "Неизвестная ошибка"
 
+msgid "Update"
+msgstr "Обновить"
+
+msgid "Update is available"
+msgstr "Доступно обновление"
+
+msgid "Update NetShift"
+msgstr "Обновить NetShift"
+
+msgid "Updating NetShift, this may take a few minutes; the page will reload…"
+msgstr "Обновление NetShift, это может занять несколько минут; страница перезагрузится…"
+
 msgid "Uplink"
 msgstr "Исходящий"
 
@@ -910,6 +952,9 @@ msgstr "Валидно"
 
 msgid "Validation errors:"
 msgstr "Ошибки валидации:"
+
+msgid "Version"
+msgstr "Версия"
 
 msgid "View logs"
 msgstr "Посмотреть логи"

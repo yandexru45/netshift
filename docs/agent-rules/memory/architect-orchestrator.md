@@ -353,3 +353,66 @@ save+`sing-box check` -> cron jobs -> start sing-box -> dnsmasq_configure ->
   smoke `all` = 84 passed / 0 failed (was 81; +3 nft v6 regression assertions);
   whole-chain `unshare -rn` confirms v6 tproxy normalizes to [::1]:1603. All 3
   layers code-reviewer APPROVED. Ready for human commit (agents never auto-commit).
+
+## Component Manager feature (task-017 backend + task-018 frontend, 2026-06-06)
+
+- New LuCI tab "Component Manager" (RU "Менеджер компонентов"): 3 cards
+  (NetShift / sing-box stock / sing-box extended) with installed version shown
+  immediately + on-demand "Check update" + status badges + update/core-switch/
+  self-update actions. Core-switch MOVED out of Diagnostics into here.
+- Reference impl = `podkop-plus/` (operator clones it to repo root when needed;
+  it is UNTRACKED and NOT gitignored — must NOT be added to a commit). Paths:
+  `podkop-plus/fe-app-podkop/src/podkop/tabs/updates/{index,render,initController,
+  styles}.ts` + `podkop-plus/luci-app-podkop-plus/htdocs/.../view/podkop/updates.js`
+  (note `luci-app-podkop-plus` dir + `view.podkop_plus.main`; OUR view requires
+  `view.netshift.main`). The card/styles pattern is the theme-CSS-vars-with-
+  fallback approach (var(--success-color-medium, green) etc) — safe for custom
+  LuCI themes.
+- Backend (task-017, updater.sh): two NEW component_action sub-cases (the
+  dispatcher is component_action() :1272, a `case "$comp:$action"`; that is the
+  ONLY extension point — component_action_async/_status are component-agnostic,
+  no dispatcher change for new actions). Added `sing_box:check_update_stable`
+  (sync) + `netshift:self_update` (async via component_action_async). Self-update
+  = Variant A: targeted pkg upgrade (download release .ipk/.apk + pkg_install),
+  NOT install.sh (interactive `read`). MUST mirror the updates_install_sing_box_
+  extended epilogue (:878-903): reset UPDATES_HEAL_* -> ensure_connectivity
+  "extended" -> _core to /tmp file + rc -> ALWAYS updates_restore_after_swap ->
+  re-emit JSON -> return rc. NEVER exit on recoverable fail (echo failure JSON +
+  return nonzero). Minimal /etc/config/netshift backup. RU i18n only if installed.
+- SELF-REPLACEMENT (critical, verified safe): the netshift pkg replaces the very
+  /usr/bin/netshift running the worker. The async fork runs `"$0" component_action
+  netshift self_update` in `( trap '' HUP; ... ) &`; busybox ash holds the whole
+  script in memory, and updates_write_finished_job_state runs in the SAME subshell
+  AFTER the worker returns — both complete from memory despite the on-disk swap.
+  RULE: the self_update worker must contain NO exec / NO "$0" / NO re-invoke of
+  /usr/bin/netshift / NO updates_restart_netshift after pkg_install. (Only
+  /etc/init.d/netshift start via restore, AFTER install, as a fresh process — ok.)
+- updater.sh does NOT source install.sh -> re-implement the tiny pkg helpers
+  locally with the `updates_` prefix (updates_pkg_is_apk/_install_file/
+  _is_installed/_candidate_version). pkg output parsed with cut/awk/grep (no
+  Oniguruma). Stock candidate via opkg info/list or apk list; >= compare via
+  is_min_package_version (sort -V) on leading semver ${v%%-*}.
+- STABLE cross-layer contract: check_update_stable -> {success,current_version,
+  latest_version,status:"latest"|"outdated"|"not_installed"}; self_update finished
+  -> {success,version,message}; versions from get_system_info (netshift_version,
+  netshift_latest_version, sing_box_version "not installed" when absent,
+  sing_box_extended 0|1). ACL already allows fs.exec /usr/bin/netshift -> no ACL
+  change for component_action.
+- FRONTEND landmine caught by review (C1): NetShift's "Check update" has NO
+  backend check action (there is no netshift:check_update). NetShift latest comes
+  ONLY from get_system_info.netshift_latest_version. A card whose "latest" comes
+  from a DIFFERENT source than a sibling MUST use a DISTINCT action kind
+  (`check_netshift`, no backendAction) that refreshes systemInfo — never route it
+  through the sing-box check method or write a sing-box result into its check
+  slice. Generalize: when mirroring a multi-card update pattern, verify EACH
+  card's check actually targets ITS OWN backend source.
+- Lenient mid-job polling for self_update: the poll's fetchStatus swallows exec/
+  parse errors and returns synthetic {running:true} (NOT null) so the mid-job
+  binary swap isn't misreported as failure; scoped strictly AFTER a job_id is
+  obtained (a failed START still surfaces), bounded by MAX_POLLS; success ->
+  warning toast + window.location.reload().
+- FINAL gates: shellcheck clean; yarn ci 465 tests; main.js idempotent (two builds
+  byte-identical) + no yarn pollution + i18n catalogs byte-identical (fe<->luci);
+  smoke all = 101 passed / 0 failed (84 -> +17 new: stablecheck x4 + selfupdate
+  x13). Both layers code-reviewer APPROVED (backend 1st pass; frontend after a
+  C1/S1 fix round). Ready for human commit.

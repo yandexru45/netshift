@@ -834,6 +834,37 @@ async function pollSingBoxComponentAction(fetchStatus, sleepFn = sleep, interval
   };
 }
 
+// src/netshift/methods/shell/parseComponentCheckUpdate.ts
+var VALID_STATUSES = [
+  "latest",
+  "outdated",
+  "dev",
+  "not_installed"
+];
+function normalizeStatus(status) {
+  if (typeof status === "string" && VALID_STATUSES.includes(status)) {
+    return status;
+  }
+  return void 0;
+}
+function parseComponentCheckUpdate(stdout) {
+  try {
+    const parsed = JSON.parse(stdout);
+    return {
+      success: Boolean(parsed.success),
+      current_version: typeof parsed.current_version === "string" ? parsed.current_version : void 0,
+      latest_version: typeof parsed.latest_version === "string" ? parsed.latest_version : void 0,
+      status: normalizeStatus(parsed.status),
+      message: typeof parsed.message === "string" ? parsed.message : void 0
+    };
+  } catch (_e) {
+    return {
+      success: false,
+      message: stdout
+    };
+  }
+}
+
 // src/netshift/methods/shell/index.ts
 var NetShiftShellMethods = {
   checkDNSAvailable: async () => callBaseMethod(
@@ -959,6 +990,69 @@ var NetShiftShellMethods = {
         return null;
       }
       return parseComponentActionStatus(statusResponse.stdout);
+    });
+  },
+  // Sing-box update checks (sync) — STABLE task-017 contract:
+  //   component_action sing_box check_update        (extended)
+  //   component_action sing_box check_update_stable (stock)
+  // → {success, current_version, latest_version, status}.
+  singBoxCheckUpdate: async (action) => {
+    const response = await executeShellCommand({
+      command: "/usr/bin/netshift",
+      args: ["component_action", "sing_box", action],
+      timeout: 6e5
+    });
+    if (response.stdout) {
+      return parseComponentCheckUpdate(response.stdout);
+    }
+    return {
+      success: false,
+      message: response.stderr || ""
+    };
+  },
+  // NetShift self-update (async) — STABLE task-017 contract:
+  // component_action_async netshift self_update + component_action_status <job>.
+  // Reuses the component-agnostic poll. Because the package install swaps
+  // /usr/bin/netshift mid-job, status polls can transiently fail (rpcd / binary
+  // swap); once the job has STARTED we treat such failures leniently — keep
+  // polling (return a synthetic running status) instead of aborting hard, so a
+  // successful self-update is not misreported as a failure. The UI reloads the
+  // page on success.
+  netshiftSelfUpdate: async () => {
+    const startResponse = await executeShellCommand({
+      command: "/usr/bin/netshift",
+      args: ["component_action_async", "netshift", "self_update"]
+    });
+    let start = null;
+    if (startResponse.stdout) {
+      try {
+        start = JSON.parse(
+          startResponse.stdout
+        );
+      } catch (_e) {
+        start = null;
+      }
+    }
+    if (!start || start.success !== true || !start.job_id) {
+      return {
+        success: false,
+        message: start?.message || startResponse.stderr || _("Self-update failed")
+      };
+    }
+    const jobId = start.job_id;
+    return pollSingBoxComponentAction(async () => {
+      try {
+        const statusResponse = await executeShellCommand({
+          command: "/usr/bin/netshift",
+          args: ["component_action_status", jobId]
+        });
+        if (!statusResponse.stdout) {
+          return { running: true };
+        }
+        return parseComponentActionStatus(statusResponse.stdout) ?? { running: true };
+      } catch (_e) {
+        return { running: true };
+      }
     });
   }
 };
@@ -1517,9 +1611,6 @@ var initialDiagnosticStore = {
     },
     showSingBoxConfig: {
       loading: false
-    },
-    singBoxInstall: {
-      loading: false
     }
   },
   diagnosticsRunAction: { loading: false },
@@ -1609,6 +1700,23 @@ var loadingDiagnosticsChecksStore = {
       state: "skipped"
     }
   ]
+};
+
+// src/netshift/tabs/manager/manager.store.ts
+var initialManagerStore = {
+  managerActions: {
+    netshiftCheck: { loading: false },
+    netshiftUpdate: { loading: false },
+    singBoxStockCheck: { loading: false },
+    singBoxStockAction: { loading: false },
+    singBoxExtendedCheck: { loading: false },
+    singBoxExtendedAction: { loading: false }
+  },
+  managerChecks: {
+    netshift: { status: null, latest_version: "" },
+    sing_box_stock: { status: null, latest_version: "" },
+    sing_box_extended: { status: null, latest_version: "" }
+  }
 };
 
 // src/netshift/services/store.service.ts
@@ -1732,7 +1840,8 @@ var initialStore = {
     latencyFetching: false,
     data: []
   },
-  ...initialDiagnosticStore
+  ...initialDiagnosticStore,
+  ...initialManagerStore
 };
 var store = new StoreService(initialStore);
 
@@ -3858,9 +3967,7 @@ function renderAvailableActions({
   disable,
   globalCheck,
   viewLogs,
-  showSingBoxConfig,
-  singBoxInstall,
-  singBoxExtended
+  showSingBoxConfig
 }) {
   return E("div", { class: "pdk_diagnostic-page__right-bar__actions" }, [
     E("b", {}, _("Available actions")),
@@ -3939,15 +4046,6 @@ function renderAvailableActions({
         text: _("Show sing-box config"),
         loading: showSingBoxConfig.loading,
         disabled: showSingBoxConfig.disabled
-      })
-    ]),
-    ...insertIf(singBoxInstall.visible, [
-      renderButton({
-        onClick: singBoxInstall.onClick,
-        icon: renderRotateCcwIcon24,
-        text: singBoxExtended ? _("Install stable") : _("Install extended"),
-        loading: singBoxInstall.loading,
-        disabled: singBoxInstall.disabled
       })
     ])
   ]);
@@ -4606,45 +4704,6 @@ async function handleShowSingBoxConfig() {
     });
   }
 }
-async function handleInstallSingBox() {
-  const diagnosticsActions = store.get().diagnosticsActions;
-  store.set({
-    diagnosticsActions: {
-      ...diagnosticsActions,
-      singBoxInstall: { loading: true }
-    }
-  });
-  const isExtended = store.get().diagnosticsSystemInfo.sing_box_extended === 1;
-  showToast(
-    _("Switching sing-box core, this may take a few minutes\u2026"),
-    "success"
-  );
-  try {
-    const result = await NetShiftShellMethods.singBoxComponentAction(
-      isExtended ? "install_stable" : "install_extended"
-    );
-    if (result.success) {
-      showToast(
-        _("Sing-box core changed, version: ") + (result.version || ""),
-        "success"
-      );
-    } else {
-      logger.error("[DIAGNOSTIC]", "handleInstallSingBox - e", result);
-      showToast(result.message || _("Failed to execute!"), "error");
-    }
-  } catch (e) {
-    logger.error("[DIAGNOSTIC]", "handleInstallSingBox - e", e);
-    showToast(_("Failed to execute!"), "error");
-  } finally {
-    store.set({
-      diagnosticsActions: {
-        ...diagnosticsActions,
-        singBoxInstall: { loading: false }
-      }
-    });
-    await fetchSystemInfo();
-  }
-}
 function renderWikiDisclaimerWidget() {
   const diagnosticsChecks = store.get().diagnosticsChecks;
   function getWikiKind() {
@@ -4718,14 +4777,7 @@ function renderDiagnosticAvailableActionsWidget() {
       visible: true,
       onClick: handleShowSingBoxConfig,
       disabled: atLeastOneServiceCommandLoading
-    },
-    singBoxInstall: {
-      loading: diagnosticsActions.singBoxInstall.loading,
-      visible: true,
-      onClick: handleInstallSingBox,
-      disabled: atLeastOneServiceCommandLoading || diagnosticsActions.singBoxInstall.loading
-    },
-    singBoxExtended: store.get().diagnosticsSystemInfo.sing_box_extended
+    }
   });
   return preserveScrollForPage(() => {
     container.replaceChildren(renderedActions);
@@ -5046,10 +5098,598 @@ var DiagnosticTab = {
   styles: styles4
 };
 
+// src/netshift/tabs/manager/render.ts
+function render3() {
+  return E("div", { id: "manager-status", class: "pdk_manager-page" }, [
+    E("div", {
+      id: "pdk_manager-components",
+      class: "pdk_manager-page__components"
+    })
+  ]);
+}
+
+// src/netshift/tabs/manager/cards.ts
+var NOT_INSTALLED = "not installed";
+function isSingBoxInstalled(systemInfo) {
+  const version = systemInfo.sing_box_version;
+  return Boolean(version) && version !== NOT_INSTALLED;
+}
+function getCheckTag(status) {
+  if (!status) {
+    return void 0;
+  }
+  if (status === "latest") {
+    return { label: _("Latest"), kind: "success" };
+  }
+  if (status === "outdated") {
+    return { label: _("Outdated"), kind: "warning" };
+  }
+  if (status === "not_installed") {
+    return { label: _("Not installed"), kind: "neutral" };
+  }
+  return { label: _("Dev"), kind: "neutral" };
+}
+function netshiftStatus(systemInfo) {
+  const installed = normalizeCompiledVersion(systemInfo.netshift_version);
+  const latest = systemInfo.netshift_latest_version;
+  if (!latest || latest === "loading" || latest === _("unknown")) {
+    return null;
+  }
+  if (installed === "dev") {
+    return null;
+  }
+  return installed === latest ? "latest" : "outdated";
+}
+function netshiftCard(systemInfo) {
+  const status = netshiftStatus(systemInfo);
+  const latest = systemInfo.netshift_latest_version;
+  const actions = [];
+  if (status === "outdated") {
+    actions.push({
+      loadingKey: "netshiftUpdate",
+      kind: "self_update",
+      text: latest && latest !== "loading" ? _("Install %s").replace("%s", latest) : _("Update NetShift"),
+      backendAction: "self_update"
+    });
+  } else {
+    actions.push({
+      loadingKey: "netshiftCheck",
+      kind: "check_netshift",
+      text: _("Check update")
+    });
+  }
+  return {
+    key: "netshift",
+    title: "NetShift",
+    version: normalizeCompiledVersion(systemInfo.netshift_version),
+    installed: true,
+    tag: getCheckTag(status),
+    actions
+  };
+}
+function singBoxStockCard(systemInfo, check) {
+  const installed = isSingBoxInstalled(systemInfo);
+  const isActive = installed && systemInfo.sing_box_extended === 0;
+  const actions = [];
+  if (isActive) {
+    if (check.status === "outdated") {
+      const latest = check.latest_version;
+      actions.push({
+        loadingKey: "singBoxStockAction",
+        kind: "update",
+        text: latest ? _("Install %s").replace("%s", latest) : _("Update"),
+        backendAction: "install_stable"
+      });
+    } else {
+      actions.push({
+        loadingKey: "singBoxStockCheck",
+        kind: "check",
+        text: _("Check update"),
+        backendAction: "check_update_stable"
+      });
+    }
+  } else {
+    actions.push({
+      loadingKey: "singBoxStockAction",
+      kind: "switch",
+      text: _("Switch to stable"),
+      backendAction: "install_stable"
+    });
+  }
+  return {
+    key: "sing_box_stock",
+    title: "sing-box (stock)",
+    version: isActive ? systemInfo.sing_box_version : _("Not installed"),
+    installed: isActive,
+    tag: isActive ? getCheckTag(check.status) : getCheckTag("not_installed"),
+    actions
+  };
+}
+function singBoxExtendedCard(systemInfo, check) {
+  const installed = isSingBoxInstalled(systemInfo);
+  const isActive = installed && systemInfo.sing_box_extended === 1;
+  const actions = [];
+  if (isActive) {
+    if (check.status === "outdated") {
+      const latest = check.latest_version;
+      actions.push({
+        loadingKey: "singBoxExtendedAction",
+        kind: "update",
+        text: latest ? _("Install %s").replace("%s", latest) : _("Update"),
+        backendAction: "install_extended"
+      });
+    } else {
+      actions.push({
+        loadingKey: "singBoxExtendedCheck",
+        kind: "check",
+        text: _("Check update"),
+        backendAction: "check_update"
+      });
+    }
+  } else {
+    actions.push({
+      loadingKey: "singBoxExtendedAction",
+      kind: "switch",
+      text: _("Switch to extended"),
+      backendAction: "install_extended"
+    });
+  }
+  return {
+    key: "sing_box_extended",
+    title: "sing-box (extended)",
+    version: isActive ? systemInfo.sing_box_version : _("Not installed"),
+    installed: isActive,
+    tag: isActive ? getCheckTag(check.status) : getCheckTag("not_installed"),
+    actions
+  };
+}
+function getComponentCards(systemInfo, checks) {
+  return [
+    netshiftCard(systemInfo),
+    singBoxStockCard(systemInfo, checks.sing_box_stock),
+    singBoxExtendedCard(systemInfo, checks.sing_box_extended)
+  ];
+}
+
+// src/netshift/tabs/manager/initController.ts
+var managerLifecycleRegistered = false;
+var managerControllerInitialized = false;
+var managerMounted = false;
+async function fetchSystemInfo2() {
+  const systemInfo = await NetShiftShellMethods.getSystemInfo();
+  if (systemInfo.success) {
+    store.set({
+      diagnosticsSystemInfo: {
+        loading: false,
+        ...systemInfo.data,
+        sing_box_extended: systemInfo.data.sing_box_extended === 1 ? 1 : 0
+      }
+    });
+  } else {
+    store.set({
+      diagnosticsSystemInfo: {
+        loading: false,
+        netshift_version: _("unknown"),
+        netshift_latest_version: _("unknown"),
+        luci_app_version: _("unknown"),
+        sing_box_version: _("unknown"),
+        openwrt_version: _("unknown"),
+        device_model: _("unknown"),
+        sing_box_extended: 0
+      }
+    });
+  }
+}
+function isAnyActionLoading() {
+  return Object.values(store.get().managerActions).some((item) => item.loading);
+}
+function isSystemInfoLoading() {
+  return store.get().diagnosticsSystemInfo.loading;
+}
+function setActionLoading(action, loading) {
+  const managerActions = store.get().managerActions;
+  store.set({
+    managerActions: {
+      ...managerActions,
+      [action]: { loading }
+    }
+  });
+}
+function setCheckResult(component, status, latestVersion) {
+  const managerChecks = store.get().managerChecks;
+  store.set({
+    managerChecks: {
+      ...managerChecks,
+      [component]: {
+        status,
+        latest_version: latestVersion
+      }
+    }
+  });
+}
+function resetCheckResult(component) {
+  setCheckResult(component, null, "");
+}
+function getCheckToastMessage(status) {
+  if (status === "outdated") {
+    return _("Update is available");
+  }
+  if (status === "dev") {
+    return _("Installed version is newer than release");
+  }
+  if (status === "not_installed") {
+    return _("Not installed");
+  }
+  return _("Latest version is installed");
+}
+async function runSingBoxCheck2(component, button) {
+  setActionLoading(button.loadingKey, true);
+  try {
+    const parsed = await NetShiftShellMethods.singBoxCheckUpdate(
+      button.backendAction === "check_update_stable" ? "check_update_stable" : "check_update"
+    );
+    if (!parsed.success) {
+      showToast(parsed.message || _("Failed to execute!"), "error");
+      return;
+    }
+    const status = parsed.status ?? null;
+    setCheckResult(component, status, parsed.latest_version || "");
+    showToast(getCheckToastMessage(status), "success");
+  } catch (error) {
+    logger.error("[MANAGER]", "runSingBoxCheck failed", error);
+    showToast(_("Failed to execute!"), "error");
+  } finally {
+    setActionLoading(button.loadingKey, false);
+  }
+}
+async function runNetshiftCheck(button) {
+  setActionLoading(button.loadingKey, true);
+  try {
+    await fetchSystemInfo2();
+    resetCheckResult("netshift");
+    const status = store.get().diagnosticsSystemInfo;
+    const installed = normalizeCompiledVersion(status.netshift_version);
+    const latest = status.netshift_latest_version;
+    if (!latest || latest === "loading" || latest === _("unknown")) {
+      showToast(_("Latest version is unknown"), "success");
+    } else if (installed === "dev") {
+      showToast(getCheckToastMessage("dev"), "success");
+    } else {
+      showToast(
+        getCheckToastMessage(installed === latest ? "latest" : "outdated"),
+        "success"
+      );
+    }
+  } catch (error) {
+    logger.error("[MANAGER]", "runNetshiftCheck failed", error);
+    showToast(_("Failed to execute!"), "error");
+  } finally {
+    setActionLoading(button.loadingKey, false);
+  }
+}
+async function runSingBoxMutation(component, button) {
+  setActionLoading(button.loadingKey, true);
+  showToast(
+    _("Switching sing-box core, this may take a few minutes\u2026"),
+    "success"
+  );
+  try {
+    const result = await NetShiftShellMethods.singBoxComponentAction(
+      button.backendAction === "install_stable" ? "install_stable" : "install_extended"
+    );
+    if (result.success) {
+      const changed = _("Sing-box core changed, version:");
+      showToast(`${changed} ${result.version || ""}`.trim(), "success");
+      resetCheckResult(component);
+      await fetchSystemInfo2();
+    } else {
+      logger.error("[MANAGER]", "runSingBoxMutation failed", result);
+      showToast(result.message || _("Failed to execute!"), "error");
+    }
+  } catch (error) {
+    logger.error("[MANAGER]", "runSingBoxMutation failed", error);
+    showToast(_("Failed to execute!"), "error");
+  } finally {
+    setActionLoading(button.loadingKey, false);
+  }
+}
+function reloadPageAfterSelfUpdate() {
+  window.setTimeout(() => {
+    window.location.reload();
+  }, 1200);
+}
+async function runNetshiftSelfUpdate(button) {
+  setActionLoading(button.loadingKey, true);
+  showToast(
+    _("Updating NetShift, this may take a few minutes; the page will reload\u2026"),
+    "success",
+    6e3
+  );
+  try {
+    const result = await NetShiftShellMethods.netshiftSelfUpdate();
+    if (result.success) {
+      const updated = _("NetShift updated, version:");
+      showToast(`${updated} ${result.version || ""}`.trim(), "success", 1200);
+      reloadPageAfterSelfUpdate();
+      return;
+    }
+    logger.error("[MANAGER]", "runNetshiftSelfUpdate failed", result);
+    showToast(result.message || _("Failed to execute!"), "error");
+    setActionLoading(button.loadingKey, false);
+  } catch (error) {
+    logger.error("[MANAGER]", "runNetshiftSelfUpdate failed", error);
+    showToast(_("Failed to execute!"), "error");
+    setActionLoading(button.loadingKey, false);
+  }
+}
+function handleManagerAction(card, button) {
+  if (isAnyActionLoading()) {
+    return;
+  }
+  if (button.kind === "check_netshift") {
+    void runNetshiftCheck(button);
+    return;
+  }
+  if (button.kind === "check") {
+    void runSingBoxCheck2(card.key, button);
+    return;
+  }
+  if (button.kind === "self_update") {
+    void runNetshiftSelfUpdate(button);
+    return;
+  }
+  void runSingBoxMutation(card.key, button);
+}
+function renderComponentTag(card) {
+  if (!card.tag) {
+    return null;
+  }
+  return E(
+    "span",
+    {
+      class: [
+        "pdk_manager-page__component__tag",
+        card.tag.kind === "success" ? "pdk_manager-page__component__tag--success" : "",
+        card.tag.kind === "warning" ? "pdk_manager-page__component__tag--warning" : ""
+      ].filter(Boolean).join(" ")
+    },
+    card.tag.label
+  );
+}
+function renderComponentCard(card) {
+  const managerActions = store.get().managerActions;
+  const anyActionLoading = isAnyActionLoading();
+  const systemInfoLoading = isSystemInfoLoading();
+  const tag = renderComponentTag(card);
+  const headerChildren = [
+    E("b", { class: "pdk_manager-page__component__title" }, card.title)
+  ];
+  if (tag) {
+    headerChildren.push(
+      E("div", { class: "pdk_manager-page__component__status" }, [tag])
+    );
+  }
+  return E("div", { class: "pdk_manager-page__component" }, [
+    E("div", { class: "pdk_manager-page__component__header" }, headerChildren),
+    E("div", { class: "pdk_manager-page__component__version" }, [
+      E(
+        "span",
+        { class: "pdk_manager-page__component__version__label" },
+        _("Version")
+      ),
+      E(
+        "span",
+        { class: "pdk_manager-page__component__version__value" },
+        card.version
+      )
+    ]),
+    E(
+      "div",
+      { class: "pdk_manager-page__component__actions" },
+      card.actions.map((action) => {
+        const loading = managerActions[action.loadingKey].loading;
+        return renderButton({
+          text: action.text,
+          icon: action.kind === "check" || action.kind === "check_netshift" ? renderSearchIcon24 : renderRotateCcwIcon24,
+          loading,
+          disabled: systemInfoLoading || anyActionLoading && !loading,
+          onClick: () => handleManagerAction(card, action)
+        });
+      })
+    )
+  ]);
+}
+function renderManagerComponents() {
+  const container = document.getElementById("pdk_manager-components");
+  if (!container) {
+    return;
+  }
+  const { diagnosticsSystemInfo, managerChecks } = store.get();
+  const renderedComponents = getComponentCards(
+    {
+      netshift_version: normalizeCompiledVersion(
+        diagnosticsSystemInfo.netshift_version
+      ),
+      netshift_latest_version: diagnosticsSystemInfo.netshift_latest_version,
+      sing_box_version: diagnosticsSystemInfo.sing_box_version,
+      sing_box_extended: diagnosticsSystemInfo.sing_box_extended
+    },
+    managerChecks
+  ).map(renderComponentCard);
+  return preserveScrollForPage(() => {
+    container.replaceChildren(...renderedComponents);
+  });
+}
+function onStoreUpdate3(_next, _prev, diff) {
+  if (diff.diagnosticsSystemInfo || diff.managerActions || diff.managerChecks) {
+    renderManagerComponents();
+  }
+}
+function onPageMount3() {
+  onPageUnmount3();
+  managerMounted = true;
+  store.subscribe(onStoreUpdate3);
+  renderManagerComponents();
+  void fetchSystemInfo2();
+}
+function onPageUnmount3() {
+  managerMounted = false;
+  store.unsubscribe(onStoreUpdate3);
+  store.reset(["managerActions", "managerChecks"]);
+}
+function registerLifecycleListeners3() {
+  if (managerLifecycleRegistered) {
+    return;
+  }
+  managerLifecycleRegistered = true;
+  store.subscribe((next, prev, diff) => {
+    if (diff.tabService && next.tabService.current !== prev.tabService.current) {
+      const isManagerVisible = next.tabService.current === "manager";
+      if (isManagerVisible) {
+        return onPageMount3();
+      }
+      if (managerMounted) {
+        return onPageUnmount3();
+      }
+    }
+  });
+}
+async function initController3() {
+  if (managerControllerInitialized) {
+    return;
+  }
+  managerControllerInitialized = true;
+  onMount("manager-status").then(() => {
+    logger.debug("[MANAGER]", "initController", "onMount");
+    registerLifecycleListeners3();
+    if (store.get().tabService.current === "manager") {
+      onPageMount3();
+    }
+  });
+}
+
+// src/netshift/tabs/manager/styles.ts
+var styles5 = `
+#cbi-netshift-manager-_mount_node > div {
+    width: 100%;
+}
+
+#cbi-netshift-manager > h3 {
+    display: none;
+}
+
+.pdk_manager-page {
+    width: 100%;
+}
+
+.pdk_manager-page__components {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(240px, 1fr));
+    grid-gap: 10px;
+}
+
+@media (max-width: 760px) {
+    .pdk_manager-page__components {
+        grid-template-columns: 1fr;
+    }
+}
+
+.pdk_manager-page__component {
+    border: 2px var(--background-color-low, lightgray) solid;
+    border-radius: 4px;
+    padding: 10px;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: 1fr;
+    grid-row-gap: 10px;
+}
+
+.pdk_manager-page__component__header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+    align-items: start;
+    gap: 8px;
+    min-width: 0;
+}
+
+.pdk_manager-page__component__title {
+    color: var(--text-color-high);
+    line-height: 1.25;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.pdk_manager-page__component__status {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    min-width: 0;
+    max-width: 180px;
+    overflow: hidden;
+}
+
+.pdk_manager-page__component__version {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    grid-column-gap: 6px;
+    align-items: baseline;
+    min-width: 0;
+}
+
+.pdk_manager-page__component__version__label {
+    color: var(--text-color-medium);
+}
+
+.pdk_manager-page__component__version__value {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.pdk_manager-page__component__tag {
+    flex: 0 0 auto;
+    padding: 2px 5px;
+    border: 1px var(--background-color-high, gray) solid;
+    border-radius: 4px;
+    color: var(--text-color-medium, gray);
+    line-height: 1.2;
+}
+
+.pdk_manager-page__component__tag--success {
+    border-color: var(--success-color-medium, green);
+    color: var(--success-color-medium, green);
+}
+
+.pdk_manager-page__component__tag--warning {
+    border-color: var(--warn-color-medium, orange);
+    color: var(--warn-color-medium, orange);
+}
+
+.pdk_manager-page__component__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.pdk_manager-page__component__actions > .pdk-partial-button {
+    margin-left: 0;
+}
+`;
+
+// src/netshift/tabs/manager/index.ts
+var ManagerTab = {
+  render: render3,
+  initController: initController3,
+  styles: styles5
+};
+
 // src/styles.ts
 var GlobalStyles = `
 ${DashboardTab.styles}
 ${DiagnosticTab.styles}
+${ManagerTab.styles}
 ${PartialStyles}
 
 
@@ -5314,6 +5954,7 @@ return baseclass.extend({
   FETCH_TIMEOUT,
   IP_CHECK_DOMAIN,
   Logger,
+  ManagerTab,
   NETSHIFT_LUCI_APP_VERSION,
   NetShiftShellMethods,
   REGIONAL_OPTIONS,

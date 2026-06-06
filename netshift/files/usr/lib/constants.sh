@@ -58,6 +58,21 @@ UPDATES_RESOLV_BACKUP="/tmp/netshift-resolv.conf.bak"
 # locations; tests override them.
 UPDATES_SING_BOX_BIN="/usr/bin/sing-box"
 UPDATES_LIBCRONET_LIB="/usr/lib/libcronet.so"
+# Component Manager — NetShift self-update (task-017). The GitHub latest-release
+# API for NetShift itself (same endpoint install.sh and get_system_info use);
+# the self-update worker downloads the release .ipk/.apk assets from it.
+NETSHIFT_RELEASE_API_URL="https://api.github.com/repos/yandexru45/netshift/releases/latest"
+# tmpfs scratch dir for the self-update download (release packages) — RAM, never
+# the tiny overlay; reaped on success and on reboot.
+UPDATES_NETSHIFT_DOWNLOAD_DIR="/tmp/netshift/selfupdate"
+# tmpfs backup of /etc/config/netshift taken before the self-update package
+# install (conffiles normally preserve it; this is the defensive belt).
+UPDATES_NETSHIFT_CONFIG_BACKUP="/tmp/netshift/config.bak"
+# NetShift package names handled by the self-update (in install order). The RU
+# i18n package is upgraded ONLY if already installed (never newly installed).
+UPDATES_NETSHIFT_PKG_CORE="netshift"
+UPDATES_NETSHIFT_PKG_LUCI="luci-app-netshift"
+UPDATES_NETSHIFT_PKG_I18N_RU="luci-i18n-netshift-ru"
 # DNS
 SB_DNS_SERVER_TAG="dns-server"
 SB_FAKEIP_DNS_SERVER_TAG="fakeip-server"

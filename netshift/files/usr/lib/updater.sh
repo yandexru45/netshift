@@ -1268,6 +1268,332 @@ updates_check_sing_box_extended() {
     return 0
 }
 
+# ── Package-manager abstraction (Component Manager, task-017) ───────
+#
+# updater.sh does NOT source install.sh, so these are the tiny `updates_`-prefixed
+# equivalents of install.sh's pkg_is_apk / pkg_install / pkg_is_installed. On a
+# real device exactly ONE of apk/opkg exists. Package output is parsed with
+# cut/awk/grep only — NEVER Oniguruma jq.
+
+# Returns 0 if the device uses apk (the apk binary is present), non-zero for opkg.
+updates_pkg_is_apk() {
+    command -v apk >/dev/null 2>&1
+}
+
+# Installs a package FILE (downloaded .ipk/.apk) non-interactively. Returns the
+# package manager's exit status. apk needs --allow-untrusted for self-built
+# packages; opkg install handles the local file path directly.
+updates_pkg_install_file() {
+    local pkg_file="$1"
+
+    if updates_pkg_is_apk; then
+        apk add --allow-untrusted "$pkg_file" </dev/null >/dev/null 2>&1
+    else
+        opkg install "$pkg_file" </dev/null >/dev/null 2>&1
+    fi
+}
+
+# Returns 0 if a package NAME is currently installed. Mirrors install.sh's
+# pkg_is_installed grep-based detection (busybox-safe; no regex needed).
+updates_pkg_is_installed() {
+    local pkg_name="$1"
+
+    if updates_pkg_is_apk; then
+        apk list --installed 2>/dev/null | grep -q "$pkg_name"
+    else
+        opkg list-installed 2>/dev/null | grep -q "$pkg_name"
+    fi
+}
+
+# Echoes the FEED/candidate version of a package (the version the package
+# manager would install), or nothing if unavailable. Parsed with cut/awk only.
+#   opkg list <pkg> -> "<name> - <version>"   (field after " - ")
+#   apk  list <pkg> -> "<name>-<version> <arch> {...} ..."  (strip "<name>-")
+updates_pkg_candidate_version() {
+    local pkg_name="$1"
+    local line version=""
+
+    if updates_pkg_is_apk; then
+        # First matching list line; the token is "<name>-<version>". Strip the
+        # leading "<pkg>-" so only the version (e.g. "1.12.22-r1") remains.
+        line="$(apk list "$pkg_name" 2>/dev/null | grep -v '\[installed\]' | awk '{print $1}' | head -n1)"
+        [ -n "$line" ] || line="$(apk list "$pkg_name" 2>/dev/null | awk '{print $1}' | head -n1)"
+        case "$line" in
+        "$pkg_name"-*) version="${line#"$pkg_name"-}" ;;
+        esac
+    else
+        # opkg list prints "<name> - <version>"; take the field after " - ".
+        version="$(opkg list "$pkg_name" 2>/dev/null | grep "^${pkg_name} " | head -n1 | awk -F' - ' '{print $2}')"
+    fi
+
+    printf '%s' "$version"
+}
+
+# Checks whether a newer STOCK (stable) sing-box is available via the system
+# package manager. SYNC (quick call → stays on the synchronous component_action
+# path). Graceful on an unreachable feed / parse failure: echoes
+# {"success":false,"message":"..."} and returns non-zero. NEVER exits.
+#
+# Output (STABLE, mirrors updates_check_sing_box_extended):
+#   {"success":true,"current_version":"...","latest_version":"...",
+#    "status":"latest"|"outdated"|"not_installed"}
+updates_check_sing_box_stable() {
+    local current_version candidate cur_semver cand_semver status
+
+    # Refresh the package index so the candidate version reflects the feed.
+    # Best-effort: a failure here just means we compare against whatever index
+    # is cached; the candidate-empty branch below reports the unreachable feed.
+    if updates_pkg_is_apk; then
+        apk update </dev/null >/dev/null 2>&1 || true
+    else
+        opkg update </dev/null >/dev/null 2>&1 || true
+    fi
+
+    candidate="$(updates_pkg_candidate_version "sing-box")"
+    if [ -z "$candidate" ]; then
+        echo "{\"success\":false,\"message\":\"Could not determine the stock sing-box version from the package feed (feed unreachable or package not found)\"}"
+        return 1
+    fi
+
+    # sing-box absent → not_installed (no running binary to compare).
+    if ! command -v sing-box >/dev/null 2>&1; then
+        echo "{\"success\":true,\"current_version\":\"not installed\",\"latest_version\":\"$candidate\",\"status\":\"not_installed\"}"
+        return 0
+    fi
+
+    current_version="$(get_sing_box_version)"
+
+    # Compare on the leading semver only (drop any "-r1"/"-extended-..." suffix)
+    # so the sort -V based >= test in is_min_package_version is well-defined.
+    cur_semver="${current_version%%-*}"
+    cand_semver="${candidate%%-*}"
+
+    if is_min_package_version "$cur_semver" "$cand_semver"; then
+        status="latest"
+    else
+        status="outdated"
+    fi
+
+    echo "{\"success\":true,\"current_version\":\"$current_version\",\"latest_version\":\"$candidate\",\"status\":\"$status\"}"
+    return 0
+}
+
+# ── NetShift self-update (Component Manager, task-017) ──────────────
+#
+# Variant A: a targeted package upgrade (download the release .ipk/.apk from
+# GitHub and pkg_install them) — NOT install.sh (interactive). Runs as the async
+# worker `component_action netshift self_update`.
+#
+# Public wrapper — EXACTLY mirrors the updates_install_sing_box_extended epilogue
+# (single cleanup path): reset heal flags → ensure GitHub connectivity (preflight
+# + self-heal) → run the private core capturing JSON to a tmpfs file + rc →
+# ALWAYS updates_restore_after_swap → re-emit the JSON → return rc. No early
+# return skips the restore; no trap needed.
+updates_self_update_netshift() {
+    local rc out json
+
+    UPDATES_HEAL_RESOLV_REPLACED=0
+    UPDATES_HEAL_REDIRECT_DOWN=0
+
+    if ! updates_ensure_connectivity "extended"; then
+        # Heal failed BEFORE anything was touched: NetShift is left fully intact.
+        updates_restore_after_swap
+        updates_log "Aborting NetShift self-update: GitHub unreachable and self-heal failed (NetShift left intact)" "error"
+        echo '{"success":false,"message":"GitHub unreachable and self-heal failed; self-update aborted (NetShift left intact)"}'
+        return 1
+    fi
+
+    out="/tmp/netshift-selfupdate-result.$$"
+    _updates_self_update_netshift_core >"$out" 2>/dev/null
+    rc=$?
+    json="$(cat "$out" 2>/dev/null)"
+    rm -f "$out" 2>/dev/null
+
+    updates_restore_after_swap
+
+    [ -n "$json" ] && printf '%s\n' "$json"
+    return "$rc"
+}
+
+# Echoes the GitHub latest-release tag for NetShift (e.g. "v0.8.1"), or nothing.
+# Reuses the same API endpoint as get_system_info / install.sh; parsed with
+# grep/cut (the tag is needed only as a display/compare string, no jq array).
+updates_netshift_latest_tag() {
+    local response
+
+    response="$(updates_http_get_once "$NETSHIFT_RELEASE_API_URL" "")"
+    if [ -z "$response" ]; then
+        return 1
+    fi
+    printf '%s' "$response" | grep '"tag_name":' | head -n1 | cut -d'"' -f4
+}
+
+# Downloads the NetShift release assets matching the package-name prefixes for
+# the active package manager into $dir. Echoes nothing; returns 0 if at least
+# the core "netshift" package was downloaded, non-zero otherwise. The asset URL
+# list comes from the same latest-release JSON, filtered to .ipk or .apk by the
+# package manager (busybox grep -o, no jq array walk required).
+_updates_self_update_download_assets() {
+    local dir="$1"
+    local response ext pattern url filename dest attempt got_core=0
+
+    response="$(updates_http_get_once "$NETSHIFT_RELEASE_API_URL" "")"
+    if [ -z "$response" ]; then
+        return 1
+    fi
+
+    if updates_pkg_is_apk; then
+        ext="apk"
+    else
+        ext="ipk"
+    fi
+    pattern="https://[^\"[:space:]]*\.${ext}"
+
+    # Iterate the matching browser_download_url values. Only keep assets whose
+    # filename starts with one of the NetShift package-name prefixes; the RU
+    # i18n package is kept ONLY if already installed.
+    printf '%s' "$response" | grep -o "$pattern" | while read -r url; do
+        filename="$(basename "$url")"
+        case "$filename" in
+        "$UPDATES_NETSHIFT_PKG_CORE"* | "$UPDATES_NETSHIFT_PKG_LUCI"*) ;;
+        "$UPDATES_NETSHIFT_PKG_I18N_RU"*)
+            updates_pkg_is_installed "$UPDATES_NETSHIFT_PKG_I18N_RU" || continue
+            ;;
+        *) continue ;;
+        esac
+
+        dest="$dir/$filename"
+        attempt=0
+        while [ "$attempt" -lt 3 ]; do
+            if updates_download_to_file "$url" "$dest"; then
+                break
+            fi
+            rm -f "$dest" 2>/dev/null
+            attempt=$((attempt + 1))
+        done
+    done
+
+    # Verify the core package landed (the subshell-piped loop can't set a parent
+    # var, so re-check the directory contents here).
+    if ls "$dir/$UPDATES_NETSHIFT_PKG_CORE"* >/dev/null 2>&1; then
+        got_core=1
+    fi
+    [ "$got_core" -eq 1 ]
+}
+
+# Private core of the self-update. Runs NON-interactively; every variable local.
+# Echoes a single JSON object; NEVER exits (returns non-zero on recoverable
+# failure so the wrapper still runs the restore epilogue).
+_updates_self_update_netshift_core() {
+    local installed latest pkg file_path candidate_file
+    local backup_made=0
+
+    installed="$NETSHIFT_VERSION"
+
+    latest="$(updates_netshift_latest_tag)"
+    if [ -z "$latest" ]; then
+        updates_log "Self-update: could not determine the latest NetShift release tag" "error"
+        echo '{"success":false,"message":"Could not determine the latest NetShift release (GitHub API unreachable or rate-limited)"}'
+        return 1
+    fi
+
+    # Idempotent defense: compare ignoring a leading "v" so "v0.8.1" vs "0.8.1"
+    # still match (the UI also gates on the "outdated" status).
+    if [ "${installed#v}" = "${latest#v}" ]; then
+        updates_log "Self-update: NetShift already at the latest version ($installed)"
+        echo "{\"success\":true,\"message\":\"Already up to date\",\"version\":\"$installed\"}"
+        return 0
+    fi
+
+    # Minimal backup: /etc/config/netshift to tmpfs (conffiles normally preserve
+    # it; this is the defensive belt).
+    rm -rf "$UPDATES_NETSHIFT_DOWNLOAD_DIR" 2>/dev/null
+    if ! mkdir -p "$UPDATES_NETSHIFT_DOWNLOAD_DIR"; then
+        updates_log "Self-update: failed to create download directory" "error"
+        echo '{"success":false,"message":"Failed to create the self-update download directory"}'
+        return 1
+    fi
+    mkdir -p "$(dirname "$UPDATES_NETSHIFT_CONFIG_BACKUP")" 2>/dev/null || true
+    if [ -f "$NETSHIFT_CONFIG" ]; then
+        if cp -p "$NETSHIFT_CONFIG" "$UPDATES_NETSHIFT_CONFIG_BACKUP" 2>/dev/null; then
+            backup_made=1
+        else
+            updates_log "Self-update: failed to back up $NETSHIFT_CONFIG (continuing; conffiles preserve it)" "warn"
+        fi
+    fi
+
+    # Download the release assets (.ipk/.apk) for this package manager.
+    updates_log "Self-update: downloading NetShift $latest release packages"
+    if ! _updates_self_update_download_assets "$UPDATES_NETSHIFT_DOWNLOAD_DIR"; then
+        rm -rf "$UPDATES_NETSHIFT_DOWNLOAD_DIR" 2>/dev/null
+        updates_log "Self-update: failed to download the NetShift release packages" "error"
+        echo '{"success":false,"message":"Failed to download the NetShift release packages (GitHub unreachable or no matching assets)"}'
+        return 1
+    fi
+
+    # Install core, then LuCI app, then RU i18n if applicable (already filtered
+    # to "installed-only" at download time). NON-interactive. The netshift
+    # package replaces /usr/bin/netshift (this very script) — busybox ash has
+    # already read the whole script into memory, so the in-flight worker and the
+    # subsequent updates_write_finished_job_state complete from memory. We MUST
+    # NOT re-exec /usr/bin/netshift after this install (no updates_restart that
+    # re-runs the CLI; only /etc/init.d/netshift restart, which spawns a fresh
+    # process that may safely load the new binary).
+    for pkg in "$UPDATES_NETSHIFT_PKG_CORE" "$UPDATES_NETSHIFT_PKG_LUCI" "$UPDATES_NETSHIFT_PKG_I18N_RU"; do
+        file_path=""
+        for candidate_file in "$UPDATES_NETSHIFT_DOWNLOAD_DIR/$pkg"*; do
+            if [ -f "$candidate_file" ]; then
+                file_path="$candidate_file"
+                break
+            fi
+        done
+        [ -n "$file_path" ] || continue
+
+        updates_log "Self-update: installing $(basename "$file_path")"
+        if ! updates_pkg_install_file "$file_path"; then
+            # The core is the critical package; if it fails, surface the failure.
+            # conffiles preserve /etc/config/netshift; restore defensively below.
+            if [ "$pkg" = "$UPDATES_NETSHIFT_PKG_CORE" ]; then
+                _updates_self_update_restore_config "$backup_made"
+                rm -rf "$UPDATES_NETSHIFT_DOWNLOAD_DIR" 2>/dev/null
+                updates_log "Self-update: failed to install the NetShift core package" "error"
+                echo '{"success":false,"message":"Failed to install the NetShift core package; configuration preserved"}'
+                return 1
+            fi
+            updates_log "Self-update: failed to install $pkg (non-critical; continuing)" "warn"
+        fi
+    done
+
+    # Defensive: if the config got clobbered/emptied, restore from the backup.
+    _updates_self_update_restore_config "$backup_made"
+
+    # Success cleanup: drop the download dir and the config backup.
+    rm -rf "$UPDATES_NETSHIFT_DOWNLOAD_DIR" 2>/dev/null
+    [ "$backup_made" -eq 1 ] && rm -f "$UPDATES_NETSHIFT_CONFIG_BACKUP" 2>/dev/null
+
+    updates_log "Self-update: NetShift updated to $latest"
+    echo "{\"success\":true,\"version\":\"$latest\",\"message\":\"NetShift updated to $latest\"}"
+    return 0
+}
+
+# Restores /etc/config/netshift from the tmpfs backup IF the live file is missing
+# or empty (conffiles normally keep it; this is the defensive belt). $1 = 1 when
+# a backup was taken.
+_updates_self_update_restore_config() {
+    local backup_made="$1"
+
+    [ "$backup_made" -eq 1 ] || return 0
+    [ -f "$UPDATES_NETSHIFT_CONFIG_BACKUP" ] || return 0
+
+    if [ ! -s "$NETSHIFT_CONFIG" ]; then
+        if cp -p "$UPDATES_NETSHIFT_CONFIG_BACKUP" "$NETSHIFT_CONFIG" 2>/dev/null; then
+            updates_log "Self-update: restored $NETSHIFT_CONFIG from backup (live file was missing/empty)" "warn"
+        else
+            updates_log "Self-update: FAILED to restore $NETSHIFT_CONFIG from backup" "error"
+        fi
+    fi
+}
+
 # Dispatcher for component-related actions.
 component_action() {
     local component="$1"
@@ -1282,6 +1608,12 @@ component_action() {
         ;;
     sing_box:check_update)
         updates_check_sing_box_extended
+        ;;
+    sing_box:check_update_stable)
+        updates_check_sing_box_stable
+        ;;
+    netshift:self_update)
+        updates_self_update_netshift
         ;;
     *)
         echo '{"success":false,"message":"Unknown component action"}'

@@ -46,9 +46,6 @@ export const initialDiagnosticStore: Pick<
     showSingBoxConfig: {
       loading: false,
     },
-    singBoxInstall: {
-      loading: false,
-    },
   },
   diagnosticsRunAction: { loading: false },
   diagnosticsChecks: [

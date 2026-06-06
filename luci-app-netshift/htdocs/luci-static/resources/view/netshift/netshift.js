@@ -17,6 +17,9 @@
 // Diagnostic content
 "require view.netshift.diagnostic as diagnostic";
 
+// Component Manager content
+"require view.netshift.manager as manager";
+
 const EntryPoint = {
   async render() {
     main.injectGlobalStyles();
@@ -72,6 +75,21 @@ const EntryPoint = {
 
     // Render diagnostic content
     diagnostic.createDiagnosticContent(diagnosticSection);
+
+    // Component Manager tab
+    const managerSection = netshiftMap.section(
+      form.TypedSection,
+      "manager",
+      _("Component Manager"),
+    );
+    managerSection.anonymous = true;
+    managerSection.addremove = false;
+    managerSection.cfgsections = function () {
+      return ["manager"];
+    };
+
+    // Render Component Manager content
+    manager.createManagerContent(managerSection);
 
     // Dashboard tab
     const dashboardSection = netshiftMap.section(

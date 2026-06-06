@@ -1,10 +1,11 @@
 // language=CSS
-import { DashboardTab, DiagnosticTab } from './netshift';
+import { DashboardTab, DiagnosticTab, ManagerTab } from './netshift';
 import { PartialStyles } from './partials';
 
 export const GlobalStyles = `
 ${DashboardTab.styles}
 ${DiagnosticTab.styles}
+${ManagerTab.styles}
 ${PartialStyles}
 
 

@@ -262,3 +262,94 @@ append findings; keep under ~200 lines.
 - The 10 new ru fragments are the split sentences of the 3 flag descriptions
   (global proxy / block DoH / enable IPv6) — translated formally/technically
   matching neighbours. All catalogs LF, no empty non-header msgstr remained.
+
+## Component Manager tab (task-018)
+
+- NEW TAB = 5-file pattern mirroring `tabs/diagnostic`: `manager/{index,render,
+  initController,styles}.ts` + a hand-written `view/netshift/manager.js`
+  (`form.DummyValue _mount_node`, `o.rawhtml=true`, `cfgvalue` →
+  `main.ManagerTab.initController()` + `return main.ManagerTab.render()`).
+  Register in `netshift.js`: add `"require view.netshift.manager as manager"`
+  + a `form.TypedSection` block (`anonymous=true`, `addremove=false`,
+  `cfgsections=()=>["manager"]`). NB the tab UCI section name (`manager`,
+  `diagnostic`, `dashboard`) need NOT exist in `/etc/config/netshift` — LuCI
+  renders the virtual TypedSection anyway (diagnostic/dashboard prove it).
+- Barrel: add `export * from './manager';` to `tabs/index.ts` → `ManagerTab`
+  reaches `main.ManagerTab` (verified in the export block at the bottom of
+  main.js). Wire `ManagerTab.styles` into `src/styles.ts` `GlobalStyles` next to
+  Dashboard/Diagnostic. Styles use theme vars WITH fallbacks; CBI selector is
+  `#cbi-netshift-manager-_mount_node > div` + hide `#cbi-netshift-manager > h3`.
+- LIFECYCLE: mirror diagnostic exactly but guard re-init with module-level
+  `*Registered`/`*Initialized`/`*Mounted` booleans (podkop-plus style) since the
+  lazy-mount listener can fire repeatedly. `onMount('manager-status')` →
+  `registerLifecycleListeners()` (subscribe on `tabService.current==='manager'`)
+  → `onPageMount` subscribes store + renders + fetches systemInfo;
+  `onPageUnmount` resets `['managerActions','managerChecks']`.
+- INSTALLED-NOW / LATEST-ON-DEMAND: installed versions come from
+  `diagnosticsSystemInfo` (reuse the diagnostic `getSystemInfo()`→store slice);
+  latest is fetched ONLY on a "Check update" click. Pure card builder
+  `cards.ts:getComponentCards(systemInfo, checks)` + `getCheckTag(status)` +
+  `isSingBoxInstalled` are DOM/store-free (import only `normalizeCompiledVersion`
+  leaf + `NetShift` types) → unit-testable WITHOUT the MutationObserver collect
+  crash. Controller maps descriptors→DOM+click handlers. 3 cards: netshift,
+  sing_box_stock, sing_box_extended; inactive core → "Not installed" + switch.
+- BACKEND CONTRACT (task-017, STABLE): both SING-BOX checks (`check_update`
+  extended / `check_update_stable` stock) return `{success,current_version,
+  latest_version,status:"latest"|"outdated"|"dev"|"not_installed"}`. The
+  PRE-EXISTING `singBoxComponentAction('check_update')` only parsed `{success,
+  version,message}` (DROPPED status/latest) — do NOT route the manager check
+  through it. Added ONE `singBoxCheckUpdate(action)` method parsing the FULL
+  contract via a pure `parseComponentCheckUpdate.ts` (types-only import, status
+  whitelisted). Install/switch reuse the existing async
+  `singBoxComponentAction('install_*')` + `pollSingBoxComponentAction`.
+- C1 (review fix) — THERE IS NO `netshift:check_update` BACKEND ACTION. NetShift
+  latest comes ONLY from `get_system_info.netshift_latest_version`. So the
+  NetShift card's "Check update" must NOT route through `singBoxCheckUpdate` (that
+  would run the sing-box EXTENDED check and write its status into
+  `managerChecks.netshift` → wrong). Fix: give the NetShift check a DISTINCT
+  `kind:'check_netshift'` (no `backendAction`) so `handleManagerAction` routes it
+  to `runNetshiftCheck`, which RE-FETCHES systemInfo + `resetCheckResult
+  ('netshift')` and derives the badge/toast from installed-vs-latest. NetShift
+  status is derived PURELY from systemInfo (`netshiftStatus(systemInfo)` no longer
+  reads `managerChecks.netshift`). Regression guards in cards.test.js: NetShift
+  action kind is `check_netshift`, has NO `backendAction`, and status ignores a
+  bogus `managerChecks.netshift`. LESSON: when a card's "latest" comes from a
+  DIFFERENT source than its siblings, give it its own action kind so the shared
+  dispatcher can't misroute it to the wrong backend method.
+- S1 (review fix) — keep ONE check method per concern: removed the dead
+  `singBoxCheckUpdateStable()` (0 callers; controller uses
+  `singBoxCheckUpdate('check_update_stable')`). No dead exports.
+- M2 (review fix) — `ManagerComponentKey` defined ONCE in `tabs/manager/cards.ts`
+  (the pure module) and `export type`-re-exported from `store.service.ts` (which
+  `import type`s it) so store consumers keep their path; safe because cards.ts
+  imports NO store (no cycle). M1 (self-update timeout reusing 'Core switch
+  timed out' wording) left as-is — non-blocking, and the shared
+  `pollSingBoxComponentAction` wording is approved for the core-switch path.
+- SELF-UPDATE lenient polling: `netshiftSelfUpdate()` starts
+  `component_action_async netshift self_update`; once a `job_id` is returned, the
+  poll `fetchStatus` callback SWALLOWS exec/parse errors and returns a synthetic
+  `{running:true}` (instead of `null`, which the pure poll treats as terminal
+  failure). This prevents the mid-job `/usr/bin/netshift` binary swap from
+  misreporting success as failure; `MAX_POLLS` still bounds it. On success: a
+  warning-style toast then `window.location.reload()` after 1200ms.
+- MOVED core-switch OUT of Diagnostics: removed `handleInstallSingBox` +
+  `singBoxInstall`/`singBoxExtended` from `diagnostic/initController.ts` and the
+  `singBoxInstall` block + props from `renderAvailableActions.ts`, and the
+  `singBoxInstall` slice from BOTH `StoreType` and `diagnostic.store.ts`. Net
+  i18n effect: msgids "Install stable"/"Install extended" were DROPPED (now-dead)
+  and replaced by manager's "Switch to stable"/"Switch to extended"/"Install %s"
+  — so the ru.po diff is NOT purely additive this time (2 removed, ~16 added);
+  that is correct. `renderRotateCcwIcon24` stays imported (still used by Restart).
+- i18n: 16 new ru msgstrs filled in SOURCE `locales/netshift.ru.po`, then
+  `node distribute-locales.js`. "%s" placeholder strings ("Install %s") are
+  single literals (no concat); progress/result toasts concatenate the version
+  OUTSIDE `_()` (`` `${_('NetShift updated, version:')} ${v}` ``). Ran the
+  locales scripts via `node {extract-calls,generate-pot,generate-po ru,
+  distribute-locales}.js`. yarn here was classic 1.22.22 (NOT corepack) so
+  `yarn ci` was safe — verified yarn.lock unchanged + no `.yarn/.yarnrc.yml`.
+- main.js: +756/-… runtime diff (new tab + methods + core-switch removal),
+  second build idempotent (byte-identical), banner + `return baseclass.extend`
+  intact, only `ManagerTab` added to the export block (pure helpers imported by
+  direct path → no leak). `tsc --noEmit` flags ONE pre-existing error in
+  `getNetshiftVersionRow.test.ts` (sing_box_extended optionality) — NOT in CI
+  (yarn ci = format/lint/vitest/build, no tsc), pre-existing, ignore.

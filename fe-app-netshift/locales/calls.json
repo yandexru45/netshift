@@ -80,7 +80,7 @@
     "call": "Available actions",
     "key": "Available actions",
     "places": [
-      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:47"
+      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:43"
     ]
   },
   {
@@ -150,6 +150,15 @@
     ]
   },
   {
+    "call": "Check update",
+    "key": "Check update",
+    "places": [
+      "src/netshift/tabs/manager/cards.ts:143",
+      "src/netshift/tabs/manager/cards.ts:179",
+      "src/netshift/tabs/manager/cards.ts:225"
+    ]
+  },
+  {
     "call": "Checking, please wait",
     "key": "Checking, please wait",
     "places": [
@@ -203,6 +212,13 @@
     ]
   },
   {
+    "call": "Component Manager",
+    "key": "Component Manager",
+    "places": [
+      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/netshift.js:83"
+    ]
+  },
+  {
     "call": "Config File Path",
     "key": "Config File Path",
     "places": [
@@ -213,7 +229,7 @@
     "call": "Configuration for NetShift service",
     "key": "Configuration for NetShift service",
     "places": [
-      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/netshift.js:27"
+      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/netshift.js:30"
     ]
   },
   {
@@ -248,7 +264,7 @@
     "call": "Core switch failed",
     "key": "Core switch failed",
     "places": [
-      "src/netshift/methods/shell/index.ts:157",
+      "src/netshift/methods/shell/index.ts:159",
       "src/netshift/methods/shell/pollSingBoxComponentAction.ts:65"
     ]
   },
@@ -270,7 +286,7 @@
     "call": "Dashboard",
     "key": "Dashboard",
     "places": [
-      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/netshift.js:80"
+      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/netshift.js:98"
     ]
   },
   {
@@ -295,6 +311,13 @@
     ]
   },
   {
+    "call": "Dev",
+    "key": "Dev",
+    "places": [
+      "src/netshift/tabs/manager/cards.ts:101"
+    ]
+  },
+  {
     "call": "DHCP has DNS server",
     "key": "DHCP has DNS server",
     "places": [
@@ -305,14 +328,14 @@
     "call": "Diagnostics",
     "key": "Diagnostics",
     "places": [
-      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/netshift.js:65"
+      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/netshift.js:68"
     ]
   },
   {
     "call": "Disable autostart",
     "key": "Disable autostart",
     "places": [
-      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:83"
+      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:79"
     ]
   },
   {
@@ -474,7 +497,7 @@
     "call": "Enable autostart",
     "key": "Enable autostart",
     "places": [
-      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:93"
+      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:89"
     ]
   },
   {
@@ -683,8 +706,13 @@
       "src/netshift/tabs/diagnostic/initController.ts:267",
       "src/netshift/tabs/diagnostic/initController.ts:304",
       "src/netshift/tabs/diagnostic/initController.ts:308",
-      "src/netshift/tabs/diagnostic/initController.ts:347",
-      "src/netshift/tabs/diagnostic/initController.ts:351"
+      "src/netshift/tabs/manager/initController.ts:122",
+      "src/netshift/tabs/manager/initController.ts:132",
+      "src/netshift/tabs/manager/initController.ts:166",
+      "src/netshift/tabs/manager/initController.ts:197",
+      "src/netshift/tabs/manager/initController.ts:201",
+      "src/netshift/tabs/manager/initController.ts:234",
+      "src/netshift/tabs/manager/initController.ts:238"
     ]
   },
   {
@@ -708,7 +736,7 @@
     "call": "Get global check",
     "key": "Get global check",
     "places": [
-      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:102"
+      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:98"
     ]
   },
   {
@@ -747,17 +775,19 @@
     ]
   },
   {
-    "call": "Install extended",
-    "key": "Install extended",
+    "call": "Install %s",
+    "key": "Install %s",
     "places": [
-      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:129"
+      "src/netshift/tabs/manager/cards.ts:135",
+      "src/netshift/tabs/manager/cards.ts:172",
+      "src/netshift/tabs/manager/cards.ts:218"
     ]
   },
   {
-    "call": "Install stable",
-    "key": "Install stable",
+    "call": "Installed version is newer than release",
+    "key": "Installed version is newer than release",
     "places": [
-      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:129"
+      "src/netshift/tabs/manager/initController.ts:96"
     ]
   },
   {
@@ -1173,7 +1203,22 @@
     "call": "Latest",
     "key": "Latest",
     "places": [
+      "src/netshift/tabs/manager/cards.ts:90",
       "src/netshift/tabs/diagnostic/helpers/getNetshiftVersionRow.ts:48"
+    ]
+  },
+  {
+    "call": "Latest version is installed",
+    "key": "Latest version is installed",
+    "places": [
+      "src/netshift/tabs/manager/initController.ts:103"
+    ]
+  },
+  {
+    "call": "Latest version is unknown",
+    "key": "Latest version is unknown",
+    "places": [
+      "src/netshift/tabs/manager/initController.ts:155"
     ]
   },
   {
@@ -1257,7 +1302,14 @@
     "call": "NetShift Settings",
     "key": "NetShift Settings",
     "places": [
-      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/netshift.js:26"
+      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/netshift.js:29"
+    ]
+  },
+  {
+    "call": "NetShift updated, version:",
+    "key": "NetShift updated, version:",
+    "places": [
+      "src/netshift/tabs/manager/initController.ts:226"
     ]
   },
   {
@@ -1289,6 +1341,16 @@
     ]
   },
   {
+    "call": "Not installed",
+    "key": "Not installed",
+    "places": [
+      "src/netshift/tabs/manager/cards.ts:98",
+      "src/netshift/tabs/manager/cards.ts:196",
+      "src/netshift/tabs/manager/cards.ts:241",
+      "src/netshift/tabs/manager/initController.ts:100"
+    ]
+  },
+  {
     "call": "Not responding",
     "key": "Not responding",
     "places": [
@@ -1301,11 +1363,11 @@
     "call": "Not running",
     "key": "Not running",
     "places": [
-      "src/netshift/tabs/diagnostic/diagnostic.store.ts:59",
-      "src/netshift/tabs/diagnostic/diagnostic.store.ts:67",
-      "src/netshift/tabs/diagnostic/diagnostic.store.ts:75",
-      "src/netshift/tabs/diagnostic/diagnostic.store.ts:83",
-      "src/netshift/tabs/diagnostic/diagnostic.store.ts:91"
+      "src/netshift/tabs/diagnostic/diagnostic.store.ts:56",
+      "src/netshift/tabs/diagnostic/diagnostic.store.ts:64",
+      "src/netshift/tabs/diagnostic/diagnostic.store.ts:72",
+      "src/netshift/tabs/diagnostic/diagnostic.store.ts:80",
+      "src/netshift/tabs/diagnostic/diagnostic.store.ts:88"
     ]
   },
   {
@@ -1347,6 +1409,7 @@
     "call": "Outdated",
     "key": "Outdated",
     "places": [
+      "src/netshift/tabs/manager/cards.ts:94",
       "src/netshift/tabs/diagnostic/helpers/getNetshiftVersionRow.ts:38"
     ]
   },
@@ -1389,11 +1452,11 @@
     "call": "Pending",
     "key": "Pending",
     "places": [
-      "src/netshift/tabs/diagnostic/diagnostic.store.ts:107",
-      "src/netshift/tabs/diagnostic/diagnostic.store.ts:115",
-      "src/netshift/tabs/diagnostic/diagnostic.store.ts:123",
-      "src/netshift/tabs/diagnostic/diagnostic.store.ts:131",
-      "src/netshift/tabs/diagnostic/diagnostic.store.ts:139"
+      "src/netshift/tabs/diagnostic/diagnostic.store.ts:104",
+      "src/netshift/tabs/diagnostic/diagnostic.store.ts:112",
+      "src/netshift/tabs/diagnostic/diagnostic.store.ts:120",
+      "src/netshift/tabs/diagnostic/diagnostic.store.ts:128",
+      "src/netshift/tabs/diagnostic/diagnostic.store.ts:136"
     ]
   },
   {
@@ -1449,7 +1512,7 @@
     "call": "Restart NetShift",
     "key": "Restart NetShift",
     "places": [
-      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:53"
+      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:49"
     ]
   },
   {
@@ -1554,7 +1617,7 @@
     "call": "Sections",
     "key": "Sections",
     "places": [
-      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/netshift.js:36"
+      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/netshift.js:39"
     ]
   },
   {
@@ -1685,6 +1748,13 @@
     ]
   },
   {
+    "call": "Self-update failed",
+    "key": "Self-update failed",
+    "places": [
+      "src/netshift/methods/shell/index.ts:230"
+    ]
+  },
+  {
     "call": "Send upstream DNS queries through a proxy/VPN outbound instead of directly. Bootstrap DNS always stays direct.",
     "key": "Send upstream DNS queries through a proxy/VPN outbound instead of directly. Bootstrap DNS always stays direct.",
     "places": [
@@ -1702,7 +1772,7 @@
     "call": "Settings",
     "key": "Settings",
     "places": [
-      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/netshift.js:49"
+      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/netshift.js:52"
     ]
   },
   {
@@ -1710,7 +1780,7 @@
     "key": "Show sing-box config",
     "places": [
       "src/netshift/tabs/diagnostic/initController.ts:292",
-      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:120"
+      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:116"
     ]
   },
   {
@@ -1731,7 +1801,7 @@
     "call": "Sing-box core changed, version:",
     "key": "Sing-box core changed, version:",
     "places": [
-      "src/netshift/tabs/diagnostic/initController.ts:342"
+      "src/netshift/tabs/manager/initController.ts:190"
     ]
   },
   {
@@ -1816,14 +1886,14 @@
     "call": "Start NetShift",
     "key": "Start NetShift",
     "places": [
-      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:73"
+      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:69"
     ]
   },
   {
     "call": "Stop NetShift",
     "key": "Stop NetShift",
     "places": [
-      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:63"
+      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:59"
     ]
   },
   {
@@ -1855,10 +1925,24 @@
     ]
   },
   {
+    "call": "Switch to extended",
+    "key": "Switch to extended",
+    "places": [
+      "src/netshift/tabs/manager/cards.ts:233"
+    ]
+  },
+  {
+    "call": "Switch to stable",
+    "key": "Switch to stable",
+    "places": [
+      "src/netshift/tabs/manager/cards.ts:188"
+    ]
+  },
+  {
     "call": "Switching sing-box core, this may take a few minutes…",
     "key": "Switching sing-box core, this may take a few minutes…",
     "places": [
-      "src/netshift/tabs/diagnostic/initController.ts:331"
+      "src/netshift/tabs/manager/initController.ts:178"
     ]
   },
   {
@@ -1999,6 +2083,14 @@
       "src/netshift/tabs/diagnostic/initController.ts:42",
       "src/netshift/tabs/diagnostic/initController.ts:43",
       "src/netshift/tabs/diagnostic/initController.ts:44",
+      "src/netshift/tabs/manager/cards.ts:113",
+      "src/netshift/tabs/manager/initController.ts:37",
+      "src/netshift/tabs/manager/initController.ts:38",
+      "src/netshift/tabs/manager/initController.ts:39",
+      "src/netshift/tabs/manager/initController.ts:40",
+      "src/netshift/tabs/manager/initController.ts:41",
+      "src/netshift/tabs/manager/initController.ts:42",
+      "src/netshift/tabs/manager/initController.ts:154",
       "src/netshift/tabs/diagnostic/helpers/getNetshiftVersionRow.ts:7"
     ]
   },
@@ -2007,6 +2099,35 @@
     "key": "Unknown error",
     "places": [
       "src/netshift/api.ts:40"
+    ]
+  },
+  {
+    "call": "Update",
+    "key": "Update",
+    "places": [
+      "src/netshift/tabs/manager/cards.ts:172",
+      "src/netshift/tabs/manager/cards.ts:218"
+    ]
+  },
+  {
+    "call": "Update is available",
+    "key": "Update is available",
+    "places": [
+      "src/netshift/tabs/manager/initController.ts:92"
+    ]
+  },
+  {
+    "call": "Update NetShift",
+    "key": "Update NetShift",
+    "places": [
+      "src/netshift/tabs/manager/cards.ts:136"
+    ]
+  },
+  {
+    "call": "Updating NetShift, this may take a few minutes; the page will reload…",
+    "key": "Updating NetShift, this may take a few minutes; the page will reload…",
+    "places": [
+      "src/netshift/tabs/manager/initController.ts:217"
     ]
   },
   {
@@ -2156,11 +2277,18 @@
     ]
   },
   {
+    "call": "Version",
+    "key": "Version",
+    "places": [
+      "src/netshift/tabs/manager/initController.ts:315"
+    ]
+  },
+  {
     "call": "View logs",
     "key": "View logs",
     "places": [
       "src/netshift/tabs/diagnostic/initController.ts:258",
-      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:111"
+      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:107"
     ]
   },
   {

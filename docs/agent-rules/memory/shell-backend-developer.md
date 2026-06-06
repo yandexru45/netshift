@@ -478,3 +478,72 @@ findings; keep under ~200 lines.
 - shellcheck -S error clean (bin + libs + install.sh); `smoke-tests all` = 81
   passed / 0 failed (unchanged baseline). No new smoke test (separate packaging
   task owns nft/v6 coverage per spec). No sacred constant VALUES changed.
+
+## task-017: Component Manager backend (stock latest, NetShift self-update)
+
+- **Two new component_action() cases** (`updater.sh` ~:1612): `sing_box:
+  check_update_stable) updates_check_sing_box_stable` (SYNC) and
+  `netshift:self_update) updates_self_update_netshift` (async via the existing
+  `component_action_async`). NO dispatcher (bin/netshift) change — both are
+  sub-cases of the already-routed `component_action`; `component_action_async`/
+  `_status` are component-agnostic. NO ACL change.
+- **pkg-manager abstraction re-implemented locally** (updater.sh does NOT source
+  install.sh): `updates_pkg_is_apk` (`command -v apk`), `updates_pkg_install_file`
+  (apk add --allow-untrusted / opkg install, `</dev/null` non-interactive),
+  `updates_pkg_is_installed` (apk/opkg list grep), `updates_pkg_candidate_version`
+  (FEED version). Candidate parse, busybox-safe, NO Oniguruma: opkg `list <pkg>`
+  → `"<name> - <ver>"`, `awk -F' - ' '{print $2}'`; apk `list <pkg>` → first
+  token `<name>-<ver>`, strip `"<pkg>-"` prefix via `${line#"$pkg"-}`.
+- **Stock check `updates_check_sing_box_stable`**: mirrors the extended-check JSON
+  shape. Runs `opkg/apk update` best-effort first (`|| true`). status: candidate
+  empty → `success:false` (feed unreachable, return 1); sing-box absent
+  (`command -v`) → `not_installed`; else compare on LEADING semver `${v%%-*}`
+  (drops `-r1`/`-extended-…`) via `is_min_package_version` (sort -V) →
+  `latest`/`outdated`. NEVER exits. STABLE JSON: `{success,current_version,
+  latest_version,status:"latest"|"outdated"|"not_installed"}`.
+- **NetShift self-update = Variant A** (targeted pkg upgrade, NOT install.sh).
+  `updates_self_update_netshift` (public wrapper) COPIES the
+  `updates_install_sing_box_extended` epilogue EXACTLY: reset UPDATES_HEAL_*,
+  `updates_ensure_connectivity "extended"` (GitHub dir) else restore+fail JSON,
+  run `_updates_self_update_netshift_core >"$out"`, capture rc+json, rm, ALWAYS
+  `updates_restore_after_swap`, re-emit, `return $rc`. Single cleanup path; no
+  trap. Core is NON-interactive, all `local`, NEVER `exit`: idempotent guard
+  (`${installed#v}` == `${latest#v}` → "Already up to date"); minimal
+  `/etc/config/netshift` tmpfs backup; download assets matching pkg-name prefixes
+  (`netshift`,`luci-app-netshift`, RU i18n ONLY if `updates_pkg_is_installed`)
+  filtered to `.ipk`/`.apk` by pkg-mgr via `grep -o 'https://[^"[:space:]]*\.ext'`
+  (mirrors install.sh:269-274, busybox-safe); install core→luci→ru; core-install
+  fail is fatal-to-the-op (success:false + restore config), luci/ru fail is
+  non-critical (warn+continue); defensive config restore if live file empty.
+- **Self-replacement CONFIRMED safe**: the `netshift` pkg overwrites
+  `/usr/bin/netshift` (this very script). busybox ash reads the whole script into
+  memory before pkg_install; the async fork (`( trap '' HUP; "$0" component_action
+  netshift self_update >out; updates_write_finished_job_state ... )`) + the
+  finished-state write complete from memory. The self-update core has ZERO live
+  re-exec after install: NO `updates_restart_netshift`, NO `"$0"`, NO `exec`, NO
+  direct `/usr/bin/netshift` or `/etc/init.d/netshift` call. (Only path that runs
+  the init script is `updates_restore_after_swap`'s `/etc/init.d/netshift start`,
+  which fires ONLY if the heal tore the redirect down, AFTER install completes,
+  as a fresh subprocess that safely loads the on-disk binary.) UI (task-018)
+  reloads the page after success. Verified via `grep` of the core's line range.
+- **New constants** (constants.sh, NO ports/marks): `NETSHIFT_RELEASE_API_URL`
+  (= install.sh REPO / get_system_info :3347 endpoint),
+  `UPDATES_NETSHIFT_DOWNLOAD_DIR=/tmp/netshift/selfupdate`,
+  `UPDATES_NETSHIFT_CONFIG_BACKUP=/tmp/netshift/config.bak`,
+  `UPDATES_NETSHIFT_PKG_CORE/LUCI/I18N_RU`. `get_system_info` UNCHANGED (UI gets
+  versions there; stock check is a separate action — no missing field).
+- **Subshell-piped `while read url` loop can't set parent vars** (task-007
+  variant): `_updates_self_update_download_assets` re-checks the dir
+  (`ls "$dir/netshift"*`) AFTER the loop to decide success, not a flag set inside.
+- **Smoke tests `test_check_update_stable` (alias `stablecheck`, 4 cases) +
+  `test_self_update_netshift` (alias `selfupdate`, 13 assertions)**. Both source
+  the REAL updater.sh + helpers.sh, re-pin paths/constants, stub via markers.
+  `test_check_update_stable` KEY GOTCHA: `command -v sing-box` finds the real
+  `/usr/bin/sing-box`; to test `not_installed` I built an ISOLATED PATH dir of
+  symlinks to just the needed coreutils (NO /usr/bin in PATH) and linked the fake
+  sing-box in/out per scenario. `test_self_update_netshift` overrides
+  `updates_http_get_once` (GitHub JSON) + `updates_download_to_file` in the driver
+  + stubs opkg `install`/`list-installed` (logs installs) + fake `/etc/init.d/
+  netshift` (absolute write+restore). Registered all 5 points (all)/case/usage/
+  compose). Used task-009 `... || true` set -e guard. shellcheck -S error clean;
+  `smoke-tests all` = 101 passed / 0 failed (was 84 baseline; +17 new).

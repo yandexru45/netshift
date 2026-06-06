@@ -230,4 +230,23 @@ export namespace NetShift {
   }
 
   export type GetClashApiGroupLatency = Record<string, number>;
+
+  // Component Manager (task-018) — consumes the STABLE backend contract from
+  // task-017. Status union returned by the sync update-check actions.
+  export type ComponentUpdateStatus =
+    | 'latest'
+    | 'outdated'
+    | 'dev'
+    | 'not_installed';
+
+  // Shape echoed by the sync update-check actions:
+  //   component_action sing_box check_update        (extended)
+  //   component_action sing_box check_update_stable (stock)
+  export interface ComponentCheckUpdateResult {
+    success: boolean;
+    current_version?: string;
+    latest_version?: string;
+    status?: ComponentUpdateStatus;
+    message?: string;
+  }
 }
