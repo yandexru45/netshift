@@ -3601,8 +3601,13 @@ get_system_info() {
 
     netshift_version="$NETSHIFT_VERSION"
 
-    netshift_latest_version=$(curl -m 3 -s https://api.github.com/repos/yandexru45/netshift/releases/latest | grep '"tag_name":' | cut -d'"' -f4)
-    [ -z "$netshift_latest_version" ] && netshift_latest_version="unknown"
+    # On-demand only: get_system_info must do NO network I/O (the UI calls it on
+    # every Manager/Diagnostic mount). The real latest is fetched only by the
+    # on-demand "component_action netshift check_update" action (and by
+    # global_check, the one-shot SSH diagnostic). The key is kept for backward
+    # compatibility (frontend type + global_check jq read it); "unknown" is the
+    # zero-network sentinel the UI already understands.
+    netshift_latest_version="unknown"
 
     if [ -f /www/luci-static/resources/view/netshift/main.js ]; then
         luci_app_version=$(grep 'var NETSHIFT_LUCI_APP_VERSION' /www/luci-static/resources/view/netshift/main.js | cut -d'"' -f2)
@@ -4114,7 +4119,11 @@ global_check() {
     local netshift_version netshift_latest_version luci_app_version sing_box_version openwrt_version device_model sing_box_extended
 
         netshift_version=$(echo "$system_info_json" | jq -r '.netshift_version // "unknown"')
-        netshift_latest_version=$(echo "$system_info_json" | jq -r '.netshift_latest_version // "unknown"')
+        # get_system_info no longer fetches the latest (it does no network I/O).
+        # global_check is a one-shot SSH diagnostic, so fetch the real latest here
+        # itself (shared helper); fall back to "unknown" if GitHub is unreachable.
+        netshift_latest_version=$(updates_netshift_latest_tag)
+        [ -z "$netshift_latest_version" ] && netshift_latest_version="unknown"
         luci_app_version=$(echo "$system_info_json" | jq -r '.luci_app_version // "unknown"')
         sing_box_version=$(echo "$system_info_json" | jq -r '.sing_box_version // "unknown"')
         openwrt_version=$(echo "$system_info_json" | jq -r '.openwrt_version // "unknown"')

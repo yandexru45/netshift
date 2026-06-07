@@ -646,8 +646,64 @@ append findings; keep under ~200 lines.
   generate-po ru,distribute-locales}.js` (generate-po reported 335/339 but 9
   were genuinely new — its count metric differs).
 - yarn classic 1.22.22; ran gate via node_modules/.bin (prettier/eslint/vitest/
-  tsup). yarn.lock unchanged, no .yarn/.yarnrc.yml. NB: working tree already
-  carried UNCOMMITTED task-024 + task-025 changes (showToast, dashboard/diag/
-  manager styles+renders, section.js, netshift.js, #cbi-netshift-section CSS) —
-  so `git diff -- src` is large but only my settings block + the 4 catalogs +
-  main.js belong to task-026. format reported all-unchanged → no new churn.
+   tsup). yarn.lock unchanged, no .yarn/.yarnrc.yml. NB: working tree already
+   carried UNCOMMITTED task-024 + task-025 changes (showToast, dashboard/diag/
+   manager styles+renders, section.js, netshift.js, #cbi-netshift-section CSS) —
+   so `git diff -- src` is large but only my settings block + the 4 catalogs +
+   main.js belong to task-026. format reported all-unchanged → no new churn.
+
+## task-030 — NetShift update check ON-DEMAND (retires C1's systemInfo-refresh)
+
+- REVERSES task-018's C1 decision. task-029 (backend, APPROVED) ADDED a real
+  `component_action netshift check_update` action returning the STANDARD check
+  JSON `{success,current_version,latest_version,status}` (v-normalized
+  server-side, SAME shape as the sing-box cores) AND removed the latest-fetch
+  from `get_system_info` (now returns `netshift_latest_version:"unknown"`). So
+  the NetShift card is now a TRUE peer of the cores: on-demand check writes
+  `managerChecks.netshift`, mount does NO network check.
+- SHELL METHOD: added `netshiftCheckUpdate()` to `methods/shell/index.ts` —
+  copy of `singBoxCheckUpdate` but args `['component_action','netshift',
+  'check_update']`, parsed by the EXISTING `parseComponentCheckUpdate`, returns
+  `NetShift.ComponentCheckUpdateResult`. SYNC path (fast call), timeout 600000.
+  It's a PROPERTY on `NetShiftShellMethods` (not a top-level export) → NO new
+  symbol in the baseclass.extend export block (verified byte-identical to HEAD).
+- runNetshiftCheck (manager/initController.ts): now MIRRORS runSingBoxCheck
+  exactly — call `netshiftCheckUpdate()`, `if(!parsed.success)` error toast +
+  return, `status=parsed.status??null`, `setCheckResult('netshift',status,
+  parsed.latest_version||'')`, `showToast(getCheckToastMessage(status),
+  'success')`, catch→error toast, finally→reset loading. STOPPED calling
+  `fetchSystemInfo()`+`resetCheckResult` as the "check".
+- cards.ts: `netshiftStatus(systemInfo, check)` now RETURNS `check.status`
+  (the on-demand result; null until checked → neutral). KEPT the dev guard
+  (`normalizeCompiledVersion(...)==='dev' → null`). REMOVED the
+  `installed===latest` string compare AND the systemInfo.netshift_latest_version
+  dependency. `netshiftCard` takes the check too; "Install %s" `latest` now
+  comes from `check.latest_version`. `getComponentCards` passes `checks.netshift`
+  to `netshiftCard`. The `check_netshift` kind NOW carries
+  `backendAction:'check_update'` (still a DISTINCT kind so the dispatcher routes
+  it to runNetshiftCheck, never to the sing-box check method).
+- DIAGNOSTIC: NO code change needed. `getNetshiftVersionRow.ts` already treats
+  `netshift_latest_version === 'unknown'` (and `'loading'`) as
+  `!hasActualVersion` → returns the plain neutral row (no Outdated/Latest tag).
+  Since task-029 makes the backend return "unknown", the row auto-degrades to
+  neutral. Mount's `fetchSystemInfo()` is now network-free (backend change), so
+  diagnostic entry triggers no GitHub call. Existing
+  getNetshiftVersionRow.test.ts (passes real versions) stays green unchanged.
+- TESTS: rewrote the 5 NetShift cases in manager/tests/cards.test.js to derive
+  from `managerChecks.netshift` instead of systemInfo: null-status→neutral+
+  check_update; check 'outdated'→self_update + Install <check.latest_version>;
+  'latest'→Latest badge; dev-build stays neutral even with a check 'outdated';
+  systemInfo latest mismatch is IGNORED. 472 tests pass (cards 19).
+- LOCALES: removing the `runNetshiftCheck` body ORPHANED `_('Latest version is
+  unknown')` (no longer referenced anywhere). Ran `node {extract-calls,
+  generate-pot,generate-po ru,distribute-locales}.js`. msgid delta = PURELY the
+  1 removed msgid (calls.json/pot/ru.po) + `#:` line-ref reshuffle + POT header
+  date. fe↔luci pairs byte-identical (diff -q). No new strings added (all toasts
+  reused existing msgids). generate-po reported 340/338 (2 stale retained).
+- main.js: +36/-26 runtime diff = exactly (new method block + netshiftStatus/
+  Card signature change + runNetshiftCheck rewrite). IDEMPOTENT (md5
+  9ce13d2… across 2 builds), banner + `return baseclass.extend({` intact,
+  export block byte-identical to HEAD. yarn classic 1.22.22; ran via
+  node_modules/.bin; yarn.lock unchanged, no .yarn/.yarnrc.yml.
+- FLAG (no browser in env): the neutral→checked card transition + toast were
+  verified by reasoning + the pure cards.test.js, NOT screenshotted.

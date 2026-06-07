@@ -665,3 +665,56 @@ save+`sing-box check` -> cron jobs -> start sing-box -> dnsmasq_configure ->
   PERF note: `dd bs=1 count=12M` to truncate is GLACIAL on armv7 (timed out);
   use `head -c N` instead. Box cleaned to baseline after (apk del sing-box; no
   pkgs/table/binary, internet OK, overlay 40%).
+
+## task-028 (drop v from ipk) + task-029/030 (on-demand NetShift update check) (2026-06-07)
+
+- task-028 DONE+APPROVED+COMMITTED by operator (76ac754): removed the `v`-prepend
+  from Dockerfile-ipk (line 7 `export NETSHIFT_VERSION="v${...}"` -> raw
+  `ENV NETSHIFT_VERSION=${...}`, mirroring apk). Verified: ipk build 0.8.6 ->
+  `netshift_0.8.6-r1_all.ipk`, control `Version: 0.8.6-r1`, stamped
+  `NETSHIFT_VERSION="0.8.6"` (no v anywhere); apk regression ok; install.sh
+  matches by NAME prefix (not version) so unaffected; build.yml version from git
+  tag not the Dockerfile v; smoke 120/0. packaging.md §3 updated. This was the
+  operator's chosen fix for the OWRT24/ipk "falsely outdated" UI symptom.
+- THEN operator pivoted: the REAL fix wanted = make NetShift update check
+  ON-DEMAND (button only), like the sing-box cores, instead of auto-fetching on
+  every UI mount. Root cause: get_system_info did a `curl .../releases/latest`
+  on EVERY call (netshift:3604), and the UI calls get_system_info on mount
+  (manager/initController.ts:382, diagnostic:523) -> entering a tab = a GitHub
+  request.
+- task-029 (backend, APPROVED, smoke 127/0): get_system_info now does ZERO
+  network I/O — `netshift_latest_version="unknown"` constant (KEY KEPT as the
+  sentinel the UI understands). New `updates_check_netshift` worker in updater.sh
+  + `netshift:check_update)` in the component_action() router (~1792, next to
+  netshift:self_update — NO ACL change, component_action already allowed). It
+  reuses the PRE-EXISTING `updates_netshift_latest_tag` + `NETSHIFT_RELEASE_API_URL`
+  (task-017), NORMALIZES a leading `v` on BOTH sides (${x#v}) + `%%-*` semver +
+  the existing `is_min_package_version` -> echoes the SAME JSON as
+  updates_check_sing_box_stable (success/current_version/latest_version/status).
+  NO exit (component_action worker -> echo {json}; return N). global_check now
+  fetches latest ITSELF (one-shot SSH diag, network ok there). dev build
+  (*COMPILED* placeholder) -> status latest. This ALSO fixes the v-compare bug at
+  the backend.
+- task-030 (frontend, APPROVED, 472 tests, main.js idempotent): new
+  NetShiftShellMethods.netshiftCheckUpdate() -> fs.exec ['component_action',
+  'netshift','check_update'], parsed by the EXISTING parseComponentCheckUpdate
+  (same shape as cores). runNetshiftCheck REWRITTEN to mirror runSingBoxCheck —
+  NO LONGER calls fetchSystemInfo as the check (that was the trap: it'd re-read
+  "unknown" forever). cards.ts netshiftStatus now derives from
+  managerChecks.netshift.status (null->neutral until checked); REMOVED the
+  fragile `installed === latest` string compare + systemInfo-latest dependency;
+  KEPT the dev guard. Diagnostic getNetshiftVersionRow already treats unknown
+  latest as neutral -> no code change, no auto-"outdated". Orphaned
+  `'Latest version is unknown'` msgid removed; fe<->luci catalogs byte-identical.
+- PATTERN (on-demand component check, reusable): backend worker via
+  component_action MUST `echo {json}; return N` (NEVER exit — kills dispatcher);
+  JSON keys MUST mirror updates_check_sing_box_stable so the FE
+  parseComponentCheckUpdate works unchanged; FE check fn mirrors runSingBoxCheck
+  and writes managerChecks.<component>; the card derives status from
+  managerChecks (null=neutral), NOT from systemInfo. Canonical regression:
+  installed v0.8.6 vs latest 0.8.6 -> latest (not outdated).
+- INTEGRATION VERIFIED (source-level, no live LuCI): get_system_info no curl;
+  router has netshift:check_update; FE method args
+  ['component_action','netshift','check_update']; runNetshiftCheck has 0
+  fetchSystemInfo calls. All gates green. Ready for manual commit (operator
+  commits; agents never auto-commit).

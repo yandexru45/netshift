@@ -120,13 +120,30 @@ describe('getComponentCards', () => {
     expect(stock.actions[0].text).toBe('Install 1.12.9');
   });
 
-  it('derives an outdated NetShift card from systemInfo latest mismatch', () => {
+  it('is neutral until checked — null managerChecks.netshift status', () => {
+    // task-030: mount does NO network check; managerChecks.netshift.status is
+    // null → no badge, the "Check update" action (no outdated/update button).
+    const cards = getComponentCards(makeSystemInfo(), emptyChecks);
+    const netshift = cards[0];
+
+    expect(netshift.tag).toBeUndefined();
+    expect(netshift.actions[0].kind).toBe('check_netshift');
+    expect(netshift.actions[0].backendAction).toBe('check_update');
+  });
+
+  it('derives an outdated NetShift card from the on-demand check result', () => {
+    // task-030: status comes from managerChecks.netshift (the check result), NOT
+    // from a systemInfo installed-vs-latest string compare. The latest_version
+    // for the "Install %s" text also comes from the check result.
     const cards = getComponentCards(
       makeSystemInfo({
         netshift_version: '1.0.0',
-        netshift_latest_version: '1.1.0',
+        netshift_latest_version: '1.0.0',
       }),
-      emptyChecks,
+      {
+        ...emptyChecks,
+        netshift: { status: 'outdated', latest_version: '1.1.0' },
+      },
     );
     const netshift = cards[0];
 
@@ -136,14 +153,11 @@ describe('getComponentCards', () => {
     expect(netshift.actions[0].text).toBe('Install 1.1.0');
   });
 
-  it('keeps the NetShift card on Check update when versions match', () => {
-    const cards = getComponentCards(
-      makeSystemInfo({
-        netshift_version: '1.1.0',
-        netshift_latest_version: '1.1.0',
-      }),
-      emptyChecks,
-    );
+  it('shows the Latest badge + Check update when the check says latest', () => {
+    const cards = getComponentCards(makeSystemInfo(), {
+      ...emptyChecks,
+      netshift: { status: 'latest', latest_version: '1.0.0' },
+    });
     const netshift = cards[0];
 
     expect(netshift.tag).toEqual({ label: 'Latest', kind: 'success' });
@@ -152,34 +166,25 @@ describe('getComponentCards', () => {
     expect(netshift.actions[0].kind).toBe('check_netshift');
   });
 
-  it('NetShift check action carries NO sing-box backendAction', () => {
-    // C1 regression guard: the NetShift "Check update" must never be a sing-box
-    // check (the backend has no netshift:check_update action). Its action has no
-    // backendAction at all — it triggers a systemInfo refresh in the controller.
-    const cards = getComponentCards(
-      makeSystemInfo({
-        netshift_version: '1.0.0',
-        netshift_latest_version: '1.0.0',
-      }),
-      emptyChecks,
-    );
+  it('NetShift check action carries its own (non-sing-box) backendAction', () => {
+    // The NetShift "Check update" routes to runNetshiftCheck (distinct kind) and
+    // calls `component_action netshift check_update` — NOT a sing-box check
+    // action. Guard against accidentally reusing a sing-box check action.
+    const cards = getComponentCards(makeSystemInfo(), emptyChecks);
     const netshift = cards[0];
 
     expect(netshift.actions[0].kind).toBe('check_netshift');
-    expect(netshift.actions[0].backendAction).toBeUndefined();
-    expect(['check_update', 'check_update_stable']).not.toContain(
+    expect(netshift.actions[0].backendAction).toBe('check_update');
+    expect(['check_update_stable']).not.toContain(
       netshift.actions[0].backendAction,
     );
   });
 
-  it('derives NetShift status purely from systemInfo, ignoring managerChecks', () => {
-    // Even if a (bogus) sing-box-style status leaked into managerChecks.netshift,
-    // the NetShift card must derive its status from systemInfo versions only.
+  it('keeps a dev build neutral even if a check result says outdated', () => {
+    // The dev-build guard: a placeholder/dev install never shows an update
+    // prompt regardless of any check result.
     const cards = getComponentCards(
-      makeSystemInfo({
-        netshift_version: '1.0.0',
-        netshift_latest_version: '1.0.0',
-      }),
+      makeSystemInfo({ netshift_version: 'COMPILED_VERSION' }),
       {
         ...emptyChecks,
         netshift: { status: 'outdated', latest_version: '9.9.9' },
@@ -187,15 +192,18 @@ describe('getComponentCards', () => {
     );
     const netshift = cards[0];
 
-    expect(netshift.tag).toEqual({ label: 'Latest', kind: 'success' });
+    expect(netshift.version).toBe('dev');
+    expect(netshift.tag).toBeUndefined();
     expect(netshift.actions[0].kind).toBe('check_netshift');
   });
 
-  it('treats an unknown NetShift latest as no status (Check update, no badge)', () => {
+  it('ignores systemInfo netshift_latest_version for status (now on-demand)', () => {
+    // task-030: a stale/unknown systemInfo latest must NOT drive the badge — only
+    // the on-demand managerChecks.netshift result does.
     const cards = getComponentCards(
       makeSystemInfo({
         netshift_version: '1.0.0',
-        netshift_latest_version: 'unknown',
+        netshift_latest_version: '9.9.9',
       }),
       emptyChecks,
     );

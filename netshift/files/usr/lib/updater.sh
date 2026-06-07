@@ -1496,6 +1496,65 @@ updates_check_sing_box_stable() {
     return 0
 }
 
+# Checks whether a newer NetShift release is available on GitHub. ON-DEMAND
+# (the "Check for updates" button) — mirrors the sing-box cores so get_system_info
+# never touches the network. SYNC (quick call → component_action path). Graceful
+# on an unreachable/rate-limited API: echoes {"success":false,"message":"..."}
+# and returns non-zero. NEVER exits (runs via component_action → JSON + rc).
+#
+# Output (mirrors updates_check_sing_box_stable):
+#   {"success":true,"current_version":"...","latest_version":"...",
+#    "status":"latest"|"outdated"}
+#
+# v-normalization: a single leading "v" is stripped from BOTH the installed
+# version and the GitHub tag before comparing (task-028 dropped the v from the
+# build, but a v-tagged release would still break a raw compare). The compare is
+# on the leading semver (drop any "-..." suffix) via the same sort -V based
+# is_min_package_version the cores use.
+updates_check_netshift() {
+    local current_version latest cur_norm latest_norm cur_semver latest_semver status
+
+    current_version="$NETSHIFT_VERSION"
+
+    # Dev/unstamped build: the placeholder __COMPILED_VERSION_VARIABLE__ contains
+    # "COMPILED" and is not a real semver. Report it honestly as "latest" (a dev
+    # build is never "outdated"; the UI also guards dev separately) and still fetch
+    # the real latest tag for display.
+    case "$current_version" in
+    *COMPILED*)
+        latest="$(updates_netshift_latest_tag)"
+        if [ -z "$latest" ]; then
+            echo "{\"success\":false,\"message\":\"Could not determine the latest NetShift release (GitHub API unreachable or rate-limited)\"}"
+            return 1
+        fi
+        echo "{\"success\":true,\"current_version\":\"$current_version\",\"latest_version\":\"$latest\",\"status\":\"latest\"}"
+        return 0
+        ;;
+    esac
+
+    latest="$(updates_netshift_latest_tag)"
+    if [ -z "$latest" ]; then
+        echo "{\"success\":false,\"message\":\"Could not determine the latest NetShift release (GitHub API unreachable or rate-limited)\"}"
+        return 1
+    fi
+
+    # Strip a single leading "v" from both sides (no-op if absent), then compare
+    # on the leading semver only.
+    cur_norm="${current_version#v}"
+    latest_norm="${latest#v}"
+    cur_semver="${cur_norm%%-*}"
+    latest_semver="${latest_norm%%-*}"
+
+    if is_min_package_version "$cur_semver" "$latest_semver"; then
+        status="latest"
+    else
+        status="outdated"
+    fi
+
+    echo "{\"success\":true,\"current_version\":\"$current_version\",\"latest_version\":\"$latest\",\"status\":\"$status\"}"
+    return 0
+}
+
 # ── NetShift self-update (Component Manager, task-017) ──────────────
 #
 # Variant A: a targeted package upgrade (download the release .ipk/.apk from
@@ -1729,6 +1788,9 @@ component_action() {
         ;;
     sing_box:check_update_stable)
         updates_check_sing_box_stable
+        ;;
+    netshift:check_update)
+        updates_check_netshift
         ;;
     netshift:self_update)
         updates_self_update_netshift

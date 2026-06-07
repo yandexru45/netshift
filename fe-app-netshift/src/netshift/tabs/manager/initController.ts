@@ -135,32 +135,26 @@ async function runSingBoxCheck(
   }
 }
 
-// NetShift check: the backend has NO netshift:check_update action — NetShift's
-// latest version comes only from get_system_info.netshift_latest_version. So an
-// on-demand NetShift check is a systemInfo REFRESH; the card then re-derives its
-// status from the refreshed installed-vs-latest comparison. We never write a
-// sing-box check result into managerChecks.netshift.
+// NetShift check (task-030): on-demand call to the dedicated
+// `component_action netshift check_update` action, which returns the same
+// {success, current_version, latest_version, status} contract as the sing-box
+// cores (status already v-normalized server-side). We TRUST result.status and
+// write it into managerChecks.netshift — mirroring runSingBoxCheck precisely.
 async function runNetshiftCheck(button: ManagerActionDescriptor) {
   setActionLoading(button.loadingKey, true);
 
   try {
-    await fetchSystemInfo();
-    resetCheckResult('netshift');
+    const parsed = await NetShiftShellMethods.netshiftCheckUpdate();
 
-    const status = store.get().diagnosticsSystemInfo;
-    const installed = normalizeCompiledVersion(status.netshift_version);
-    const latest = status.netshift_latest_version;
-
-    if (!latest || latest === 'loading' || latest === _('unknown')) {
-      showToast(_('Latest version is unknown'), 'success');
-    } else if (installed === 'dev') {
-      showToast(getCheckToastMessage('dev'), 'success');
-    } else {
-      showToast(
-        getCheckToastMessage(installed === latest ? 'latest' : 'outdated'),
-        'success',
-      );
+    if (!parsed.success) {
+      showToast(parsed.message || _('Failed to execute!'), 'error');
+      return;
     }
+
+    const status = parsed.status ?? null;
+
+    setCheckResult('netshift', status, parsed.latest_version || '');
+    showToast(getCheckToastMessage(status), 'success');
   } catch (error) {
     logger.error('[MANAGER]', 'runNetshiftCheck failed', error);
     showToast(_('Failed to execute!'), 'error');

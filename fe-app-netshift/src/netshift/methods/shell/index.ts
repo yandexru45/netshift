@@ -197,6 +197,29 @@ export const NetShiftShellMethods = {
       message: response.stderr || '',
     };
   },
+  // NetShift update check (sync) — task-029/030 contract:
+  //   component_action netshift check_update
+  // → {success, current_version, latest_version, status}. Same shape as the
+  // sing-box cores (parsed by parseComponentCheckUpdate). The status is already
+  // v-normalized server-side, so the caller TRUSTS result.status (no string
+  // compare in TS). Stays on the SYNC component_action path (fast call).
+  netshiftCheckUpdate:
+    async (): Promise<NetShift.ComponentCheckUpdateResult> => {
+      const response = await executeShellCommand({
+        command: '/usr/bin/netshift',
+        args: ['component_action', 'netshift', 'check_update'],
+        timeout: 600000,
+      });
+
+      if (response.stdout) {
+        return parseComponentCheckUpdate(response.stdout);
+      }
+
+      return {
+        success: false,
+        message: response.stderr || '',
+      };
+    },
   // NetShift self-update (async) — STABLE task-017 contract:
   // component_action_async netshift self_update + component_action_status <job>.
   // Reuses the component-agnostic poll. Because the package install swaps

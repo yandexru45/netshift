@@ -3262,6 +3262,139 @@ DRVEOF
 }
 
 # ─────────────────────────────────────────────────────────────────
+# Test: NetShift update check on-demand (task-029)
+# ─────────────────────────────────────────────────────────────────
+# Two parts:
+#  (A) STATIC: get_system_info must do NO network I/O — the GitHub curl is gone
+#      and netshift_latest_version is the constant "unknown".
+#  (B) updates_check_netshift version compare + v-normalization + JSON shape:
+#      source updater.sh, silence logging, OVERRIDE updates_netshift_latest_tag
+#      (the shared tag fetch) + set NETSHIFT_VERSION, run the check. Stub inputs:
+#      STUBNS_INSTALLED = $NETSHIFT_VERSION; STUBNS_TAG = the GitHub latest tag
+#      (empty → unreachable branch).
+test_check_update_netshift() {
+    header "NetShift Update Check — on-demand + v-prefix (task-029)"
+
+    if ! command -v jq > /dev/null 2>&1; then
+        skip "jq not available"
+        return
+    fi
+
+    local bin="${NETSHIFT_SRC}/usr/bin/netshift"
+    local updater="${NETSHIFT_LIB_DIR}/updater.sh"
+    if [ ! -r "$updater" ] || [ ! -r "$bin" ]; then
+        skip "updater.sh / bin not found in ${NETSHIFT_SRC}"
+        return
+    fi
+
+    # ── Part A (static): get_system_info has NO live GitHub curl ────────────────
+    # Extract the get_system_info function body and assert it contains no curl to
+    # the releases API, and that it pins netshift_latest_version="unknown".
+    local fn
+    fn="$(awk '/^get_system_info\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "$bin")"
+    if [ -n "$fn" ] \
+        && ! printf '%s' "$fn" | grep -q 'releases/latest' \
+        && printf '%s' "$fn" | grep -q 'netshift_latest_version="unknown"'; then
+        pass "netshiftcheck-get_system_info-no-network:OK"
+    else
+        fail "netshiftcheck-get_system_info-no-network:FAIL" "$fn"
+    fi
+
+    local work="/tmp/netshift-netshiftcheck-$$"
+    rm -rf "$work"
+    mkdir -p "$work"
+
+    # ── Part B: driver sources updater.sh + helpers.sh, silences logging,
+    # overrides the shared tag fetch + NETSHIFT_VERSION, runs the check.
+    local drv="$work/driver.sh"
+    cat > "$drv" << 'DRVEOF'
+log() { :; }
+echolog() { :; }
+nolog() { :; }
+. "DRV_HELPERS"
+. "DRV_UPDATER"
+NETSHIFT_VERSION="$STUBNS_INSTALLED"
+updates_netshift_latest_tag() { printf '%s' "$STUBNS_TAG"; }
+updates_check_netshift
+DRVEOF
+    sed -i "s|DRV_UPDATER|$updater|g;s|DRV_HELPERS|${NETSHIFT_LIB_DIR}/helpers.sh|g" "$drv"
+
+    local out="$work/out.json"
+    run_netshiftcheck() {
+        ash "$drv" > "$out" 2>/dev/null || true
+    }
+
+    # ── Case 1: installed v0.8.6 vs latest 0.8.6 (no v) → latest (NOT outdated) ──
+    export STUBNS_INSTALLED="v0.8.6"
+    export STUBNS_TAG="0.8.6"
+    run_netshiftcheck
+    if jq -e '.success == true and .status == "latest"
+            and .current_version == "v0.8.6"
+            and .latest_version == "0.8.6"' "$out" > /dev/null 2>&1; then
+        pass "netshiftcheck-vprefix-installed-eq-latest:OK"
+    else
+        fail "netshiftcheck-vprefix-installed-eq-latest:FAIL" "$(cat "$out" 2>/dev/null)"
+    fi
+
+    # ── Case 2: installed 0.8.5 vs latest 0.8.6 → outdated ──────────────────────
+    export STUBNS_INSTALLED="0.8.5"
+    export STUBNS_TAG="0.8.6"
+    run_netshiftcheck
+    if jq -e '.success == true and .status == "outdated"
+            and .current_version == "0.8.5"
+            and .latest_version == "0.8.6"' "$out" > /dev/null 2>&1; then
+        pass "netshiftcheck-older-outdated:OK"
+    else
+        fail "netshiftcheck-older-outdated:FAIL" "$(cat "$out" 2>/dev/null)"
+    fi
+
+    # ── Case 3: installed v0.8.6 vs latest v0.8.6 (both v) → latest ─────────────
+    export STUBNS_INSTALLED="v0.8.6"
+    export STUBNS_TAG="v0.8.6"
+    run_netshiftcheck
+    if jq -e '.success == true and .status == "latest"' "$out" > /dev/null 2>&1; then
+        pass "netshiftcheck-both-vprefix-latest:OK"
+    else
+        fail "netshiftcheck-both-vprefix-latest:FAIL" "$(cat "$out" 2>/dev/null)"
+    fi
+
+    # ── Case 4: JSON shape — keys success/current_version/latest_version/status ─
+    export STUBNS_INSTALLED="0.8.5"
+    export STUBNS_TAG="0.8.6"
+    run_netshiftcheck
+    if jq -e 'has("success") and has("current_version")
+            and has("latest_version") and has("status")' "$out" > /dev/null 2>&1; then
+        pass "netshiftcheck-json-shape:OK"
+    else
+        fail "netshiftcheck-json-shape:FAIL" "$(cat "$out" 2>/dev/null)"
+    fi
+
+    # ── Case 5: tag fetch failure (empty) → success:false ───────────────────────
+    export STUBNS_INSTALLED="0.8.6"
+    export STUBNS_TAG=""
+    run_netshiftcheck
+    if jq -e '.success == false and (.message | length) > 0' "$out" > /dev/null 2>&1; then
+        pass "netshiftcheck-fetch-failure-successfalse:OK"
+    else
+        fail "netshiftcheck-fetch-failure-successfalse:FAIL" "$(cat "$out" 2>/dev/null)"
+    fi
+
+    # ── Case 6: dev/unstamped build (placeholder) → latest (graceful) ───────────
+    export STUBNS_INSTALLED="__COMPILED_VERSION_VARIABLE__"
+    export STUBNS_TAG="0.8.6"
+    run_netshiftcheck
+    if jq -e '.success == true and .status == "latest"
+            and .latest_version == "0.8.6"' "$out" > /dev/null 2>&1; then
+        pass "netshiftcheck-dev-build-graceful:OK"
+    else
+        fail "netshiftcheck-dev-build-graceful:FAIL" "$(cat "$out" 2>/dev/null)"
+    fi
+
+    unset STUBNS_INSTALLED STUBNS_TAG
+    rm -rf "$work"
+}
+
+# ─────────────────────────────────────────────────────────────────
 # Test: NetShift self-update (task-017)
 # ─────────────────────────────────────────────────────────────────
 # Exercises updates_self_update_netshift (public wrapper + private core) through
@@ -3722,6 +3855,7 @@ main() {
             test_global_proxy
             test_check_update_stable
             test_check_update_extended
+            test_check_update_netshift
             test_self_update_netshift
             test_backup_integrity
             ;;
@@ -3741,6 +3875,7 @@ main() {
         globalproxy) test_global_proxy ;;
         stablecheck) test_check_update_stable ;;
         extcheck)    test_check_update_extended ;;
+        netshiftcheck) test_check_update_netshift ;;
         selfupdate)  test_self_update_netshift ;;
         backupguard) test_backup_integrity ;;
         jq)          test_jq_helpers ;;
@@ -3748,7 +3883,7 @@ main() {
         sb)          test_sing_box_config ;;
         *)
             echo "Unknown test: $target"
-            echo "Available: all deps syntax config helpers jq cm sb nft nftv6 diagnostics subscription insecure rejected jobstate selfheal dnsdetour globalproxy stablecheck extcheck selfupdate backupguard"
+            echo "Available: all deps syntax config helpers jq cm sb nft nftv6 diagnostics subscription insecure rejected jobstate selfheal dnsdetour globalproxy stablecheck extcheck netshiftcheck selfupdate backupguard"
             exit 1
             ;;
     esac

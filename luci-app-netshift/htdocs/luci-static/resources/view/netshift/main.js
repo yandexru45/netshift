@@ -1036,6 +1036,26 @@ var NetShiftShellMethods = {
       message: response.stderr || ""
     };
   },
+  // NetShift update check (sync) — task-029/030 contract:
+  //   component_action netshift check_update
+  // → {success, current_version, latest_version, status}. Same shape as the
+  // sing-box cores (parsed by parseComponentCheckUpdate). The status is already
+  // v-normalized server-side, so the caller TRUSTS result.status (no string
+  // compare in TS). Stays on the SYNC component_action path (fast call).
+  netshiftCheckUpdate: async () => {
+    const response = await executeShellCommand({
+      command: "/usr/bin/netshift",
+      args: ["component_action", "netshift", "check_update"],
+      timeout: 6e5
+    });
+    if (response.stdout) {
+      return parseComponentCheckUpdate(response.stdout);
+    }
+    return {
+      success: false,
+      message: response.stderr || ""
+    };
+  },
   // NetShift self-update (async) — STABLE task-017 contract:
   // component_action_async netshift self_update + component_action_status <job>.
   // Reuses the component-agnostic poll. Because the package install swaps
@@ -5126,33 +5146,30 @@ function getCheckTag(status) {
   }
   return { label: _("Dev"), kind: "neutral" };
 }
-function netshiftStatus(systemInfo) {
+function netshiftStatus(systemInfo, check) {
   const installed = normalizeCompiledVersion(systemInfo.netshift_version);
-  const latest = systemInfo.netshift_latest_version;
-  if (!latest || latest === "loading" || latest === _("unknown")) {
-    return null;
-  }
   if (installed === "dev") {
     return null;
   }
-  return installed === latest ? "latest" : "outdated";
+  return check.status;
 }
-function netshiftCard(systemInfo) {
-  const status = netshiftStatus(systemInfo);
-  const latest = systemInfo.netshift_latest_version;
+function netshiftCard(systemInfo, check) {
+  const status = netshiftStatus(systemInfo, check);
+  const latest = check.latest_version;
   const actions = [];
   if (status === "outdated") {
     actions.push({
       loadingKey: "netshiftUpdate",
       kind: "self_update",
-      text: latest && latest !== "loading" ? _("Install %s").replace("%s", latest) : _("Update NetShift"),
+      text: latest ? _("Install %s").replace("%s", latest) : _("Update NetShift"),
       backendAction: "self_update"
     });
   } else {
     actions.push({
       loadingKey: "netshiftCheck",
       kind: "check_netshift",
-      text: _("Check update")
+      text: _("Check update"),
+      backendAction: "check_update"
     });
   }
   return {
@@ -5242,7 +5259,7 @@ function singBoxExtendedCard(systemInfo, check) {
 }
 function getComponentCards(systemInfo, checks) {
   return [
-    netshiftCard(systemInfo),
+    netshiftCard(systemInfo, checks.netshift),
     singBoxStockCard(systemInfo, checks.sing_box_stock),
     singBoxExtendedCard(systemInfo, checks.sing_box_extended)
   ];
@@ -5342,21 +5359,14 @@ async function runSingBoxCheck2(component, button) {
 async function runNetshiftCheck(button) {
   setActionLoading(button.loadingKey, true);
   try {
-    await fetchSystemInfo2();
-    resetCheckResult("netshift");
-    const status = store.get().diagnosticsSystemInfo;
-    const installed = normalizeCompiledVersion(status.netshift_version);
-    const latest = status.netshift_latest_version;
-    if (!latest || latest === "loading" || latest === _("unknown")) {
-      showToast(_("Latest version is unknown"), "success");
-    } else if (installed === "dev") {
-      showToast(getCheckToastMessage("dev"), "success");
-    } else {
-      showToast(
-        getCheckToastMessage(installed === latest ? "latest" : "outdated"),
-        "success"
-      );
+    const parsed = await NetShiftShellMethods.netshiftCheckUpdate();
+    if (!parsed.success) {
+      showToast(parsed.message || _("Failed to execute!"), "error");
+      return;
     }
+    const status = parsed.status ?? null;
+    setCheckResult("netshift", status, parsed.latest_version || "");
+    showToast(getCheckToastMessage(status), "success");
   } catch (error) {
     logger.error("[MANAGER]", "runNetshiftCheck failed", error);
     showToast(_("Failed to execute!"), "error");

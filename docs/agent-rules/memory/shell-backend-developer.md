@@ -777,3 +777,52 @@ findings; keep under ~200 lines.
   piped-while subshell counter quirk). Registered all 5 points (all)/case alias/
   usage line/docker-compose comment). shellcheck -S error clean (bin+libs+
   install.sh); `smoke-tests all` = 120 passed / 0 failed (110 baseline + 10 new).
+
+## task-029: NetShift latest-version check on-demand (stop auto-fetch in get_system_info)
+
+- Root cause: `get_system_info` (bin/netshift) did `curl -m 3 ... releases/latest`
+  on EVERY call, and the UI calls it on Manager/Diagnostic mount → a GitHub hit
+  on every page load. Cores do it right via on-demand `component_action`.
+- Fix 1 (get_system_info): REMOVED the curl + the `[ -z ] && unknown` line;
+  replaced with the constant `netshift_latest_version="unknown"`. The KEY stays
+  (frontend type + global_check jq read it; "unknown" is the zero-network
+  sentinel the UI understands). Function now does ZERO network I/O.
+- Fix 2 (new worker `updates_check_netshift`, updater.sh, right after
+  `updates_check_sing_box_stable`): SYNC component_action worker, NEVER exits
+  (echo JSON; return N). Reused the EXISTING shared helper
+  `updates_netshift_latest_tag` (already there from task-017: `updates_http_get_once
+  "$NETSHIFT_RELEASE_API_URL"` then `grep '"tag_name":' | head -n1 | cut -d'"' -f4`)
+  — did NOT add a new helper or a new curl. Empty tag → `{"success":false,
+  "message":"..."}` return 1 (mirrors stable "feed unreachable"). v-normalization:
+  `cur_norm="${current_version#v}"; latest_norm="${latest#v}"` then leading-semver
+  `${x%%-*}`, compared via `is_min_package_version` (sort -V `>=`) → latest/outdated.
+  JSON shape IDENTICAL to `updates_check_sing_box_stable`
+  (`success/current_version/latest_version/status`) so frontend
+  `parseComponentCheckUpdate` is unchanged.
+- DEV-BUILD decision: if `$NETSHIFT_VERSION` is the unstamped placeholder
+  (`*COMPILED*` — it's `__COMPILED_VERSION_VARIABLE__`), report `status:"latest"`
+  (a dev build is never "outdated"; UI also guards dev separately). It STILL
+  fetches the real tag for display, and STILL returns success:false on an
+  unreachable feed (honest failure even for dev).
+- Router: added `netshift:check_update) updates_check_netshift ;;` next to the
+  existing `netshift:self_update` in `component_action()`. NO ACL change
+  (component_action is wholesale exec-allowed); NO new top-level command.
+- Fix 3 (global_check, bin/netshift): since get_system_info no longer carries the
+  real latest, global_check now calls `updates_netshift_latest_tag` itself
+  (`netshift_latest_version=$(updates_netshift_latest_tag); [ -z ] && ="unknown"`)
+  so the `🕳️ NetShift: <ver> (latest: <latest>)` line still shows the true latest.
+  A network call here is fine — one-shot SSH diagnostic, not the UI mount path.
+  updater.sh is sourced by bin/netshift so the helper is in scope.
+- Constant: `NETSHIFT_RELEASE_API_URL` already existed (task-017) — reused, none
+  added.
+- Smoke: NEW top-level `test_check_update_netshift` (alias `netshiftcheck`, 7
+  assertions). Part A = STATIC awk-extract of `get_system_info` body + assert NO
+  `releases/latest` and `netshift_latest_version="unknown"` present. Part B =
+  driver sources updater.sh+helpers.sh, silences log, OVERRIDES
+  `updates_netshift_latest_tag` + sets `NETSHIFT_VERSION` (mirrors the
+  test_check_update_extended stub style), runs the worker. Cases: v0.8.6 vs 0.8.6
+  →latest; 0.8.5 vs 0.8.6→outdated; v0.8.6 vs v0.8.6→latest; JSON-shape has-keys;
+  empty tag→success:false; placeholder dev-build→latest. Registered all 5 points
+  (all)/case alias/usage line/docker-compose comment). shellcheck -S error clean
+  (bin+libs+install.sh); `smoke-tests all` = 127 passed / 0 failed (120 baseline
+  + 7 new). NO sacred constant/port/mark/path/ACL/frontend change.
