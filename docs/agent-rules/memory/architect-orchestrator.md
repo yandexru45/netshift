@@ -408,3 +408,52 @@ save+`sing-box check` -> cron jobs -> start sing-box -> dnsmasq_configure ->
   smoke all = 101 passed / 0 failed (84 -> +17 new: stablecheck x4 + selfupdate
   x13). Both layers code-reviewer APPROVED (backend 1st pass; frontend after a
   C1/S1 fix round). Ready for human commit.
+
+## Multi-URL subscriptions (task-022 backend + task-023 frontend, 2026-06-07)
+
+- FEATURE: a subscription section may now list MULTIPLE `subscription_url` feeds
+  (UI "+"/add-another-field). Backend downloads each independently, merges all
+  usable feeds' nodes into ONE node set driving the section's single
+  selector/urltest group. Operator decisions (all "recommended"): UCI list +
+  NO migration (lone legacy `option` reads as 1-element list via
+  config_list_foreach, same as community_lists); per-URL hashed cache key
+  `${section}.<md5(url)>.{json,url,rejected,user_agent}`; best-effort merge
+  (section available if >=1 feed yields outbounds, unavailable only if ALL fail);
+  reuse the existing facade global tag-dedup (-2/-3) for same-named nodes across
+  feeds; keyword filter + country grouping apply to the MERGED set.
+- BACKEND approach that WON: build ONE merged subscription JSON (concat each
+  usable cache's proxy `.outbounds[]` via --slurpfile, no Oniguruma) and call
+  `sing_box_cf_add_subscription_outbounds` ONCE on it. This reuses the facade's
+  keyword-filter + global dedup + per-batch `sing-box check` bisection +
+  selector/urltest/country-group builder UNCHANGED. The facade RESETS its public
+  globals (SUBSCRIPTION_OUTBOUND_TAGS_JSON etc.) every call, so a per-feed loop
+  would force hand-accumulation of the tag union — strictly more code, same
+  result. Always-hash (even single URL) + `reap_legacy_subscription_cache_files`
+  for the stale bare `${section}.<ext>` files = uniform path, no single-vs-multi
+  branch bug. Rejected-hash kept PER-URL so one bad feed can't poison another.
+- FRONTEND: trivial — `subscription_url` form.Value -> form.DynamicList modelled
+  byte-for-byte on `remote_domain_lists` (per-row main.validateUrl, rmempty=true);
+  types.ts string->string[]; locales actualized (fe<->luci byte-identical, ru
+  filled). NOTHING in the FE reads subscription_url back, so the TS type is erased
+  at runtime -> `yarn build` produces NO main.js diff (correct, not a missed
+  rebuild). FE code-reviewer APPROVED first pass.
+- GATES: shellcheck (error) clean; smoke `all` = 110 passed / 0 failed (was 101;
+  +9 net from the new mu-case1..6 subscription assertions — see M1 below for the
+  counter quirk); vitest 471 passed; tsup build idempotent, main.js no diff; no
+  yarn pollution. Backend APPROVED WITH CONDITIONS (the sole condition = run full
+  smoke `all`, which I did = the §4 whole-chain check). Frontend APPROVED.
+- LANDMINE (verifying FE lint myself): the repo `yarn lint` script is
+  `eslint src --ext .ts,.tsx` — SCOPED TO src/. Running a bare `eslint .` from
+  fe-app-netshift lints the ROOT locale scripts (distribute-locales.js,
+  extract-calls.js, generate-po.js/pot.js) which have pre-existing no-undef
+  (console/process) errors and are NOT in the gate scope and NOT touched by FE
+  tasks. Always verify FE lint with `eslint src --ext .ts,.tsx --max-warnings=0`,
+  never `eslint .` — the latter is a false-alarm generator.
+- M1 (smoke harness, confirmed by reviewer): the `subscription` category parses
+  `mu-*`/token results in a `sh "$x" | while read; do pass/fail; done` PIPE, so
+  pass/fail run in a SUBSHELL and DON'T propagate to summary()'s PASS/FAIL globals
+  -> the per-✓ marks are truth, but a `:FAIL` token prints red WITHOUT failing the
+  suite count. Pre-existing project-wide convention (cm/sb/jobstate/selfheal/...),
+  NOT a task-022 defect. When a smoke category uses this pattern, trust the ✓/✗
+  marks, not just the "Results: N passed" line; a real gating test needs
+  `done < tmpfile`.

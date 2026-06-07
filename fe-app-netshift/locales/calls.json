@@ -35,6 +35,13 @@
     ]
   },
   {
+    "call": "Add one or more subscription URLs to fetch proxy configurations from. All feeds are downloaded and merged.",
+    "key": "Add one or more subscription URLs to fetch proxy configurations from. All feeds are downloaded and merged.",
+    "places": [
+      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:92"
+    ]
+  },
+  {
     "call": "Additional marking rules found",
     "key": "Additional marking rules found",
     "places": [
@@ -603,13 +610,6 @@
     "key": "Enter subnets in CIDR notation (e.g. 103.21.244.0/22) or single IP addresses",
     "places": [
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:612"
-    ]
-  },
-  {
-    "call": "Enter the subscription URL to fetch proxy configurations from your provider",
-    "key": "Enter the subscription URL to fetch proxy configurations from your provider",
-    "places": [
-      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:92"
     ]
   },
   {
@@ -1919,8 +1919,8 @@
     ]
   },
   {
-    "call": "Subscription URL",
-    "key": "Subscription URL",
+    "call": "Subscription URLs",
+    "key": "Subscription URLs",
     "places": [
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:91"
     ]

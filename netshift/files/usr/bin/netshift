@@ -117,9 +117,10 @@ section_has_configured_outbound() {
             [ -n "$outbound_json" ] && return 0
             ;;
         subscription)
-            local subscription_url
-            config_get subscription_url "$section" "subscription_url"
-            [ -n "$subscription_url" ] && return 0
+            # subscription_url is now a UCI list (a lone legacy option reads as a
+            # 1-element list). The section has a configured outbound if at least
+            # one URL is present.
+            [ -n "$(get_subscription_urls_for_section "$section")" ] && return 0
             ;;
         esac
         ;;
@@ -149,22 +150,41 @@ has_outbound_section() {
     return $section_exists
 }
 
+# Stable, filesystem-safe subkey for a subscription URL within a section. A
+# section may now list MULTIPLE subscription_url entries; each feed keeps its
+# own independent download/UA/rejected/json cache keyed by this hash so the
+# feeds never collide and one bad feed cannot poison another. md5sum is
+# busybox-safe and the URL bytes are opaque user text (never parsed here).
+get_subscription_url_hash() {
+    local url="$1"
+
+    printf '%s' "$url" | md5sum 2>/dev/null | awk '{print $1}'
+}
+
+# Subscription cache-path builders. The optional second argument is the per-URL
+# hash (see get_subscription_url_hash): when present the path is keyed
+# "${section}.<urlhash>.<ext>"; when absent it falls back to the legacy bare
+# "${section}.<ext>" path (still used by migrate_subscription_cache_from_tmp and
+# the legacy-cleanup reaper). Multi-URL feeds always pass a hash.
 get_subscription_json_path() {
     local section="$1"
+    local urlhash="$2"
 
-    echo "$SUBSCRIPTION_CACHE_FOLDER/${section}.json"
+    echo "$SUBSCRIPTION_CACHE_FOLDER/${section}${urlhash:+.$urlhash}.json"
 }
 
 get_subscription_url_cache_path() {
     local section="$1"
+    local urlhash="$2"
 
-    echo "$SUBSCRIPTION_CACHE_FOLDER/${section}.url"
+    echo "$SUBSCRIPTION_CACHE_FOLDER/${section}${urlhash:+.$urlhash}.url"
 }
 
 get_subscription_rejected_cache_path() {
     local section="$1"
+    local urlhash="$2"
 
-    echo "$SUBSCRIPTION_CACHE_FOLDER/${section}.rejected"
+    echo "$SUBSCRIPTION_CACHE_FOLDER/${section}${urlhash:+.$urlhash}.rejected"
 }
 
 # Path of the cached "winning" User-Agent for a subscription source: the first
@@ -172,8 +192,50 @@ get_subscription_rejected_cache_path() {
 # refresh so we don't re-probe the whole whitelist every time.
 get_subscription_user_agent_cache_path() {
     local section="$1"
+    local urlhash="$2"
 
-    echo "$SUBSCRIPTION_CACHE_FOLDER/${section}.user_agent"
+    echo "$SUBSCRIPTION_CACHE_FOLDER/${section}${urlhash:+.$urlhash}.user_agent"
+}
+
+# Collect a section's subscription_url entries (a UCI list, but a lone legacy
+# `option subscription_url` reads as a 1-element list exactly like
+# community_lists) into the newline-delimited global SUBSCRIPTION_URLS_COLLECTED.
+# URLs are opaque user text and may contain shell-special chars, so they are
+# accumulated newline-delimited (URLs cannot contain a newline) and consumers
+# read them with `while IFS= read -r`, never via word-splitting.
+_collect_subscription_url_handler() {
+    local url="$1"
+
+    [ -n "$url" ] || return 0
+    if [ -z "$SUBSCRIPTION_URLS_COLLECTED" ]; then
+        SUBSCRIPTION_URLS_COLLECTED="$url"
+    else
+        SUBSCRIPTION_URLS_COLLECTED="$SUBSCRIPTION_URLS_COLLECTED
+$url"
+    fi
+}
+
+get_subscription_urls_for_section() {
+    local section="$1"
+
+    SUBSCRIPTION_URLS_COLLECTED=""
+    config_list_foreach "$section" "subscription_url" _collect_subscription_url_handler
+    printf '%s' "$SUBSCRIPTION_URLS_COLLECTED"
+}
+
+# Remove any stale legacy bare-"${section}.<ext>" cache files left over from
+# before per-URL hashing. We now ALWAYS hash (uniform code path), so a bare file
+# is never read again; reaping it keeps the cache dir from accumulating orphans
+# and prevents subscription_cache_is_usable ever picking up a stale bare body.
+reap_legacy_subscription_cache_files() {
+    local section="$1"
+
+    rm -f \
+        "$(get_subscription_json_path "$section")" \
+        "$(get_subscription_url_cache_path "$section")" \
+        "$(get_subscription_rejected_cache_path "$section")" \
+        "$(get_subscription_user_agent_cache_path "$section")" \
+        2>/dev/null
 }
 
 ensure_subscription_cache_dir() {
@@ -206,22 +268,40 @@ ensure_subscription_cache_dir() {
 }
 
 migrate_subscription_cache_from_tmp() {
-    local src_json src_url dst_json dst_url
+    local src_json src_url src_section src_url_value dst_url dst_json dst_url_cache urlhash
 
     [ -d "$TMP_SUBSCRIPTION_FOLDER" ] || return 0
     ensure_subscription_cache_dir || return 0
 
+    # Legacy tmp caches are bare-keyed "<section>.json" (one feed per section).
+    # We now always hash per URL, so migrate each usable tmp body to the hashed
+    # destination of the URL it belongs to: prefer the URL recorded in the tmp
+    # "<section>.url" sidecar, else fall back to the section's first configured
+    # subscription_url. This keeps a legacy single-feed section working across an
+    # upgrade without an immediate re-download.
     for src_json in "$TMP_SUBSCRIPTION_FOLDER"/*.json; do
         [ -e "$src_json" ] || continue
+        src_section="$(basename "${src_json%.json}")"
         src_url="${src_json%.json}.url"
-        dst_json="$(get_subscription_json_path "$(basename "${src_json%.json}")")"
-        dst_url="$(get_subscription_url_cache_path "$(basename "${src_json%.json}")")"
 
-        if [ ! -e "$dst_json" ] && subscription_cache_is_usable "$src_json"; then
+        subscription_cache_is_usable "$src_json" || continue
+
+        src_url_value="$(cat "$src_url" 2>/dev/null)"
+        if [ -z "$src_url_value" ]; then
+            src_url_value="$(get_subscription_urls_for_section "$src_section" | head -n 1)"
+        fi
+        [ -n "$src_url_value" ] || continue
+
+        urlhash="$(get_subscription_url_hash "$src_url_value")"
+        [ -n "$urlhash" ] || continue
+        dst_json="$(get_subscription_json_path "$src_section" "$urlhash")"
+        dst_url_cache="$(get_subscription_url_cache_path "$src_section" "$urlhash")"
+
+        if [ ! -e "$dst_json" ]; then
             cp "$src_json" "$dst_json" 2>/dev/null
-            [ -f "$src_url" ] && cp "$src_url" "$dst_url" 2>/dev/null
-            chmod 600 "$dst_json" "$dst_url" 2>/dev/null
-            log "Migrated subscription cache for section '$(basename "${src_json%.json}")' to persistent storage" "info"
+            printf '%s' "$src_url_value" > "$dst_url_cache" 2>/dev/null
+            chmod 600 "$dst_json" "$dst_url_cache" 2>/dev/null
+            log "Migrated subscription cache for section '$src_section' to per-URL persistent storage" "info"
         fi
     done
 }
@@ -229,38 +309,49 @@ migrate_subscription_cache_from_tmp() {
 mark_subscription_outbound_unavailable() {
     local section="$1"
     local keyword_filter_active="${2:-0}"
-    local subscription_json_path rejected_cache_path rejected_hash
+    local url urlhash subscription_json_path rejected_cache_path rejected_hash
 
     case " $SUBSCRIPTION_UNAVAILABLE_SECTIONS " in
     *" $section "*) ;;
     *) SUBSCRIPTION_UNAVAILABLE_SECTIONS="$SUBSCRIPTION_UNAVAILABLE_SECTIONS $section" ;;
     esac
 
-    subscription_json_path="$(get_subscription_json_path "$section")"
-    rejected_cache_path="$(get_subscription_rejected_cache_path "$section")"
-
     if [ "$keyword_filter_active" -eq 1 ]; then
         # The empty result came from the user's keyword filter, not from a bad
-        # feed: the body itself may be perfectly valid. Recording its hash here
-        # would poison the cache and wedge future downloads (return 14 loop), and
-        # would also survive the user loosening the filter. So never write the
-        # rejected-hash for this case, and proactively clear any stale one so a
-        # body poisoned by an earlier empty-filter run self-heals on this pass.
-        rm -f "$rejected_cache_path"
-        log "Subscription keyword filter for section '$section' removed all nodes; matching traffic for this section will be rejected until the filter is loosened or a matching node appears (the feed itself is not rejected)" "warn"
+        # feed: the bodies themselves may be perfectly valid. Recording their
+        # hashes here would poison the per-URL caches and wedge future downloads
+        # (return 14 loop), and would survive the user loosening the filter. So
+        # never write the rejected-hash for this case, and proactively clear any
+        # stale per-URL rejected hash so a feed poisoned by an earlier
+        # empty-filter run self-heals on this pass.
+        get_subscription_urls_for_section "$section" | while IFS= read -r url; do
+            [ -n "$url" ] || continue
+            urlhash="$(get_subscription_url_hash "$url")"
+            rm -f "$(get_subscription_rejected_cache_path "$section" "$urlhash")"
+        done
+        log "Subscription keyword filter for section '$section' removed all nodes; matching traffic for this section will be rejected until the filter is loosened or a matching node appears (the feeds themselves are not rejected)" "warn"
         subscription_startup_blocked=1
         return 0
     fi
 
     log "Subscription cache for section '$section' is unavailable; matching traffic for this section will be rejected until refresh succeeds" "warn"
-    # A structurally valid subscription can still contain no sing-box usable
-    # proxy outbounds. Remember its hash so the retry worker does not persist,
-    # restart and reject exactly the same unusable feed in a flash-writing loop.
-    rejected_hash="$(md5sum "$subscription_json_path" 2>/dev/null | awk '{print $1}')"
-    if [ -n "$rejected_hash" ] && [ "$(cat "$rejected_cache_path" 2>/dev/null)" != "$rejected_hash" ]; then
-        printf '%s' "$rejected_hash" > "${rejected_cache_path}.tmp.$$" && mv "${rejected_cache_path}.tmp.$$" "$rejected_cache_path"
-        chmod 600 "$rejected_cache_path" 2>/dev/null
-    fi
+    # A structurally valid subscription feed can still contain no sing-box usable
+    # proxy outbounds (e.g. all statically-unsupported). Remember each usable
+    # cached feed's hash PER-URL so the retry worker does not persist, restart
+    # and reject exactly the same unusable feed in a flash-writing loop; keeping
+    # this per-URL means one bad feed cannot poison another feed's retry state.
+    get_subscription_urls_for_section "$section" | while IFS= read -r url; do
+        [ -n "$url" ] || continue
+        urlhash="$(get_subscription_url_hash "$url")"
+        subscription_json_path="$(get_subscription_json_path "$section" "$urlhash")"
+        rejected_cache_path="$(get_subscription_rejected_cache_path "$section" "$urlhash")"
+        [ -s "$subscription_json_path" ] || continue
+        rejected_hash="$(md5sum "$subscription_json_path" 2>/dev/null | awk '{print $1}')"
+        if [ -n "$rejected_hash" ] && [ "$(cat "$rejected_cache_path" 2>/dev/null)" != "$rejected_hash" ]; then
+            printf '%s' "$rejected_hash" > "${rejected_cache_path}.tmp.$$" && mv "${rejected_cache_path}.tmp.$$" "$rejected_cache_path"
+            chmod 600 "$rejected_cache_path" 2>/dev/null
+        fi
+    done
     subscription_startup_blocked=1
 }
 
@@ -297,7 +388,7 @@ get_subscription_download_proxy_address() {
     fi
 
     if [ "$download_lists_via_proxy_section" = "$section" ]; then
-        if subscription_cache_is_usable "$(get_subscription_json_path "$section")"; then
+        if section_has_usable_subscription_cache "$section"; then
             log "Updating subscription for section '$section' through its currently active cached proxy" "info"
             echo "$(get_service_proxy_address 2>/dev/null || echo '')"
             return 0
@@ -311,7 +402,7 @@ get_subscription_download_proxy_address() {
     config_get selected_connection_type "$download_lists_via_proxy_section" "connection_type"
     config_get selected_proxy_config_type "$download_lists_via_proxy_section" "proxy_config_type"
     if [ "$selected_connection_type" = "proxy" ] && [ "$selected_proxy_config_type" = "subscription" ] && \
-        ! subscription_cache_is_usable "$(get_subscription_json_path "$download_lists_via_proxy_section")"; then
+        ! section_has_usable_subscription_cache "$download_lists_via_proxy_section"; then
         log "Selected download proxy section '$download_lists_via_proxy_section' has no usable subscription cache; using direct mode for recovery of '$section'" "warn"
         return 0
     fi
@@ -356,6 +447,31 @@ subscription_cache_is_usable() {
     return 0
 }
 
+# True (0) if ANY of the section's per-URL subscription caches is usable. Used
+# wherever a single-feed "section has a working cache" decision is needed (e.g.
+# download-proxy selection); the section is considered to have a usable cache as
+# soon as one feed does. URLs are written to a temp file and read with a plain
+# `while read` (NOT a pipe) so the `found` flag survives in this shell.
+section_has_usable_subscription_cache() {
+    local section="$1"
+    local url urlhash found urls_tmp
+
+    found=1
+    urls_tmp="$(mktemp "${TMPDIR:-/tmp}/netshift-sub-urls.XXXXXX")" || return 1
+    get_subscription_urls_for_section "$section" > "$urls_tmp"
+    while IFS= read -r url || [ -n "$url" ]; do
+        [ -n "$url" ] || continue
+        urlhash="$(get_subscription_url_hash "$url")"
+        if subscription_cache_is_usable "$(get_subscription_json_path "$section" "$urlhash")"; then
+            found=0
+            break
+        fi
+    done < "$urls_tmp"
+    rm -f "$urls_tmp"
+
+    return "$found"
+}
+
 wait_for_subscription_connectivity() {
     local section="$1"
     local subscription_url="$2"
@@ -385,6 +501,9 @@ download_subscription_into_cache() {
     local subscription_json_path="$3"
     local subscription_url_cache_path="$4"
     local service_proxy_address="$5"
+    # Optional per-URL hash subkey: keys the UA and rejected caches so each feed
+    # in a multi-URL section keeps independent state. Empty = legacy bare paths.
+    local urlhash="$6"
     local tmpfile persist_tmpfile url_tmpfile rejected_cache_path tmp_hash rejected_hash validation_reason file_size fallback_tmp
     local configured_user_agent user_agent_cache_path cached_user_agent candidates_file
     local effective_user_agent download_ok winning_user_agent ua_tmpfile
@@ -407,7 +526,7 @@ download_subscription_into_cache() {
     # client User-Agent, so when none is configured we probe a whitelist of
     # well-known clients and keep the first that yields valid outbounds. The
     # previously successful UA (cached) is tried first to avoid re-probing.
-    user_agent_cache_path="$(get_subscription_user_agent_cache_path "$section")"
+    user_agent_cache_path="$(get_subscription_user_agent_cache_path "$section" "$urlhash")"
     configured_user_agent="$(uci -q get "netshift.${section}.subscription_user_agent" 2>/dev/null)"
     cached_user_agent="$(cat "$user_agent_cache_path" 2>/dev/null)"
     candidates_file="${tmpfile}.ua"
@@ -482,7 +601,7 @@ download_subscription_into_cache() {
         fi
     fi
 
-    rejected_cache_path="$(get_subscription_rejected_cache_path "$section")"
+    rejected_cache_path="$(get_subscription_rejected_cache_path "$section" "$urlhash")"
     tmp_hash="$(md5sum "$tmpfile" 2>/dev/null | awk '{print $1}')"
     rejected_hash="$(cat "$rejected_cache_path" 2>/dev/null)"
     if [ -n "$tmp_hash" ] && [ "$tmp_hash" = "$rejected_hash" ]; then
@@ -529,8 +648,10 @@ download_subscription_into_cache() {
 
 prepare_subscription_cache_for_startup() {
     local section="$1"
-    local connection_type proxy_config_type subscription_url subscription_json_path subscription_url_cache_path
-    local cached_subscription_url service_proxy_address had_usable_cache cache_needs_refresh
+    local connection_type proxy_config_type urls_tmp url urlhash
+    local subscription_json_path subscription_url_cache_path cached_subscription_url
+    local service_proxy_address had_usable_cache cache_needs_refresh
+    local _download_lists_via_proxy section_any_usable url_count
 
     config_get connection_type "$section" "connection_type"
     [ "$connection_type" = "proxy" ] || return 0
@@ -538,59 +659,83 @@ prepare_subscription_cache_for_startup() {
     config_get proxy_config_type "$section" "proxy_config_type"
     [ "$proxy_config_type" = "subscription" ] || return 0
 
-    config_get subscription_url "$section" "subscription_url"
-    if [ -z "$subscription_url" ]; then
+    ensure_subscription_cache_dir || true
+    migrate_subscription_cache_from_tmp
+    # Reap any stale legacy bare-"${section}.<ext>" cache so it can never be read
+    # again (we always hash now).
+    reap_legacy_subscription_cache_files "$section"
+
+    urls_tmp="$(mktemp "${TMPDIR:-/tmp}/netshift-startup-urls.XXXXXX")" || {
+        log "Failed to create temporary URL list for section '$section'" "error"
+        return 0
+    }
+    get_subscription_urls_for_section "$section" > "$urls_tmp"
+    url_count=0
+    while IFS= read -r url || [ -n "$url" ]; do
+        [ -n "$url" ] && url_count=$((url_count + 1))
+    done < "$urls_tmp"
+
+    if [ "$url_count" -eq 0 ]; then
+        rm -f "$urls_tmp"
         log "Subscription URL is not set for section '$section'. Aborted." "fatal"
         exit 1
     fi
 
-    subscription_json_path="$(get_subscription_json_path "$section")"
-    subscription_url_cache_path="$(get_subscription_url_cache_path "$section")"
-    cached_subscription_url=""
-    had_usable_cache=0
-    cache_needs_refresh=0
-
-    ensure_subscription_cache_dir || true
-    migrate_subscription_cache_from_tmp
-
-    if subscription_cache_is_usable "$subscription_json_path"; then
-        had_usable_cache=1
-    else
-        rm -f "$subscription_json_path"
-    fi
-
-    if [ -f "$subscription_url_cache_path" ]; then
-        cached_subscription_url="$(cat "$subscription_url_cache_path" 2> /dev/null)"
-    fi
-
-    if [ "$had_usable_cache" -eq 0 ] || [ "$cached_subscription_url" != "$subscription_url" ]; then
-        cache_needs_refresh=1
-    fi
-
-    if [ "$cache_needs_refresh" -eq 0 ]; then
-        return 0
-    fi
-
-    # Bootstrap subscription directly: sing-box (and its service proxy) is not
-    # running yet at this stage, so proxy-based bootstrap would deadlock here.
-    service_proxy_address=""
-    local _download_lists_via_proxy
     config_get_bool _download_lists_via_proxy "settings" "download_lists_via_proxy" 0
     if [ "$_download_lists_via_proxy" -eq 1 ]; then
         log "download_lists_via_proxy is set, but sing-box is not running yet during startup. Bootstrapping subscription for section '$section' over a direct connection" "info"
     fi
 
-    if wait_for_subscription_connectivity "$section" "$subscription_url" "$service_proxy_address" 2 2 5; then
-        if download_subscription_into_cache \
-            "$section" "$subscription_url" "$subscription_json_path" "$subscription_url_cache_path" "$service_proxy_address"; then
-            return 0
-        fi
-    fi
+    # Best-effort: each URL is downloaded independently; a single dead feed must
+    # not abort the others. The section is "available" if at least one feed has
+    # a usable cache after this pass.
+    section_any_usable=0
+    while IFS= read -r url || [ -n "$url" ]; do
+        [ -n "$url" ] || continue
+        urlhash="$(get_subscription_url_hash "$url")"
+        subscription_json_path="$(get_subscription_json_path "$section" "$urlhash")"
+        subscription_url_cache_path="$(get_subscription_url_cache_path "$section" "$urlhash")"
 
-    if [ "$had_usable_cache" -eq 1 ]; then
-        log "Keeping cached subscription for section '$section' until a fresh download succeeds" "warn"
-    else
-        log "No usable subscription cache for section '$section'; startup will continue with a temporary blocked outbound until subscription becomes reachable" "warn"
+        had_usable_cache=0
+        if subscription_cache_is_usable "$subscription_json_path"; then
+            had_usable_cache=1
+        else
+            rm -f "$subscription_json_path"
+        fi
+
+        cached_subscription_url=""
+        [ -f "$subscription_url_cache_path" ] && cached_subscription_url="$(cat "$subscription_url_cache_path" 2>/dev/null)"
+
+        cache_needs_refresh=0
+        if [ "$had_usable_cache" -eq 0 ] || [ "$cached_subscription_url" != "$url" ]; then
+            cache_needs_refresh=1
+        fi
+
+        if [ "$cache_needs_refresh" -eq 0 ]; then
+            section_any_usable=1
+            continue
+        fi
+
+        # Bootstrap directly: sing-box (and its service proxy) is not running yet.
+        service_proxy_address=""
+        if wait_for_subscription_connectivity "$section" "$url" "$service_proxy_address" 2 2 5 &&
+            download_subscription_into_cache \
+                "$section" "$url" "$subscription_json_path" "$subscription_url_cache_path" "$service_proxy_address" "$urlhash"; then
+            section_any_usable=1
+            continue
+        fi
+
+        if [ "$had_usable_cache" -eq 1 ]; then
+            log "Keeping cached subscription feed for section '$section' (url=$(redact_url_for_log "$url")) until a fresh download succeeds" "warn"
+            section_any_usable=1
+        else
+            log "Subscription feed for section '$section' (url=$(redact_url_for_log "$url")) is not reachable and has no usable cache yet" "warn"
+        fi
+    done < "$urls_tmp"
+    rm -f "$urls_tmp"
+
+    if [ "$section_any_usable" -eq 0 ]; then
+        log "No usable subscription cache for any feed of section '$section'; startup will continue with a temporary blocked outbound until a subscription becomes reachable" "warn"
         subscription_startup_blocked=1
     fi
 
@@ -1401,8 +1546,9 @@ subscription_update() {
 
     _update_subscription_for_section() {
         local section="$1"
-        local connection_type proxy_config_type subscription_url subscription_json_path
+        local connection_type proxy_config_type url urlhash subscription_json_path
         local subscription_url_cache_path service_proxy_address update_result outbounds_count
+        local urls_tmp url_count section_changed feed_usable_count feed_failed_count
 
         config_get connection_type "$section" "connection_type"
         if [ "$connection_type" != "proxy" ]; then
@@ -1415,85 +1561,108 @@ subscription_update() {
             return
         fi
 
-        config_get subscription_url "$section" "subscription_url"
-        if [ -z "$subscription_url" ]; then
-            echolog "❌ Subscription URL not set for section '$section'"
-            failed_sections=$((failed_sections + 1))
-            return
-        fi
-
         mkdir -p "$TMP_SUBSCRIPTION_FOLDER"
         if ! ensure_subscription_cache_dir; then
             echolog "❌ Subscription cache directory is unavailable for section '$section'"
             failed_sections=$((failed_sections + 1))
             return
         fi
-        subscription_json_path="$(get_subscription_json_path "$section")"
-        subscription_url_cache_path="$(get_subscription_url_cache_path "$section")"
+        reap_legacy_subscription_cache_files "$section"
 
-        echolog "📥 Updating subscription for section '$section'..."
+        urls_tmp="$(mktemp "${TMPDIR:-/tmp}/netshift-refresh-urls.XXXXXX")" || {
+            echolog "❌ Failed to enumerate subscription URLs for section '$section'"
+            failed_sections=$((failed_sections + 1))
+            return
+        }
+        get_subscription_urls_for_section "$section" > "$urls_tmp"
+        url_count=0
+        while IFS= read -r url || [ -n "$url" ]; do
+            [ -n "$url" ] && url_count=$((url_count + 1))
+        done < "$urls_tmp"
 
-        service_proxy_address="$(get_subscription_download_proxy_address "$section" "runtime" || echo '')"
-        if [ -n "$service_proxy_address" ]; then
-            log "Updating subscription for section '$section' via service proxy $service_proxy_address" "info"
-        else
-            log "Updating subscription for section '$section' directly" "info"
-        fi
-
-        if ! wait_for_subscription_connectivity "$section" "$subscription_url" "$service_proxy_address" 6 5 5; then
-            echolog "❌ Subscription source is not reachable for section '$section'"
+        if [ "$url_count" -eq 0 ]; then
+            rm -f "$urls_tmp"
+            echolog "❌ Subscription URL not set for section '$section'"
             failed_sections=$((failed_sections + 1))
             return
         fi
 
-        download_subscription_into_cache \
-            "$section" "$subscription_url" "$subscription_json_path" "$subscription_url_cache_path" "$service_proxy_address"
-        update_result=$?
+        echolog "📥 Updating subscription for section '$section' ($url_count feed(s))..."
 
-        case "$update_result" in
-        0)
+        # Best-effort per-feed download. The section is "changed" (→ restart) if
+        # ANY feed changed; the section "failed" only if ALL feeds failed AND none
+        # has a usable cache. One dead feed never aborts the others.
+        section_changed=0
+        feed_usable_count=0
+        feed_failed_count=0
+        while IFS= read -r url || [ -n "$url" ]; do
+            [ -n "$url" ] || continue
+            urlhash="$(get_subscription_url_hash "$url")"
+            subscription_json_path="$(get_subscription_json_path "$section" "$urlhash")"
+            subscription_url_cache_path="$(get_subscription_url_cache_path "$section" "$urlhash")"
+
+            service_proxy_address="$(get_subscription_download_proxy_address "$section" "runtime" || echo '')"
+            if [ -n "$service_proxy_address" ]; then
+                log "Updating subscription feed for section '$section' (url=$(redact_url_for_log "$url")) via service proxy $service_proxy_address" "info"
+            else
+                log "Updating subscription feed for section '$section' (url=$(redact_url_for_log "$url")) directly" "info"
+            fi
+
+            if ! wait_for_subscription_connectivity "$section" "$url" "$service_proxy_address" 6 5 5; then
+                echolog "⚠️ Subscription feed not reachable for section '$section': url=$(redact_url_for_log "$url")"
+                feed_failed_count=$((feed_failed_count + 1))
+                subscription_cache_is_usable "$subscription_json_path" && feed_usable_count=$((feed_usable_count + 1))
+                continue
+            fi
+
+            download_subscription_into_cache \
+                "$section" "$url" "$subscription_json_path" "$subscription_url_cache_path" "$service_proxy_address" "$urlhash"
+            update_result=$?
+
+            case "$update_result" in
+            0)
+                section_changed=1
+                feed_usable_count=$((feed_usable_count + 1))
+                outbounds_count=$(jq -r '[.outbounds[] | select(
+                    .type != "selector" and
+                    .type != "urltest" and
+                    .type != "direct" and
+                    .type != "dns" and
+                    .type != "block"
+                )] | length' "$subscription_json_path" 2>/dev/null)
+                echolog "✅ Subscription feed updated for section '$section': $outbounds_count outbounds (url=$(redact_url_for_log "$url"))"
+                ;;
+            2)
+                feed_usable_count=$((feed_usable_count + 1))
+                echolog "ℹ️ Subscription feed for section '$section' is unchanged (url=$(redact_url_for_log "$url"))"
+                ;;
+            *)
+                feed_failed_count=$((feed_failed_count + 1))
+                # A previously cached body for this feed still counts as usable.
+                subscription_cache_is_usable "$subscription_json_path" && feed_usable_count=$((feed_usable_count + 1))
+                echolog "⚠️ Subscription feed failed for section '$section' (rc=$update_result): url=$(redact_url_for_log "$url")"
+                ;;
+            esac
+        done < "$urls_tmp"
+        rm -f "$urls_tmp"
+
+        if [ "$section_changed" -eq 1 ]; then
             updated_sections=$((updated_sections + 1))
-            outbounds_count=$(jq -r '[.outbounds[] | select(
-                .type != "selector" and
-                .type != "urltest" and
-                .type != "direct" and
-                .type != "dns" and
-                .type != "block"
-            )] | length' "$subscription_json_path" 2>/dev/null)
-
-            echolog "✅ Subscription updated for section '$section': $outbounds_count outbounds"
-            ;;
-        2)
-            echolog "ℹ️ Subscription for section '$section' is unchanged"
+            if [ "$feed_failed_count" -gt 0 ]; then
+                echolog "✅ Subscription updated for section '$section' ($feed_failed_count feed(s) failed and kept their previous cache)"
+            else
+                echolog "✅ Subscription updated for section '$section'"
+            fi
             return
-            ;;
-        10)
-            echolog "❌ Failed to prepare subscription cache for section '$section'"
-            ;;
-        11)
-            echolog "❌ Failed to create temporary subscription download file for section '$section'"
-            ;;
-        12)
-            echolog "❌ Failed to download subscription body for section '$section'"
-            ;;
-        13)
-            echolog "❌ Downloaded subscription for section '$section' is invalid"
-            ;;
-        14)
-            echolog "❌ Downloaded subscription for section '$section' is unchanged and still has no usable outbounds"
-            ;;
-        15)
-            echolog "❌ Failed to persist subscription cache for section '$section'"
-            ;;
-        *)
-            echolog "❌ Failed to update subscription for section '$section': internal error rc=$update_result"
-            ;;
-        esac
+        fi
 
-        if [ "$update_result" -ne 0 ]; then
+        if [ "$feed_usable_count" -eq 0 ]; then
+            echolog "❌ Failed to update any subscription feed for section '$section'"
             failed_sections=$((failed_sections + 1))
             return
         fi
+
+        echolog "ℹ️ Subscription for section '$section' is unchanged"
     }
     config_foreach _update_subscription_for_section "section"
 
@@ -1762,14 +1931,15 @@ configure_outbound_handler() {
             ;;
         subscription)
             log "Detected proxy configuration type: subscription" "debug"
-            local subscription_url subscription_json_path urltest_tag selector_tag \
+            local subscription_urls_tmp subscription_url subscription_url_count urltest_tag selector_tag \
                 urltest_outbounds selector_outbounds urltest_check_interval urltest_tolerance \
                 urltest_testing_url subscription_group_by_countries subscription_group_by_countries_raw \
                 subscription_outbound_tags_json service_proxy_address subscription_ready \
                 subscription_filter_include_keywords_json subscription_filter_exclude_keywords_json \
-                subscription_keyword_filter_active
+                subscription_keyword_filter_active urlhash subscription_json_path subscription_url_cache_path \
+                cached_subscription_url should_download had_usable_cache merged_json_path merged_node_count \
+                usable_feed_count feed_node_count merged_tmp
 
-            config_get subscription_url "$section" "subscription_url"
             config_get urltest_check_interval "$section" "urltest_check_interval" "3m"
             config_get urltest_tolerance "$section" "urltest_tolerance" 50
             config_get urltest_testing_url "$section" "urltest_testing_url" "https://www.gstatic.com/generate_204"
@@ -1797,62 +1967,138 @@ configure_outbound_handler() {
                 log "Subscription keyword filter enabled for section '$section': include=$subscription_filter_include_keywords_json, exclude=$subscription_filter_exclude_keywords_json" "debug"
             fi
 
-            if [ -z "$subscription_url" ]; then
+            mkdir -p "$TMP_SUBSCRIPTION_FOLDER"
+            ensure_subscription_cache_dir || true
+            migrate_subscription_cache_from_tmp
+            # Always hash per URL; reap any stale legacy bare-"${section}.<ext>".
+            reap_legacy_subscription_cache_files "$section"
+
+            subscription_urls_tmp="$(mktemp "${TMPDIR:-/tmp}/netshift-cfg-urls.XXXXXX")" || {
+                log "Failed to enumerate subscription URLs for section '$section'. Aborted." "fatal"
+                exit 1
+            }
+            get_subscription_urls_for_section "$section" > "$subscription_urls_tmp"
+            subscription_url_count=0
+            while IFS= read -r subscription_url || [ -n "$subscription_url" ]; do
+                [ -n "$subscription_url" ] && subscription_url_count=$((subscription_url_count + 1))
+            done < "$subscription_urls_tmp"
+
+            if [ "$subscription_url_count" -eq 0 ]; then
+                rm -f "$subscription_urls_tmp"
                 log "Subscription URL is not set. Aborted." "fatal"
                 exit 1
             fi
 
-            mkdir -p "$TMP_SUBSCRIPTION_FOLDER"
-            subscription_json_path="$(get_subscription_json_path "$section")"
-            local subscription_url_cache_path cached_subscription_url should_download had_usable_cache
-            subscription_url_cache_path="$(get_subscription_url_cache_path "$section")"
-            should_download=0
-            had_usable_cache=0
+            log "Section '$section' has $subscription_url_count subscription feed(s)" "debug"
 
-            if subscription_cache_is_usable "$subscription_json_path"; then
-                had_usable_cache=1
-            else
-                rm -f "$subscription_json_path"
-                should_download=1
-            fi
+            # ── Per-feed download (best-effort) ─────────────────────────────
+            # Each URL is downloaded/validated/normalized into its own per-URL
+            # cache. One dead/empty feed must NOT abort the others.
+            while IFS= read -r subscription_url || [ -n "$subscription_url" ]; do
+                [ -n "$subscription_url" ] || continue
+                urlhash="$(get_subscription_url_hash "$subscription_url")"
+                subscription_json_path="$(get_subscription_json_path "$section" "$urlhash")"
+                subscription_url_cache_path="$(get_subscription_url_cache_path "$section" "$urlhash")"
+                should_download=0
+                had_usable_cache=0
 
-            if [ -f "$subscription_url_cache_path" ]; then
-                cached_subscription_url="$(cat "$subscription_url_cache_path" 2>/dev/null)"
-            else
-                cached_subscription_url=""
-            fi
-
-            if [ "$cached_subscription_url" != "$subscription_url" ]; then
-                if [ -n "$cached_subscription_url" ]; then
-                    log "Subscription URL changed for section '$section'" "warn"
-                fi
-                if [ "$had_usable_cache" -eq 0 ]; then
-                    should_download=1
+                if subscription_cache_is_usable "$subscription_json_path"; then
+                    had_usable_cache=1
                 else
-                    log "Using cached subscription for section '$section' until a fresh download succeeds" "warn"
+                    rm -f "$subscription_json_path"
+                    should_download=1
                 fi
-            fi
 
-            if [ "$should_download" -eq 1 ]; then
-                log "Downloading subscription for section '$section'"
-                # Config generation runs before sing-box is started. Never use
-                # its local download proxy here; runtime refresh will use it.
-                service_proxy_address="$(get_subscription_download_proxy_address "$section" "bootstrap" 2>/dev/null || echo '')"
+                if [ -f "$subscription_url_cache_path" ]; then
+                    cached_subscription_url="$(cat "$subscription_url_cache_path" 2>/dev/null)"
+                else
+                    cached_subscription_url=""
+                fi
 
-                if ! wait_for_subscription_connectivity "$section" "$subscription_url" "$service_proxy_address" 1 0 5 ||
-                    ! download_subscription_into_cache \
-                        "$section" "$subscription_url" "$subscription_json_path" "$subscription_url_cache_path" "$service_proxy_address"; then
-                    if [ "$had_usable_cache" -eq 1 ]; then
-                        log "Failed to refresh subscription for section '$section', continuing with cached data" "warn"
+                if [ "$cached_subscription_url" != "$subscription_url" ]; then
+                    if [ "$had_usable_cache" -eq 0 ]; then
+                        should_download=1
                     else
-                        log "Failed to download subscription for section '$section'; using a temporary blocked outbound" "warn"
+                        log "Using cached subscription feed for section '$section' (url=$(redact_url_for_log "$subscription_url")) until a fresh download succeeds" "warn"
                     fi
                 fi
-            fi
+
+                if [ "$should_download" -eq 1 ]; then
+                    log "Downloading subscription feed for section '$section' (url=$(redact_url_for_log "$subscription_url"))"
+                    # Config generation runs before sing-box is started. Never
+                    # use its local download proxy here; runtime refresh will.
+                    service_proxy_address="$(get_subscription_download_proxy_address "$section" "bootstrap" 2>/dev/null || echo '')"
+
+                    if ! wait_for_subscription_connectivity "$section" "$subscription_url" "$service_proxy_address" 1 0 5 ||
+                        ! download_subscription_into_cache \
+                            "$section" "$subscription_url" "$subscription_json_path" "$subscription_url_cache_path" "$service_proxy_address" "$urlhash"; then
+                        if [ "$had_usable_cache" -eq 1 ]; then
+                            log "Failed to refresh subscription feed for section '$section' (url=$(redact_url_for_log "$subscription_url")), continuing with cached data" "warn"
+                        else
+                            log "Failed to download subscription feed for section '$section' (url=$(redact_url_for_log "$subscription_url"))" "warn"
+                        fi
+                    fi
+                fi
+            done < "$subscription_urls_tmp"
+
+            # ── Merge all usable per-URL caches into one JSON ───────────────
+            # Concatenate the proxy .outbounds[] of every usable feed into a
+            # single { "outbounds": [...] } temp file, then run the existing
+            # facade ONCE so its keyword filter + global tag-dedup (auto -2/-3
+            # for same-named nodes across feeds) + per-batch sing-box check
+            # bisection + the country-group/selector builder all operate over
+            # the MERGED union, exactly as for a single feed.
+            mkdir -p "$TMP_SUBSCRIPTION_MERGE_FOLDER"
+            merged_json_path="$(mktemp "$TMP_SUBSCRIPTION_MERGE_FOLDER/${section}.merged.XXXXXX")" || {
+                rm -f "$subscription_urls_tmp"
+                log "Failed to create merged subscription file for section '$section'. Aborted." "fatal"
+                exit 1
+            }
+            printf '%s' '{"outbounds":[]}' > "$merged_json_path"
+            usable_feed_count=0
+            while IFS= read -r subscription_url || [ -n "$subscription_url" ]; do
+                [ -n "$subscription_url" ] || continue
+                urlhash="$(get_subscription_url_hash "$subscription_url")"
+                subscription_json_path="$(get_subscription_json_path "$section" "$urlhash")"
+                subscription_cache_is_usable "$subscription_json_path" || {
+                    log "Subscription feed for section '$section' has no usable cache; skipping (url=$(redact_url_for_log "$subscription_url"))" "warn"
+                    continue
+                }
+
+                feed_node_count="$(jq -r '[.outbounds[]? | select(
+                    .type != "selector" and .type != "urltest" and
+                    .type != "direct" and .type != "dns" and .type != "block"
+                )] | length' "$subscription_json_path" 2>/dev/null)"
+                [ -n "$feed_node_count" ] || feed_node_count=0
+
+                # Append this feed's proxy outbounds onto the merged set. No
+                # Oniguruma: pure array concat with --slurpfile.
+                merged_tmp="${merged_json_path}.tmp.$$"
+                if jq -c --slurpfile feed "$subscription_json_path" '
+                    .outbounds += [ $feed[0].outbounds[]? | select(
+                        .type != "selector" and .type != "urltest" and
+                        .type != "direct" and .type != "dns" and .type != "block"
+                    ) ]
+                ' "$merged_json_path" > "$merged_tmp" 2>/dev/null && [ -s "$merged_tmp" ]; then
+                    mv "$merged_tmp" "$merged_json_path"
+                    usable_feed_count=$((usable_feed_count + 1))
+                    log "Subscription feed for section '$section' contributed $feed_node_count node(s) (url=$(redact_url_for_log "$subscription_url"))" "info"
+                else
+                    rm -f "$merged_tmp"
+                    log "Failed to merge subscription feed for section '$section' (url=$(redact_url_for_log "$subscription_url"))" "warn"
+                fi
+            done < "$subscription_urls_tmp"
+            rm -f "$subscription_urls_tmp"
+
+            merged_node_count="$(jq -r '.outbounds | length' "$merged_json_path" 2>/dev/null)"
+            [ -n "$merged_node_count" ] || merged_node_count=0
+            log "Subscription for section '$section': merged $merged_node_count node(s) from $usable_feed_count usable feed(s)" "info"
 
             subscription_ready=0
-            if subscription_cache_is_usable "$subscription_json_path"; then
-                if sing_box_cf_add_subscription_outbounds "$config" "$section" "$subscription_json_path" \
+            # A merged file with >=1 proxy outbound is a real subscription set.
+            if [ "$usable_feed_count" -gt 0 ] && [ "$merged_node_count" -gt 0 ]; then
+                chmod 600 "$merged_json_path" 2>/dev/null
+                if sing_box_cf_add_subscription_outbounds "$config" "$section" "$merged_json_path" \
                     "$subscription_filter_include_keywords_json" "$subscription_filter_exclude_keywords_json" > /dev/null; then
                     if [ -n "$SUBSCRIPTION_OUTBOUND_TAGS" ]; then
                         config="$SING_BOX_CF_LAST_CONFIG"
@@ -1860,6 +2106,7 @@ configure_outbound_handler() {
                     fi
                 fi
             fi
+            rm -f "$merged_json_path"
 
             if [ "$subscription_ready" -eq 0 ]; then
                 # When the keyword filter empties the set, the precise cause is

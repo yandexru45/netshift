@@ -7,8 +7,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: NETSHIFT\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-06-06 00:53+0300\n"
-"PO-Revision-Date: 2026-06-06 00:53+0300\n"
+"POT-Creation-Date: 2026-06-07 10:23+0300\n"
+"PO-Revision-Date: 2026-06-07 10:23+0300\n"
 "Last-Translator: yandexru45\n"
 "Language-Team: none\n"
 "Language: ru\n"
@@ -31,6 +31,9 @@ msgstr "✘ Остановлен"
 
 msgid "Active Connections"
 msgstr "Активные соединения"
+
+msgid "Add one or more subscription URLs to fetch proxy configurations from. All feeds are downloaded and merged."
+msgstr "Добавьте один или несколько URL подписок для получения конфигураций прокси. Все источники загружаются и объединяются."
 
 msgid "Additional marking rules found"
 msgstr "Найдены дополнительные правила маркировки"
@@ -268,9 +271,6 @@ msgstr "Введите доменные имена без протоколов, 
 
 msgid "Enter subnets in CIDR notation (e.g. 103.21.244.0/22) or single IP addresses"
 msgstr "Введите подсети в нотации CIDR (например, 103.21.244.0/22) или отдельные IP-адреса"
-
-msgid "Enter the subscription URL to fetch proxy configurations from your provider"
-msgstr "Введите URL подписки для получения конфигураций прокси от вашего провайдера"
 
 msgid "Every 1 minute"
 msgstr "Каждую минуту"
@@ -815,8 +815,8 @@ msgstr "Подписка"
 msgid "Subscription Update Interval"
 msgstr "Интервал обновления подписки"
 
-msgid "Subscription URL"
-msgstr "URL подписки"
+msgid "Subscription URLs"
+msgstr "URL подписок"
 
 msgid "Successfully copied!"
 msgstr "Успешно скопировано!"

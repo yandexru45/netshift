@@ -651,3 +651,81 @@ findings; keep under ~200 lines.
   Registered all 5 points (all)/case alias/usage line/docker-compose comment).
   shellcheck -S error clean; `smoke-tests all` = 110 passed / 0 failed (104
   baseline + 6 new); UTF-8/LF intact. Additive, NO runtime-contract change.
+
+## task-022: multiple subscription_url feeds per section (merge pipeline)
+
+- **subscription_url is now a UCI list.** Back-compat verified: a lone legacy
+  `option subscription_url` is read by `config_list_foreach` as a 1-element list
+  (same as community_lists) — NO migration code. New collector
+  `get_subscription_urls_for_section` resets global `SUBSCRIPTION_URLS_COLLECTED`,
+  runs `config_list_foreach "$section" "subscription_url" _collect_..._handler`,
+  prints newline-delimited URLs. URLs are opaque user text → ALWAYS
+  newline-delimited + `while IFS= read -r` from a temp file, NEVER word-split.
+- **Per-URL cache keying = ALWAYS hash (recommendation ii).** `get_subscription_url_hash`
+  = `printf '%s' "$url" | md5sum | awk '{print $1}'`. The 4 cache-path builders
+  gained an OPTIONAL 2nd arg `urlhash`: `${section}${urlhash:+.$urlhash}.<ext>`
+  — present = hashed `${section}.<hash>.<ext>`, absent = legacy bare path (kept
+  only for the tmp-migration source + the reaper). New
+  `reap_legacy_subscription_cache_files "$section"` rm's the 4 bare files; called
+  at the top of startup/refresh/config-gen so a stale bare body is never read.
+  `subscription_cache_is_usable` derives rejected via `${json%.json}.rejected`
+  which maps correctly onto the hashed path (no change needed there).
+- **download_subscription_into_cache gained a 6th positional `urlhash`** used for
+  the UA + rejected cache paths (json/url paths are already passed in as $3/$4).
+- **Merge-file approach (primary, chosen — NOT the per-feed-loop fallback).** In
+  the config-gen `subscription)` branch: (1) per-feed best-effort download loop
+  (one dead feed never aborts others); (2) concat every `subscription_cache_is_usable`
+  feed's PROXY `.outbounds[]` into one temp `{"outbounds":[...]}` under
+  `TMP_SUBSCRIPTION_MERGE_FOLDER` (new constant) via
+  `jq -c --slurpfile feed '... .outbounds += [ $feed[0].outbounds[]? | select(not selector/urltest/direct/dns/block) ]'`
+  (NO Oniguruma — pure array concat); (3) call
+  `sing_box_cf_add_subscription_outbounds` ONCE on the merged file. WHY merge-file:
+  the facade RESETS its public globals every call (`:757-760`) AND seeds the
+  dedup `used`-set from tags already in `$config`, so a single call over the
+  union reuses the keyword filter + GLOBAL tag-dedup (auto `-1`/`-2`…) + per-batch
+  `sing-box check` bisection + the country-group/selector builder UNCHANGED. The
+  per-feed-loop fallback would force me to re-accumulate SUBSCRIPTION_OUTBOUND_TAGS_JSON
+  by hand (facade resets it each call) — strictly more code for the same result.
+- **Dedup suffix is `-1` then `-2`** (facade loops `range(1; ...)` →
+  `$base + "-" + n`), so two same-named nodes become `X` and `X-1` (NOT `X-2`).
+  Assert base + any `startswith("X-")`, not a specific number.
+- **Best-effort semantics:** section "available" iff merged set has ≥1 proxy
+  (`usable_feed_count>0 && merged_node_count>0`); else
+  `mark_subscription_outbound_unavailable "$section" "$kw_filter_active"` as
+  before. Startup/refresh: section "changed"→restart if ANY feed changed (rc 0);
+  section "failed" only if NO feed usable AND none changed. Per-feed rc 2
+  (unchanged) counts as usable, not failed.
+- **mark_subscription_outbound_unavailable is now per-URL** (memory landmine:
+  keep rejected-hash PER-URL so one bad feed can't poison another). It iterates
+  the section's URLs: keyword-filter case → `rm` each per-URL `.rejected`
+  (self-heal); genuine case → write each usable cached feed's md5 to its per-URL
+  `.rejected`. The section-level unavailable LIST + `subscription_startup_blocked`
+  stay section-level.
+- **section_has_usable_subscription_cache** (new) returns 0 if ANY per-URL cache
+  is usable; replaces the single-json `subscription_cache_is_usable` checks in
+  `get_subscription_download_proxy_address`. Uses temp-file + `while read` (NOT a
+  pipe) so the `found` flag survives.
+- **migrate_subscription_cache_from_tmp** now maps a bare tmp `<section>.json`
+  onto the hashed dest of the URL in its `.url` sidecar (else the section's first
+  configured URL) so a legacy single-feed upgrade keeps working w/o re-download.
+- **Smoke landmine (test stub):** the REAL LuCI `config_list_foreach` iterates in
+  the CURRENT shell (no pipe) so the callback mutates accumulator globals. A test
+  stub that pipes `printf | while` subshell-traps the mutation → collector
+  returns empty. Stub MUST use temp-file + `while read`. Likewise the facade sets
+  globals (SUBSCRIPTION_OUTBOUND_TAGS*) — call it `>/dev/null` (like the real
+  bin) and read `$SING_BOX_CF_LAST_CONFIG`, NOT `out=$(facade ...)` (the `$()`
+  subshell drops the globals). Both cost a debug cycle.
+- Extended `test_subscription` with the 6 spec cases (no registration change —
+  `subscription` already in `all)`): mu-case1 multi-URL merge (count+both feeds+
+  tags-json), mu-case2 same-name dedup (no dup tags + suffix present), mu-case3
+  partial best-effort (A usable/B invalid → still available, not unavailable),
+  mu-case4 all-fail→unavailable, mu-case5 cache-key isolation (distinct
+  `${section}.<hash>.json` + per-URL `.rejected`), mu-case6 single-option
+  back-compat (1-elem list + working config). Driver awk-extracts the shipped
+  path/hash/collector/cache-usable/mark-unavailable fns + mirrors the inline
+  merge jq; feeds are stock shadowsocks so the live `sing-box check` accepts them.
+- shellcheck -S error clean (bin+libs+install.sh); `smoke-tests all` = 110 passed
+  / 0 failed (per-test ✓ marks are truth: 12 green mu-case marks; suite total
+  unchanged due to the documented piped-while subshell counter quirk). UTF-8
+  intact. New constant `TMP_SUBSCRIPTION_MERGE_FOLDER`; UCI example documents the
+  `list subscription_url` form. NO sacred constant/port/mark/path changed.

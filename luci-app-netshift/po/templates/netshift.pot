@@ -7,8 +7,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: NETSHIFT\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-06-06 21:53+0300\n"
-"PO-Revision-Date: 2026-06-06 21:53+0300\n"
+"POT-Creation-Date: 2026-06-07 07:23+0300\n"
+"PO-Revision-Date: 2026-06-07 07:23+0300\n"
 "Last-Translator: yandexru45 <>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
 "Language: \n"
@@ -34,6 +34,10 @@ msgstr ""
 
 #: src/netshift/tabs/dashboard/initController.ts:307
 msgid "Active Connections"
+msgstr ""
+
+#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:92
+msgid "Add one or more subscription URLs to fetch proxy configurations from. All feeds are downloaded and merged."
 msgstr ""
 
 #: src/netshift/tabs/diagnostic/checks/runNftCheck.ts:99
@@ -368,10 +372,6 @@ msgstr ""
 
 #: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:612
 msgid "Enter subnets in CIDR notation (e.g. 103.21.244.0/22) or single IP addresses"
-msgstr ""
-
-#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:92
-msgid "Enter the subscription URL to fetch proxy configurations from your provider"
 msgstr ""
 
 #: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:233
@@ -1138,7 +1138,7 @@ msgid "Subscription Update Interval"
 msgstr ""
 
 #: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:91
-msgid "Subscription URL"
+msgid "Subscription URLs"
 msgstr ""
 
 #: src/helpers/copyToClipboard.ts:10

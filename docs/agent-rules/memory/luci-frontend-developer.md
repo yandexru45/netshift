@@ -422,3 +422,32 @@ append findings; keep under ~200 lines.
   build); verified yarn.lock unchanged + NO `.yarn`/`.yarnrc.yml`. The
   `netshift/files/**` + `tests/**` changes in git status are 021b (other agent),
   not mine.
+
+## subscription_url → form.DynamicList (multi-URL) (task-023)
+
+- Converted `subscription_url` from `form.Value` to `form.DynamicList` in
+  section.js (~88-111), modelled EXACTLY on `remote_domain_lists` (:721-742):
+  same per-row validate (`!value||value.length===0 → true`, else
+  `main.validateUrl(value)`), `rmempty=true` (was `false`; the empty-row guard
+  already short-circuited so emptiness was never enforced; backend keeps the
+  "no URL" guard). Kept option name `subscription_url`, depends
+  `{connection_type:'proxy',proxy_config_type:'subscription'}`, placeholder
+  `https://example.com/api/sub`. Title → plural `_("Subscription URLs")`;
+  description → single literal `_("Add one or more subscription URLs to fetch
+  proxy configurations from. All feeds are downloaded and merged.")`.
+- types.ts:120 `subscription_url: string` → `string[]` (kept required, matches
+  sibling list fields `selector_proxy_links`/`urltest_proxy_links`).
+- PURE TYPE-ONLY CHANGE: nothing in the FE reads `subscription_url` back (verified
+  repo-wide) → `tsup` build produced ZERO main.js diff (confirmed via
+  `git diff --exit-code main.js`). This is correct, NOT a missed rebuild. Still
+  ran the build to confirm. (Same lesson as the type-only note in i18n section.)
+- locales: `node {extract-calls,generate-pot,generate-po ru,distribute-locales}.js`
+  (NOT yarn → no corepack). msgid delta = clean SWAP: removed "Subscription URL"
+  + "Enter the subscription URL...provider"; added "Subscription URLs" + the new
+  merged-feeds description. Filled 2 ru msgstr in SOURCE locales/netshift.ru.po
+  ("URL подписок" / "Добавьте один или несколько URL подписок...объединяются.")
+  then distribute → po/ru + po/templates byte-identical to source (verified via
+  diff). Only header msgstr empty (line 7). 5 catalog files touched: calls.json,
+  locales/netshift.{pot,ru.po}, po/{templates/netshift.pot,ru/netshift.po}.
+- yarn classic 1.22.22 again but ran inner gate via node_modules/.bin
+  (prettier/eslint/vitest/tsup) to be safe; yarn.lock unchanged, no .yarn/.yarnrc.

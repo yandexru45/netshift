@@ -14,6 +14,12 @@ TMP_RULESET_FOLDER="$TMP_SING_BOX_FOLDER/rulesets"
 TMP_SUBSCRIPTION_FOLDER="$TMP_SING_BOX_FOLDER/subscriptions"
 SUBSCRIPTION_CACHE_FOLDER="$NETSHIFT_STATE_DIR/subscriptions"
 TMP_SUBSCRIPTION_DOWNLOAD_FOLDER="$TMP_SING_BOX_FOLDER/subscription-downloads"
+# A section may list MULTIPLE subscription_url feeds. At config generation the
+# usable per-URL caches are concatenated into one merged subscription JSON in
+# this folder, then passed ONCE through the facade (keyword filter + global
+# tag-dedup + sing-box check bisection). Per-feed cache files are keyed
+# "${section}.<md5(url)>.<ext>" under SUBSCRIPTION_CACHE_FOLDER.
+TMP_SUBSCRIPTION_MERGE_FOLDER="$TMP_SING_BOX_FOLDER/subscription-merge"
 # Subscription User-Agent fallback. Many panels return a DIFFERENT body format
 # depending on the client User-Agent (sing-box JSON vs base64 URI list vs Clash
 # vs Xray JSON, or an HTML/403 stub for unknown clients). When no User-Agent is

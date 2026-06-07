@@ -1539,6 +1539,298 @@ FBEOF
     done
 
     rm -f "$fb"
+
+    # ── Multi-URL subscription merge (task-022) ─────────────────────
+    # Exercises the per-URL hashed cache keying + the config-gen merge-file
+    # approach against the REAL facade (live sing-box check bisection). The
+    # cache-path builders / URL-hash / URL-list collector / cache-usable /
+    # mark-unavailable functions are awk-extracted VERBATIM from the live bin so
+    # the test runs shipped code; the merge jq mirrors the inline subscription)
+    # branch program exactly. Tokens use the same name:OK/FAIL convention.
+    printf "\n  ${BOLD}Multi-URL Subscription Merge${NC}\n"
+
+    local bin="${NETSHIFT_SRC}/usr/bin/netshift"
+    if [ ! -r "$bin" ] || [ ! -r "$lib/sing_box_config_facade.sh" ]; then
+        skip "multi-url merge (bin / facade not found)"
+        return
+    fi
+
+    local mu="/tmp/netshift-sub-multiurl-$$.sh"
+    cat > "$mu" << 'MUEOF'
+mkdir -p /usr/lib/netshift
+for f in constants.sh helpers.sh logging.sh sing_box_config_manager.sh sing_box_config_facade.sh; do
+    ln -sf "LIB_DIR/$f" "/usr/lib/netshift/$f"
+done
+. /usr/lib/netshift/constants.sh
+. /usr/lib/netshift/logging.sh
+. /usr/lib/netshift/sing_box_config_facade.sh
+
+# Isolated per-run cache dir for the path builders.
+SUBSCRIPTION_CACHE_FOLDER="/tmp/netshift-mu-cache-$$"
+mkdir -p "$SUBSCRIPTION_CACHE_FOLDER"
+
+# Quiet logger + redaction stub (functions under test call these).
+log() { :; }
+echolog() { :; }
+nolog() { :; }
+redact_url_for_log() { printf '%s' "redacted"; }
+
+# Stub config_list_foreach to feed the URLs of the "current" section from a
+# global newline list MU_URLS (mimics UCI list iteration; a 1-element list
+# proves the legacy single-option back-compat path).
+config_list_foreach() {
+    # $1=section $2=option $3=callback [extra...]; we only honour subscription_url.
+    # The real LuCI config_list_foreach iterates in the CURRENT shell (no pipe),
+    # so the callback CAN mutate accumulator globals; mirror that with a temp
+    # file + plain `while read` (a pipe would subshell-trap the mutation).
+    [ "$2" = "subscription_url" ] || return 0
+    _clf_tmp="/tmp/netshift-mu-clf-$$"
+    printf '%s\n' "$MU_URLS" > "$_clf_tmp"
+    while IFS= read -r _u || [ -n "$_u" ]; do
+        [ -n "$_u" ] || continue
+        "$3" "$_u"
+    done < "$_clf_tmp"
+    rm -f "$_clf_tmp"
+}
+
+# Extract the shipped functions verbatim (column-0 opener to column-0 '}').
+for fn in get_subscription_url_hash get_subscription_json_path \
+          get_subscription_url_cache_path get_subscription_rejected_cache_path \
+          get_subscription_user_agent_cache_path _collect_subscription_url_handler \
+          get_subscription_urls_for_section reap_legacy_subscription_cache_files \
+          subscription_cache_is_usable section_has_usable_subscription_cache \
+          mark_subscription_outbound_unavailable; do
+    eval "$(awk -v f="$fn" '$0 ~ "^"f"\\(\\) \\{"{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
+done
+
+# Globals the extracted functions touch.
+SUBSCRIPTION_UNAVAILABLE_SECTIONS=""
+subscription_startup_blocked=0
+
+base_config='{"outbounds":[]}'
+
+# Helper: write a per-URL cache for (section,url) from a JSON body.
+write_feed() {
+    _sec="$1"; _url="$2"; _body="$3"
+    _h="$(get_subscription_url_hash "$_url")"
+    printf '%s' "$_body" > "$(get_subscription_json_path "$_sec" "$_h")"
+    printf '%s' "$_url" > "$(get_subscription_url_cache_path "$_sec" "$_h")"
+}
+
+# Helper: build the merged file exactly like the subscription) branch and run
+# the facade once. Echoes the resulting config to stdout; sets MERGED_COUNT.
+merge_and_add() {
+    _sec="$1"
+    _merged="/tmp/netshift-mu-merged-$$-$_sec.json"
+    printf '%s' '{"outbounds":[]}' > "$_merged"
+    MU_URLS="$2"
+    printf '%s\n' "$MU_URLS" | while IFS= read -r _u; do
+        [ -n "$_u" ] || continue
+        _h="$(get_subscription_url_hash "$_u")"
+        _j="$(get_subscription_json_path "$_sec" "$_h")"
+        subscription_cache_is_usable "$_j" || continue
+        _t="${_merged}.t"
+        jq -c --slurpfile feed "$_j" '
+            .outbounds += [ $feed[0].outbounds[]? | select(
+                .type != "selector" and .type != "urltest" and
+                .type != "direct" and .type != "dns" and .type != "block"
+            ) ]
+        ' "$_merged" > "$_t" 2>/dev/null && mv "$_t" "$_merged"
+    done
+    MERGED_COUNT="$(jq -r '.outbounds | length' "$_merged" 2>/dev/null)"
+}
+
+# ── CASE 1: multi-URL merge — two feeds, distinct node names ──────────
+s1="sec1"
+url1a="https://feed-a.example.com/sub"
+url1b="https://feed-b.example.com/sub"
+write_feed "$s1" "$url1a" '{"outbounds":[
+  {"type":"shadowsocks","tag":"A-Tokyo","server":"a1.example.com","server_port":443,"method":"aes-256-gcm","password":"p"},
+  {"type":"shadowsocks","tag":"A-Osaka","server":"a2.example.com","server_port":443,"method":"aes-256-gcm","password":"p"}
+]}'
+write_feed "$s1" "$url1b" '{"outbounds":[
+  {"type":"shadowsocks","tag":"B-Berlin","server":"b1.example.com","server_port":443,"method":"aes-256-gcm","password":"p"}
+]}'
+s1_urls="$url1a
+$url1b"
+merge_and_add "$s1" "$s1_urls"
+if [ "$MERGED_COUNT" = "3" ]; then
+    echo 'mu-case1-merged-count-3:OK'
+else
+    echo "mu-case1-merged-count-3(got $MERGED_COUNT):FAIL"
+fi
+# Call the facade like the real bin: NO command-substitution (globals must
+# propagate to this shell); read the result from SING_BOX_CF_LAST_CONFIG.
+sing_box_cf_add_subscription_outbounds "$base_config" "$s1" "/tmp/netshift-mu-merged-$$-$s1.json" "[]" "[]" >/dev/null
+out1="$SING_BOX_CF_LAST_CONFIG"
+if printf '%s' "$out1" | jq -e '[.outbounds[] | select(.type=="shadowsocks") | .tag] | (index("A-Tokyo") != null) and (index("A-Osaka") != null) and (index("B-Berlin") != null)' >/dev/null 2>&1; then
+    echo 'mu-case1-both-feeds-present:OK'
+else
+    echo 'mu-case1-both-feeds-present:FAIL'
+fi
+if [ "$(printf '%s' "$SUBSCRIPTION_OUTBOUND_TAGS_JSON" | jq -r 'length' 2>/dev/null)" = "3" ]; then
+    echo 'mu-case1-tags-json-3:OK'
+else
+    echo "mu-case1-tags-json-3(got $(printf '%s' "$SUBSCRIPTION_OUTBOUND_TAGS_JSON" | jq -r 'length' 2>/dev/null)):FAIL"
+fi
+rm -f "/tmp/netshift-mu-merged-$$-$s1.json"
+
+# ── CASE 2: same-named nodes across feeds → dedup -2 suffix ───────────
+s2="sec2"
+url2a="https://feed-a2.example.com/sub"
+url2b="https://feed-b2.example.com/sub"
+write_feed "$s2" "$url2a" '{"outbounds":[
+  {"type":"shadowsocks","tag":"Same Node","server":"c1.example.com","server_port":443,"method":"aes-256-gcm","password":"p"}
+]}'
+write_feed "$s2" "$url2b" '{"outbounds":[
+  {"type":"shadowsocks","tag":"Same Node","server":"c2.example.com","server_port":443,"method":"aes-256-gcm","password":"p"}
+]}'
+s2_urls="$url2a
+$url2b"
+merge_and_add "$s2" "$s2_urls"
+sing_box_cf_add_subscription_outbounds "$base_config" "$s2" "/tmp/netshift-mu-merged-$$-$s2.json" "[]" "[]" >/dev/null
+out2="$SING_BOX_CF_LAST_CONFIG"
+# Two same-named nodes must both survive with distinct deduped tags, and the
+# resulting config must have no duplicate outbound tags (would fail sing-box).
+n2="$(printf '%s' "$SUBSCRIPTION_OUTBOUND_TAGS_JSON" | jq -r 'length' 2>/dev/null)"
+dup2="$(printf '%s' "$out2" | jq -r '[.outbounds[].tag] | (length) - ([.[]] | unique | length)' 2>/dev/null)"
+if [ "$n2" = "2" ] && [ "$dup2" = "0" ]; then
+    echo 'mu-case2-samename-dedup:OK'
+else
+    echo "mu-case2-samename-dedup(n=$n2 dup=$dup2):FAIL"
+fi
+# The facade's dedup appends a numeric suffix to the second same-named node
+# ("Same Node" + "Same Node-1"); assert one base + one suffixed variant survive.
+if printf '%s' "$SUBSCRIPTION_OUTBOUND_TAGS_JSON" | jq -e 'any(.[]; . == "Same Node") and any(.[]; (startswith("Same Node-")))' >/dev/null 2>&1; then
+    echo 'mu-case2-suffix-dedup-present:OK'
+else
+    echo "mu-case2-suffix-dedup-present(tags=$SUBSCRIPTION_OUTBOUND_TAGS_JSON):FAIL"
+fi
+rm -f "/tmp/netshift-mu-merged-$$-$s2.json"
+
+# ── CASE 3: partial failure / best-effort — feed A usable, B invalid ──
+s3="sec3"
+url3a="https://feed-a3.example.com/sub"
+url3b="https://feed-b3.example.com/sub"
+write_feed "$s3" "$url3a" '{"outbounds":[
+  {"type":"shadowsocks","tag":"Good","server":"d1.example.com","server_port":443,"method":"aes-256-gcm","password":"p"}
+]}'
+# Feed B is structurally invalid (not a sing-box object): NOT cache-usable.
+_h3b="$(get_subscription_url_hash "$url3b")"
+printf '%s' 'this is not json' > "$(get_subscription_json_path "$s3" "$_h3b")"
+printf '%s' "$url3b" > "$(get_subscription_url_cache_path "$s3" "$_h3b")"
+s3_urls="$url3a
+$url3b"
+merge_and_add "$s3" "$s3_urls"
+sing_box_cf_add_subscription_outbounds "$base_config" "$s3" "/tmp/netshift-mu-merged-$$-$s3.json" "[]" "[]" >/dev/null
+out3="$SING_BOX_CF_LAST_CONFIG"
+if [ "$MERGED_COUNT" = "1" ] && [ -n "$SUBSCRIPTION_OUTBOUND_TAGS" ]; then
+    echo 'mu-case3-partial-best-effort:OK'
+else
+    echo "mu-case3-partial-best-effort(count=$MERGED_COUNT tags='$SUBSCRIPTION_OUTBOUND_TAGS'):FAIL"
+fi
+case " $SUBSCRIPTION_UNAVAILABLE_SECTIONS " in
+*" $s3 "*) echo 'mu-case3-not-unavailable:FAIL' ;;
+*) echo 'mu-case3-not-unavailable:OK' ;;
+esac
+rm -f "/tmp/netshift-mu-merged-$$-$s3.json"
+
+# ── CASE 4: all feeds fail → section marked unavailable ───────────────
+s4="sec4"
+url4a="https://feed-a4.example.com/sub"
+url4b="https://feed-b4.example.com/sub"
+_h4a="$(get_subscription_url_hash "$url4a")"
+_h4b="$(get_subscription_url_hash "$url4b")"
+printf '%s' 'garbage' > "$(get_subscription_json_path "$s4" "$_h4a")"
+printf '%s' '{"outbounds":[]}' > "$(get_subscription_json_path "$s4" "$_h4b")"
+s4_urls="$url4a
+$url4b"
+merge_and_add "$s4" "$s4_urls"
+subscription_ready=0
+if [ "$MERGED_COUNT" -gt 0 ] 2>/dev/null; then subscription_ready=1; fi
+if [ "$subscription_ready" -eq 0 ]; then
+    MU_URLS="$s4_urls"
+    mark_subscription_outbound_unavailable "$s4" 0
+fi
+case " $SUBSCRIPTION_UNAVAILABLE_SECTIONS " in
+*" $s4 "*) echo 'mu-case4-all-fail-unavailable:OK' ;;
+*) echo "mu-case4-all-fail-unavailable(merged=$MERGED_COUNT list='$SUBSCRIPTION_UNAVAILABLE_SECTIONS'):FAIL" ;;
+esac
+rm -f "/tmp/netshift-mu-merged-$$-$s4.json"
+
+# ── CASE 5: cache-key isolation — distinct files; rejected per-URL ────
+s5="sec5"
+url5a="https://feed-a5.example.com/sub"
+url5b="https://feed-b5.example.com/sub"
+write_feed "$s5" "$url5a" '{"outbounds":[
+  {"type":"shadowsocks","tag":"Iso-A","server":"e1.example.com","server_port":443,"method":"aes-256-gcm","password":"p"}
+]}'
+write_feed "$s5" "$url5b" '{"outbounds":[
+  {"type":"shadowsocks","tag":"Iso-B","server":"e2.example.com","server_port":443,"method":"aes-256-gcm","password":"p"}
+]}'
+_h5a="$(get_subscription_url_hash "$url5a")"
+_h5b="$(get_subscription_url_hash "$url5b")"
+p5a="$(get_subscription_json_path "$s5" "$_h5a")"
+p5b="$(get_subscription_json_path "$s5" "$_h5b")"
+if [ "$_h5a" != "$_h5b" ] && [ "$p5a" != "$p5b" ] && [ -s "$p5a" ] && [ -s "$p5b" ]; then
+    echo 'mu-case5-distinct-cache-files:OK'
+else
+    echo "mu-case5-distinct-cache-files(ha=$_h5a hb=$_h5b):FAIL"
+fi
+# Poison URL-A's rejected hash with its own body hash → A vetoed, B untouched.
+md5sum "$p5a" | awk '{print $1}' > "$(get_subscription_rejected_cache_path "$s5" "$_h5a")"
+# Force the rejected-veto path: a body with no proxy outbound + matching hash.
+# (subscription_cache_is_usable returns 0 for a body WITH proxies regardless of
+# rejected, so prove isolation via the rejected FILE targeting, not the veto.)
+ra="$(get_subscription_rejected_cache_path "$s5" "$_h5a")"
+rb="$(get_subscription_rejected_cache_path "$s5" "$_h5b")"
+if [ -s "$ra" ] && [ ! -e "$rb" ]; then
+    echo 'mu-case5-rejected-per-url-isolated:OK'
+else
+    echo 'mu-case5-rejected-per-url-isolated:FAIL'
+fi
+
+# ── CASE 6: back-compat — single (1-element) URL list works ───────────
+s6="sec6"
+url6="https://feed-legacy.example.com/sub"
+write_feed "$s6" "$url6" '{"outbounds":[
+  {"type":"shadowsocks","tag":"Legacy","server":"f1.example.com","server_port":443,"method":"aes-256-gcm","password":"p"}
+]}'
+# A lone option reads as a 1-element list.
+MU_URLS="$url6"
+collected6="$(get_subscription_urls_for_section "$s6")"
+if [ "$collected6" = "$url6" ]; then
+    echo 'mu-case6-single-option-1elem:OK'
+else
+    echo "mu-case6-single-option-1elem(got '$collected6'):FAIL"
+fi
+merge_and_add "$s6" "$url6"
+sing_box_cf_add_subscription_outbounds "$base_config" "$s6" "/tmp/netshift-mu-merged-$$-$s6.json" "[]" "[]" >/dev/null
+out6="$SING_BOX_CF_LAST_CONFIG"
+if [ "$MERGED_COUNT" = "1" ] && printf '%s' "$out6" | jq -e 'any(.outbounds[]; .tag=="Legacy")' >/dev/null 2>&1; then
+    echo 'mu-case6-backcompat-config:OK'
+else
+    echo "mu-case6-backcompat-config(count=$MERGED_COUNT):FAIL"
+fi
+rm -f "/tmp/netshift-mu-merged-$$-$s6.json"
+
+rm -rf "$SUBSCRIPTION_CACHE_FOLDER"
+echo 'DONE'
+MUEOF
+
+    sed -i "s|LIB_DIR|$lib|g; s|BIN_PATH|$bin|g" "$mu"
+
+    sh "$mu" 2>/dev/null | while IFS= read -r line; do
+        case "$line" in
+            *:OK) pass "$line" ;;
+            *:FAIL) fail "$line" ;;
+            *:SKIP) skip "$line" ;;
+            DONE) ;;
+            *) ;;
+        esac
+    done
+
+    rm -f "$mu"
 }
 
 # ─────────────────────────────────────────────────────────────────

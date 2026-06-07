@@ -86,16 +86,16 @@ function createSectionContent(section) {
   };
 
   o = section.option(
-    form.Value,
+    form.DynamicList,
     "subscription_url",
-    _("Subscription URL"),
+    _("Subscription URLs"),
     _(
-      "Enter the subscription URL to fetch proxy configurations from your provider",
+      "Add one or more subscription URLs to fetch proxy configurations from. All feeds are downloaded and merged.",
     ),
   );
   o.depends({ connection_type: "proxy", proxy_config_type: "subscription" });
   o.placeholder = "https://example.com/api/sub";
-  o.rmempty = false;
+  o.rmempty = true;
   o.validate = function (section_id, value) {
     if (!value || value.length === 0) {
       return true;

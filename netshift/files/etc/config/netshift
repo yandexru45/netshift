@@ -47,7 +47,14 @@ config section 'main'
 #config section 'subscription_example'
 #        option connection_type 'proxy'
 #        option proxy_config_type 'subscription'
+#        # subscription_url may be a single option (legacy, still supported) or a
+#        # UCI list of one or more feed URLs. With multiple URLs every feed is
+#        # downloaded/validated independently and all nodes are MERGED into one
+#        # selector/urltest group (same-named nodes auto-deduped). A dead feed
+#        # never breaks the others; the section is blocked only if ALL feeds fail.
 #        option subscription_url 'https://example.com/api/sub'
+#        #list subscription_url 'https://example.com/api/sub'
+#        #list subscription_url 'https://another-panel.example/api/sub'
 #        # Allow insecure TLS for the subscription fetch (default 0). Set to 1 to
 #        # add wget --no-check-certificate for IP-host panels whose HTTPS cert is
 #        # invalid/self-signed/missing-SAN. Disables certificate verification.

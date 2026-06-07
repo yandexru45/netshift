@@ -117,7 +117,7 @@ export namespace NetShift {
   export interface ConfigProxySubscriptionSection {
     connection_type: 'proxy';
     proxy_config_type: 'subscription';
-    subscription_url: string;
+    subscription_url: string[];
     subscription_update_interval?: string;
     subscription_group_by_countries?: '0' | '1';
     subscription_filter_include_keywords?: string[];
