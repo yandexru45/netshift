@@ -25,10 +25,6 @@ export const styles = `
 }
 
 .pdk_manager-page__component {
-    border: 2px var(--background-color-low, lightgray) solid;
-    border-radius: 4px;
-    padding: 10px;
-    min-width: 0;
     display: grid;
     grid-template-columns: 1fr;
     grid-row-gap: 10px;

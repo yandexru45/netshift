@@ -29,10 +29,6 @@ export const styles = `
 }
 
 .pdk_diagnostic-page__right-bar__wiki {
-    border: 2px var(--background-color-low, lightgray) solid;
-    border-radius: 4px;
-    padding: 10px;
-
     display: grid;
     grid-template-columns: auto;
     grid-row-gap: 10px;
@@ -54,21 +50,12 @@ export const styles = `
 .pdk_diagnostic-page__right-bar__wiki__texts {}
 
 .pdk_diagnostic-page__right-bar__actions {
-    border: 2px var(--background-color-low, lightgray) solid;
-    border-radius: 4px;
-    padding: 10px;
-
     display: grid;
     grid-template-columns: auto;
     grid-row-gap: 10px;
-
 }
 
 .pdk_diagnostic-page__right-bar__system-info {
-    border: 2px var(--background-color-low, lightgray) solid;
-    border-radius: 4px;
-    padding: 10px;
-
     display: grid;
     grid-template-columns: auto;
     grid-row-gap: 10px;
@@ -120,14 +107,10 @@ export const styles = `
 }
 
 .pdk_diagnostic_alert {
-    border: 2px var(--background-color-low, lightgray) solid;
-    border-radius: 4px;
-
     display: grid;
     grid-template-columns: 24px 1fr;
     grid-column-gap: 10px;
     align-items: center;
-    padding: 10px;
 }
 
 .pdk_diagnostic_alert--loading {

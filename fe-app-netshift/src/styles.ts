@@ -3,6 +3,38 @@ import { DashboardTab, DiagnosticTab, ManagerTab } from './netshift';
 import { PartialStyles } from './partials';
 
 export const GlobalStyles = `
+/*
+ * NetShift design tokens (Stage 1 foundation — task-024).
+ * Each token layers over the LuCI theme var (with a hardcoded fallback) so
+ * themes still win. Reused by the custom tabs and the form redesigns
+ * (task-025/026). Keep these names stable.
+ */
+:root,
+.cbi-map {
+    --ns-card-border: var(--background-color-low, lightgray);
+    --ns-card-border-width: 2px;
+    --ns-card-radius: 4px;
+    --ns-gap: 10px;
+    --ns-card-padding: var(--ns-gap);
+    --ns-success: var(--success-color-medium, #28a745);
+    --ns-warning: var(--warn-color-medium, #f0ad4e);
+    --ns-error: var(--error-color-medium, #dc3545);
+    --ns-info: var(--primary-color-high, #2196f3);
+}
+
+/*
+ * Shared card primitive. Mirrors the Manager component card look
+ * (2px solid border, 4px radius, 10px padding, overflow-safe min-width:0).
+ * Defined BEFORE the per-tab styles so colored-border modifiers
+ * (e.g. .pdk_diagnostic_alert--warning) still win via source order.
+ */
+.card {
+    border: var(--ns-card-border-width) solid var(--ns-card-border);
+    border-radius: var(--ns-card-radius);
+    padding: var(--ns-card-padding);
+    min-width: 0;
+}
+
 ${DashboardTab.styles}
 ${DiagnosticTab.styles}
 ${ManagerTab.styles}
@@ -22,6 +54,42 @@ ${PartialStyles}
 /* Vertical align for remove section action button */
 #cbi-netshift-section > .cbi-section-remove {
     margin-bottom: -32px;
+}
+
+/*
+ * Sections (connection) form — native CBI option-group tabs styled as a
+ * card (task-025). Reuses task-024's --ns-* tokens. The tab strip
+ * (ul.cbi-tabmenu) sits on top; each tab pane (.cbi-section-node-tabbed)
+ * reads as the card body. depends()-driven auto-hide of tabs is unaffected.
+ */
+#cbi-netshift-section .cbi-section-node-tabbed {
+    border: var(--ns-card-border-width) solid var(--ns-card-border);
+    border-radius: var(--ns-card-radius);
+    padding: var(--ns-card-padding);
+    min-width: 0;
+}
+
+#cbi-netshift-section ul.cbi-tabmenu {
+    margin-bottom: var(--ns-gap);
+}
+
+/*
+ * Settings form — native CBI option-group tabs styled as a card (task-026).
+ * Reuses task-024's --ns-* tokens and mirrors the #cbi-netshift-section
+ * pattern above. The tab strip (ul.cbi-tabmenu) sits on top; each tab pane
+ * (.cbi-section-node-tabbed) reads as the card body. depends()-driven
+ * auto-hide of tabs is unaffected. The existing
+ * #cbi-netshift-settings > h3 hide rule above stays valid.
+ */
+#cbi-netshift-settings .cbi-section-node-tabbed {
+    border: var(--ns-card-border-width) solid var(--ns-card-border);
+    border-radius: var(--ns-card-radius);
+    padding: var(--ns-card-padding);
+    min-width: 0;
+}
+
+#cbi-netshift-settings ul.cbi-tabmenu {
+    margin-bottom: var(--ns-gap);
 }
 
 /* Centered class helper */
@@ -99,11 +167,19 @@ ${PartialStyles}
 }
 
 .toast-success {
-    background-color: #28a745;
+    background-color: var(--ns-success, #28a745);
 }
 
 .toast-error {
-    background-color: #dc3545;
+    background-color: var(--ns-error, #dc3545);
+}
+
+.toast-warning {
+    background-color: var(--ns-warning, #f0ad4e);
+}
+
+.toast-info {
+    background-color: var(--ns-info, #2196f3);
 }
 
 .toast.visible {

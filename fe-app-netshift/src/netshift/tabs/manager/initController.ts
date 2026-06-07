@@ -174,10 +174,7 @@ async function runSingBoxMutation(
   button: ManagerActionDescriptor,
 ) {
   setActionLoading(button.loadingKey, true);
-  showToast(
-    _('Switching sing-box core, this may take a few minutes…'),
-    'success',
-  );
+  showToast(_('Switching sing-box core, this may take a few minutes…'), 'info');
 
   try {
     const result = await NetShiftShellMethods.singBoxComponentAction(
@@ -215,7 +212,7 @@ async function runNetshiftSelfUpdate(button: ManagerActionDescriptor) {
   // Warning-style toast: self-update is long and ends in a page reload.
   showToast(
     _('Updating NetShift, this may take a few minutes; the page will reload…'),
-    'success',
+    'warning',
     6000,
   );
 
@@ -306,7 +303,7 @@ function renderComponentCard(card: ManagerCardDescriptor) {
     );
   }
 
-  return E('div', { class: 'pdk_manager-page__component' }, [
+  return E('div', { class: 'card pdk_manager-page__component' }, [
     E('div', { class: 'pdk_manager-page__component__header' }, headerChildren),
     E('div', { class: 'pdk_manager-page__component__version' }, [
       E(

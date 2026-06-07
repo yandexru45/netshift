@@ -17,7 +17,7 @@ function renderFailedState() {
     {
       id: '',
       style: 'height: 78px',
-      class: 'pdk_dashboard-page__widgets-section__item centered',
+      class: 'card pdk_dashboard-page__widgets-section__item centered',
     },
     _('Currently unavailable'),
   );
@@ -29,14 +29,14 @@ function renderLoadingState() {
     {
       id: '',
       style: 'height: 78px',
-      class: 'pdk_dashboard-page__widgets-section__item skeleton',
+      class: 'card pdk_dashboard-page__widgets-section__item skeleton',
     },
     '',
   );
 }
 
 function renderDefaultState({ title, items }: IRenderWidgetProps) {
-  return E('div', { class: 'pdk_dashboard-page__widgets-section__item' }, [
+  return E('div', { class: 'card pdk_dashboard-page__widgets-section__item' }, [
     E(
       'b',
       { class: 'pdk_dashboard-page__widgets-section__item__title' },

@@ -451,3 +451,203 @@ append findings; keep under ~200 lines.
   locales/netshift.{pot,ru.po}, po/{templates/netshift.pot,ru/netshift.po}.
 - yarn classic 1.22.22 again but ran inner gate via node_modules/.bin
   (prettier/eslint/vitest/tsup) to be safe; yarn.lock unchanged, no .yarn/.yarnrc.
+
+## UI design-system foundation: .card + tokens + toasts (task-024)
+
+- DESIGN TOKENS (STABLE — task-025/026 reference these; do NOT rename) defined
+  in `src/styles.ts` `GlobalStyles` on `:root, .cbi-map`:
+  `--ns-card-border` (var(--background-color-low, lightgray)),
+  `--ns-card-border-width` (2px), `--ns-card-radius` (4px), `--ns-gap` (10px),
+  `--ns-card-padding` (var(--ns-gap)), `--ns-success`/`--ns-warning`/`--ns-error`/
+  `--ns-info` (layered over success/warn/error-color-medium + primary-color-high
+  with hex fallbacks #28a745/#f0ad4e/#dc3545/#2196f3).
+- `.card` primitive = `border: var(--ns-card-border-width) solid
+  var(--ns-card-border); border-radius: var(--ns-card-radius); padding:
+  var(--ns-card-padding); min-width:0`. Mirrors Manager's component card EXACTLY
+  (2px/4px/10px/min-width:0) — that's the standardised look, NOT the 1px/8px from
+  the spec's illustrative example.
+- CASCADE RULE: `.card` MUST be defined in GlobalStyles BEFORE the
+  `${DashboardTab.styles}${DiagnosticTab.styles}${ManagerTab.styles}`
+  interpolations. The per-tab colored-border MODIFIERS (`.pdk_diagnostic_alert
+  --warning/--error/--loading/--success`, `__wiki--warning/--error`, outbound-grid
+  `--active`/`--selectable:hover`) are same-specificity single-class rules that
+  win ONLY via source order. Since injectGlobalStyles emits ONE `<style>` with
+  GlobalStyles, and the template renders tokens+`.card` first THEN the interpolated
+  tab CSS, the modifiers correctly override `.card`'s neutral border. (File
+  byte-offset of `.card` in main.js is LATER than the modifiers because
+  `DashboardTab.styles` is a separate `var stylesN` module — but runtime template
+  concatenation order is what matters, and that's correct.)
+- REFACTOR PATTERN: removed the duplicated `border/border-radius/padding` (and
+  manager's `min-width:0`) from the per-tab `styles.ts`, added `class:'card …'` in
+  the RENDER `.ts`. Card boxes touched (more than the spec's "4" — there were
+  these render sites): dashboard renderWidget (3 states), renderSections
+  (failed/loading/default outbound-section + outbound-grid item), diagnostic
+  renderWikiDisclaimer (className array — prepend 'card'), renderAvailableActions,
+  renderSystemInfo, renderCheckSection (all 5 alert states incl. `--skipped` which
+  has NO modifier so it relies on `.card`), manager initController component.
+  `.card` adds `min-width:0` to dashboard/diagnostic boxes (was absent) — harmless
+  overflow hardening, visually identical.
+- showToast union widened to `'success'|'error'|'warning'|'info'`
+  (showToast.ts:3). Added `.toast-warning`(--ns-warning) + `.toast-info`(--ns-info)
+  CSS; converted existing `.toast-success/.toast-error` to `var(--ns-success/error,
+  #hex)` (themeable, same fallback hex → visually identical). The
+  PREVIOUS memory note "showToast type is only success|error — use 'success' for
+  in-progress" is now SUPERSEDED: use `'info'` for in-progress, `'warning'` for
+  long/destructive-ish. Converted the 2 abuse sites in manager/initController.ts I
+  was already in: "Switching sing-box core…"→'info', "Updating NetShift…page will
+  reload"→'warning'. DEFERRED (not in touched files / debatable): manager line
+  ~155 "Latest version is unknown" still 'success' (check-result, not in-progress);
+  diagnostic/initController.ts had only 'error' toasts (nothing to fix).
+- RAW BUTTON KILLED: dashboard renderSections.ts "Test latency" raw
+  `<button class="btn">` → `renderButton({text:_('Test latency'), onClick:
+  ()=>testLatency(), classNames:['dashboard-sections-grid-item-test-latency']})`.
+  renderButton already adds `btn`, so only the custom class goes in classNames.
+- IMPORT-ORDER MAIN.JS CHURN (IMPORTANT): adding `import {renderButton} from
+  '../../../../partials'` into the DASHBOARD subtree (which previously never
+  imported the global `src/partials` barrel) makes esbuild REORDER ~every bundled
+  module block → a huge SYMMETRIC main.js diff (~1600/1600 lines) that is PURELY
+  cosmetic module reordering. Verified safe: build is IDEMPOTENT (same md5 twice),
+  banner intact, `return baseclass.extend({` intact, and the export-symbol SET is
+  BYTE-IDENTICAL to HEAD (diff /tmp/exports_old vs new = empty) → no barrel leak,
+  no new public API. Direct-path import (`…/partials/button/renderButton`) barely
+  reduced churn — the reorder is inherent to introducing the cross-subtree dep, so
+  I kept the barrel import for consistency with the 3 diagnostic callers. When a
+  reviewer sees a giant main.js diff for a tiny TS change, CHECK export-set
+  equality + idempotency before worrying.
+- TAB REORDER: netshift.js (hand-written, edit directly) — moved the Dashboard
+  `form.TypedSection` block to FIRST. New order: Dashboard · Sections · Settings ·
+  Component Manager · Diagnostics. ONLY block order changed; all 5 sections + their
+  cfgsections/anonymous/addremove wiring identical. coreService/TabService track by
+  `data-tab` (the active section name e.g. `current==='dashboard'`), NOT
+  registration index (tab.service.ts getActiveTabId reads `.cbi-tab:not(
+  .cbi-tab-disabled)` dataset.tab; dashboard initController keys on
+  `tabService.current==='dashboard'`) → reorder is SAFE, tracking unaffected.
+- VISUAL VERIFY caveat: no chromium available in this env (playwright launch
+  failed: chrome not found), so screenshots were NOT possible. Verified instead by
+  CSS-cascade reasoning + programmatic checks: `.card` precedes modifiers in the
+  runtime-concatenated GlobalStyles, no `background-color-low` base border remains
+  in any per-tab styles.ts (all neutral borders now come from `.card`), colored
+  modifiers keep their 2px width matching `.card`. FLAG: visual confirmation is
+  reasoned, not screenshotted.
+- yarn classic 1.22.22; ran gate via node_modules/.bin (prettier --write src clean
+  / eslint --max-warnings=0 / vitest 471 pass / tsup build). yarn.lock unchanged,
+  no `.yarn`/`.yarnrc.yml`. No locales change (no NEW user-facing literals — the
+  switching/updating toast strings already existed).
+
+## task-025 — section.js → 4 native CBI tabs (taboption)
+
+- CBI native tabs: `section.tab('name', _('Title'), _('descr'))` defines a tab,
+  then EVERY field MUST be `section.taboption('name', form.X, 'key', ...)`. HARD
+  RULE confirmed: once a section has `.tab()`, any leftover `section.option(...)`
+  silently renders nothing. Verified count: 36 taboption, 0 plain option (the
+  only `section.option(` grep hit was my own comment line).
+- Conversion is mechanical & low-risk: only the constructor call line changes
+  (`section.option(\n  form.X,` → `section.taboption(\n  "tab",\n  form.X,`).
+  All `.depends()` (33), `.validate` (17), `.value()`, defaults, placeholders,
+  and the `community_lists.onchange` (REGIONAL_OPTIONS/ALLOWED_WITH_RUSSIA_INSIDE
+  /DOMAIN_LIST_OPTIONS/getUIElement) stayed byte-identical. depends() works
+  across tabs; an all-depends-hidden tab auto-hides from the strip (Subscription
+  tab hides for proxy/url) — desired, no extra code.
+- `widgets.DeviceSelect` (`interface`) works fine inside a taboption — just pass
+  the widget class as the 2nd arg after the tab name.
+- Tab map (4 tabs, 36 fields): connection=11, subscription=10, routing=12,
+  advanced=3.
+- SMART-LIST UNIFICATION: did the LOW-RISK visual grouping (NOT a single-widget
+  merge). Kept all 4 UCI keys + 2 *_list_type selectors. Achieved "one control"
+  feel by renaming the two list-type selector TITLES to group headings
+  ("Custom domains"/"Custom subnets") with descriptions naming the modes;
+  depends() already shows only the chosen input below. Deeper merge deferred
+  (would risk UCI/validator changes). NOTE: renaming a selector title drops its
+  old msgid from catalogs — fill the new ones.
+- RU-HARDCODE FIX: `subscription_group_by_countries` had `_("Группировать по
+  странам")` as the SOURCE literal (msgid). Replaced with English `_("Group by
+  countries")` + English descr; moved the Russian into the ru.po msgstr. After
+  this the Cyrillic appears ONLY as msgstr, never as msgid.
+- section.js is NOT in the `yarn ci` prettier scope (CI formats only `src`).
+  section.js uses DOUBLE QUOTES (LuCI convention) and does NOT pass the project
+  `.prettierrc` (singleQuote) — confirmed the ORIGINAL also failed prettier.
+  So: match the file's existing double-quote/2-space style; do NOT run prettier
+  on section.js (it would fight the whole file).
+- i18n flow: `node extract-calls.js && node generate-pot.js && node
+  generate-po.js ru && node distribute-locales.js`. generate-po keys by msgid &
+  carries forward old msgstr; NEW/renamed msgids land empty → fill them in
+  fe-app-netshift/locales/netshift.ru.po, then RE-RUN distribute-locales.js to
+  copy into luci-app-netshift/po/{ru/netshift.po, templates/netshift.pot}.
+  Verify byte-consistency with `diff -q` (both fe↔luci pairs). 13 new strings
+  this task; all ru filled; 0 empty msgstr after.
+- main.js drift rule confirmed: section.js-only + catalog changes need NO main.js
+  rebuild. I touched styles.ts so rebuilt — the ONLY main.js delta vs the
+  task-024 baseline was my new CSS block (#cbi-netshift-section
+  .cbi-section-node-tabbed card + ul.cbi-tabmenu margin). Build reproducible.
+- styles.ts: reused task-024 --ns-* tokens; added `#cbi-netshift-section
+  .cbi-section-node-tabbed` (card border/radius/padding) + `ul.cbi-tabmenu`
+  margin. Existing h3-hide (`> h3:nth-child(1)`) and remove-button hack
+  (`> .cbi-section-remove { margin-bottom:-32px }`) left intact (new rules added
+  after them; both still valid — remove button is a direct child, unaffected by
+  the tabbed pane styling).
+- VISUAL VERIFY caveat persists: no browser in env. Confirmed structurally
+  (taboption count/mapping, depends/validate counts == original, onchange grep
+  intact, catalog diff). FLAG for human: actual tab-strip/card rendering +
+  auto-hide behaviour of the Subscription/Advanced tabs not screenshot-verified.
+
+## task-026 — settings.js → 5 native CBI tabs (taboption)
+
+- Same mechanics as task-025. Converted ALL 27 settings options to
+  `section.taboption('tab', form.X, 'key', …)`. Verified: 27 taboption, 0 plain
+  `section.option(` (the 1 grep hit is my comment line). Tab map (5 tabs, 27):
+  dns(6)=dns_type,dns_server,bootstrap_dns_server,dns_via_outbound,
+  dns_outbound_section,dns_rewrite_ttl · network(6)=source_network_interfaces,
+  enable_output_network_interface,output_network_interface,
+  enable_badwan_interface_monitoring,badwan_monitored_interfaces,
+  badwan_reload_delay · lists(4)=update_interval,download_lists_via_proxy,
+  download_lists_via_proxy_section,routing_excluded_ips · yacd(3)=enable_yacd,
+  enable_yacd_wan_access,yacd_secret_key · advanced(8)=disable_quic,
+  dont_touch_dhcp,exclude_ntp,block_doh,enable_ipv6,config_path,cache_path,
+  log_level.
+- YACD DECISION: kept as its OWN tab (3 fields), NOT folded into Advanced.
+  Rationale: self-contained feature w/ clean depends() chain
+  (enable_yacd→wan_access→secret_key); folding into an 11-field Advanced would
+  recreate the wall. Tab title is `_("Dashboard")` (already-existing msgid),
+  internal tab name "yacd". Documented.
+- All 7 depends() preserved verbatim (only line order changed — irrelevant):
+  dns_outbound_section dep dns_via_outbound=1; output_network_interface dep
+  enable_output_network_interface=1; badwan_monitored_interfaces +
+  badwan_reload_delay dep enable_badwan_interface_monitoring=1;
+  enable_yacd_wan_access dep enable_yacd=1; yacd_secret_key dep
+  enable_yacd_wan_access=1; download_lists_via_proxy_section dep
+  download_lists_via_proxy=1. 6 validators + 3 custom widgets (2 DeviceSelect,
+  1 NetworkSelect) intact; cfgvalue/load section-picker closures unchanged.
+- HELP TRIM: block_doh was a 4-paragraph `_()+ " " +_()…` concat. Replaced with
+  ONE single-literal description "Block direct connections to known public DoH
+  servers (Cloudflare, Google, Quad9, OpenDNS, AdGuard, Yandex) so apps cannot
+  bypass router DNS filtering." The caveat ("enable only after switching to
+  UDP/DoT") moved into the ADVANCED tab description (section.tab 3rd arg).
+  enable_ipv6's 2-sentence concat LEFT inline (short, the 2nd sentence is a
+  genuine 1-line caveat; not bloating) — documented choice.
+- BACKTICK TRAP IN styles.ts: GlobalStyles is a template literal. Putting a
+  backtick inside a CSS COMMENT (e.g. `#cbi-... > h3`) prematurely closes the
+  template → ESLint "Parsing error: ',' expected". NEVER use backticks anywhere
+  inside the styles.ts CSS string, even in comments. (Cost me one lint cycle.)
+- styles.ts: added `#cbi-netshift-settings .cbi-section-node-tabbed` (card
+  border/radius/padding/min-width:0) + `#cbi-netshift-settings ul.cbi-tabmenu`
+  (margin-bottom:var(--ns-gap)) — exact mirror of the task-025 section block,
+  reusing task-024 --ns-* tokens (did NOT redefine tokens). The existing
+  `#cbi-netshift-settings > h3 { display:none }` rule stays valid (added new
+  rules after it). main.js delta = exactly these 2 CSS rules; build IDEMPOTENT
+  (md5 a7300a2… across 3 builds), banner + `return baseclass.extend` intact,
+  no new export symbol (only-loss vs HEAD is task-024's `styles` leak removal,
+  not mine).
+- i18n: msgid delta = 9 added (tab titles "DNS"/"Network"/"Lists & Updates" —
+  "Dashboard"+"Advanced" already existed; 4 tab descriptions; 1 reworded
+  block_doh) / 4 removed (old block_doh fragments). Filled 9 ru msgstr in SOURCE
+  locales/netshift.ru.po then `node distribute-locales.js`. fe↔luci ru.po AND
+  pot byte-identical (diff -q); all LF; valid UTF-8 w/ Cyrillic; 0 empty
+  non-header msgstr. Ran scripts via `node {extract-calls,generate-pot,
+  generate-po ru,distribute-locales}.js` (generate-po reported 335/339 but 9
+  were genuinely new — its count metric differs).
+- yarn classic 1.22.22; ran gate via node_modules/.bin (prettier/eslint/vitest/
+  tsup). yarn.lock unchanged, no .yarn/.yarnrc.yml. NB: working tree already
+  carried UNCOMMITTED task-024 + task-025 changes (showToast, dashboard/diag/
+  manager styles+renders, section.js, netshift.js, #cbi-netshift-section CSS) —
+  so `git diff -- src` is large but only my settings block + the 4 catalogs +
+  main.js belong to task-026. format reported all-unchanged → no new churn.

@@ -6,7 +6,40 @@
 "require view.netshift.main as main";
 
 function createSettingsContent(section) {
-  let o = section.option(
+  // Group the 27 settings options into 5 native CBI option-group tabs.
+  // HARD RULE: once a section has tab(), every option MUST be added via
+  // taboption() — any leftover section.option(...) renders nothing.
+  // depends() works across tabs; a tab whose options are all depends-hidden
+  // auto-hides from the strip.
+  section.tab(
+    "dns",
+    _("DNS"),
+    _("Upstream and bootstrap DNS resolvers, and optional DNS-over-proxy"),
+  );
+  section.tab(
+    "network",
+    _("Network"),
+    _("Source and output interfaces, and Bad WAN interface monitoring"),
+  );
+  section.tab(
+    "lists",
+    _("Lists & Updates"),
+    _("List update schedule, download routing, and routing exclusions"),
+  );
+  section.tab(
+    "yacd",
+    _("Dashboard"),
+    _("YACD web dashboard access and remote-access protection"),
+  );
+  section.tab(
+    "advanced",
+    _("Advanced"),
+    _("Protocol toggles, file paths and logging. Block DoH only after switching upstream DNS to UDP or DoT."),
+  );
+
+  // --- DNS tab ---
+  let o = section.taboption(
+    "dns",
     form.ListValue,
     "dns_type",
     _("DNS Protocol Type"),
@@ -18,7 +51,8 @@ function createSettingsContent(section) {
   o.default = "udp";
   o.rmempty = false;
 
-  o = section.option(
+  o = section.taboption(
+    "dns",
     form.Value,
     "dns_server",
     _("DNS Server"),
@@ -39,7 +73,8 @@ function createSettingsContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = section.taboption(
+    "dns",
     form.Value,
     "bootstrap_dns_server",
     _("Bootstrap DNS server"),
@@ -62,7 +97,8 @@ function createSettingsContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = section.taboption(
+    "dns",
     form.Flag,
     "dns_via_outbound",
     _("Route main DNS through proxy/VPN"),
@@ -73,7 +109,8 @@ function createSettingsContent(section) {
   o.default = "0";
   o.rmempty = false;
 
-  o = section.option(
+  o = section.taboption(
+    "dns",
     form.ListValue,
     "dns_outbound_section",
     _("DNS outbound section"),
@@ -107,7 +144,8 @@ function createSettingsContent(section) {
     return Promise.resolve();
   };
 
-  o = section.option(
+  o = section.taboption(
+    "dns",
     form.Value,
     "dns_rewrite_ttl",
     _("DNS Rewrite TTL"),
@@ -128,7 +166,9 @@ function createSettingsContent(section) {
     return true;
   };
 
-  o = section.option(
+  // --- Network tab ---
+  o = section.taboption(
+    "network",
     widgets.DeviceSelect,
     "source_network_interfaces",
     _("Source Network Interface"),
@@ -165,7 +205,8 @@ function createSettingsContent(section) {
     return !isWireless;
   };
 
-  o = section.option(
+  o = section.taboption(
+    "network",
     form.Flag,
     "enable_output_network_interface",
     _("Enable Output Network Interface"),
@@ -174,7 +215,8 @@ function createSettingsContent(section) {
   o.default = "0";
   o.rmempty = false;
 
-  o = section.option(
+  o = section.taboption(
+    "network",
     widgets.DeviceSelect,
     "output_network_interface",
     _("Output Network Interface"),
@@ -226,7 +268,8 @@ function createSettingsContent(section) {
     return !isWireless;
   };
 
-  o = section.option(
+  o = section.taboption(
+    "network",
     form.Flag,
     "enable_badwan_interface_monitoring",
     _("Interface Monitoring"),
@@ -235,7 +278,8 @@ function createSettingsContent(section) {
   o.default = "0";
   o.rmempty = false;
 
-  o = section.option(
+  o = section.taboption(
+    "network",
     widgets.NetworkSelect,
     "badwan_monitored_interfaces",
     _("Monitored Interfaces"),
@@ -258,7 +302,8 @@ function createSettingsContent(section) {
     return true;
   };
 
-  o = section.option(
+  o = section.taboption(
+    "network",
     form.Value,
     "badwan_reload_delay",
     _("Interface Monitoring Delay"),
@@ -274,50 +319,9 @@ function createSettingsContent(section) {
     return true;
   };
 
-  o = section.option(
-    form.Flag,
-    "enable_yacd",
-    _("Enable YACD"),
-    `<a href="${main.getClashUIUrl()}" target="_blank">${main.getClashUIUrl()}</a>`,
-  );
-  o.default = "0";
-  o.rmempty = false;
-
-  o = section.option(
-    form.Flag,
-    "enable_yacd_wan_access",
-    _("Enable YACD WAN Access"),
-    _(
-      "Allows access to YACD from the WAN. Make sure to open the appropriate port in your firewall.",
-    ),
-  );
-  o.depends("enable_yacd", "1");
-  o.default = "0";
-  o.rmempty = false;
-
-  o = section.option(
-    form.Value,
-    "yacd_secret_key",
-    _("YACD Secret Key"),
-    _(
-      "Secret key for authenticating remote access to YACD when WAN access is enabled.",
-    ),
-  );
-  o.depends("enable_yacd_wan_access", "1");
-  o.rmempty = false;
-
-  o = section.option(
-    form.Flag,
-    "disable_quic",
-    _("Disable QUIC"),
-    _(
-      "Disable the QUIC protocol to improve compatibility or fix issues with video streaming",
-    ),
-  );
-  o.default = "0";
-  o.rmempty = false;
-
-  o = section.option(
+  // --- Lists & Updates tab ---
+  o = section.taboption(
+    "lists",
     form.ListValue,
     "update_interval",
     _("List Update Frequency"),
@@ -329,7 +333,8 @@ function createSettingsContent(section) {
   o.default = "1d";
   o.rmempty = false;
 
-  o = section.option(
+  o = section.taboption(
+    "lists",
     form.Flag,
     "download_lists_via_proxy",
     _("Download Lists via Proxy/VPN"),
@@ -338,7 +343,8 @@ function createSettingsContent(section) {
   o.default = "0";
   o.rmempty = false;
 
-  o = section.option(
+  o = section.taboption(
+    "lists",
     form.ListValue,
     "download_lists_via_proxy_section",
     _("Download Lists via specific proxy section"),
@@ -371,7 +377,81 @@ function createSettingsContent(section) {
     return Promise.resolve();
   };
 
-  o = section.option(
+  o = section.taboption(
+    "lists",
+    form.DynamicList,
+    "routing_excluded_ips",
+    _("Routing Excluded IPs"),
+    _("Specify a local IP address to be excluded from routing"),
+  );
+  o.placeholder = "IP";
+  o.rmempty = true;
+  o.validate = function (section_id, value) {
+    // Optional
+    if (!value || value.length === 0) {
+      return true;
+    }
+
+    const validation = main.validateIP(value);
+
+    if (validation.valid) {
+      return true;
+    }
+
+    return validation.message;
+  };
+
+  // --- Dashboard / YACD tab ---
+  o = section.taboption(
+    "yacd",
+    form.Flag,
+    "enable_yacd",
+    _("Enable YACD"),
+    `<a href="${main.getClashUIUrl()}" target="_blank">${main.getClashUIUrl()}</a>`,
+  );
+  o.default = "0";
+  o.rmempty = false;
+
+  o = section.taboption(
+    "yacd",
+    form.Flag,
+    "enable_yacd_wan_access",
+    _("Enable YACD WAN Access"),
+    _(
+      "Allows access to YACD from the WAN. Make sure to open the appropriate port in your firewall.",
+    ),
+  );
+  o.depends("enable_yacd", "1");
+  o.default = "0";
+  o.rmempty = false;
+
+  o = section.taboption(
+    "yacd",
+    form.Value,
+    "yacd_secret_key",
+    _("YACD Secret Key"),
+    _(
+      "Secret key for authenticating remote access to YACD when WAN access is enabled.",
+    ),
+  );
+  o.depends("enable_yacd_wan_access", "1");
+  o.rmempty = false;
+
+  // --- Advanced tab ---
+  o = section.taboption(
+    "advanced",
+    form.Flag,
+    "disable_quic",
+    _("Disable QUIC"),
+    _(
+      "Disable the QUIC protocol to improve compatibility or fix issues with video streaming",
+    ),
+  );
+  o.default = "0";
+  o.rmempty = false;
+
+  o = section.taboption(
+    "advanced",
     form.Flag,
     "dont_touch_dhcp",
     _("Dont Touch My DHCP!"),
@@ -380,7 +460,44 @@ function createSettingsContent(section) {
   o.default = "0";
   o.rmempty = false;
 
-  o = section.option(
+  o = section.taboption(
+    "advanced",
+    form.Flag,
+    "exclude_ntp",
+    _("Exclude NTP"),
+    _(
+      "Exclude NTP protocol traffic from the tunnel to prevent it from being routed through the proxy or VPN",
+    ),
+  );
+  o.default = "0";
+  o.rmempty = false;
+
+  o = section.taboption(
+    "advanced",
+    form.Flag,
+    "block_doh",
+    _("Block DoH Servers"),
+    _(
+      "Block direct connections to known public DoH servers (Cloudflare, Google, Quad9, OpenDNS, AdGuard, Yandex) so apps cannot bypass router DNS filtering.",
+    ),
+  );
+  o.default = "0";
+  o.rmempty = false;
+
+  o = section.taboption(
+    "advanced",
+    form.Flag,
+    "enable_ipv6",
+    _("Enable IPv6 Support"),
+    _("Enable IPv6 TProxy routing, IPv6 DNS inbound, and IPv6 FakeIP support.") +
+      " " +
+      _("Use this only when the router has working IPv6 connectivity."),
+  );
+  o.default = "0";
+  o.rmempty = false;
+
+  o = section.taboption(
+    "advanced",
     form.ListValue,
     "config_path",
     _("Config File Path"),
@@ -393,7 +510,8 @@ function createSettingsContent(section) {
   o.default = "/etc/sing-box/config.json";
   o.rmempty = false;
 
-  o = section.option(
+  o = section.taboption(
+    "advanced",
     form.Value,
     "cache_path",
     _("Cache File Path"),
@@ -429,7 +547,8 @@ function createSettingsContent(section) {
     return true;
   };
 
-  o = section.option(
+  o = section.taboption(
+    "advanced",
     form.ListValue,
     "log_level",
     _("Log Level"),
@@ -444,72 +563,6 @@ function createSettingsContent(section) {
   o.value("panic", "Panic");
   o.default = "warn";
   o.rmempty = false;
-
-  o = section.option(
-    form.Flag,
-    "exclude_ntp",
-    _("Exclude NTP"),
-    _(
-      "Exclude NTP protocol traffic from the tunnel to prevent it from being routed through the proxy or VPN",
-    ),
-  );
-  o.default = "0";
-  o.rmempty = false;
-
-  o = section.option(
-    form.Flag,
-    "block_doh",
-    _("Block DoH Servers"),
-    _("Block direct connections to known public DNS-over-HTTPS (DoH) servers.") +
-      " " +
-      _(
-        "This prevents applications from bypassing the router's DNS filtering by using their own encrypted DNS.",
-      ) +
-      " " +
-      _(
-        "Affects Cloudflare, Google, Quad9, OpenDNS, AdGuard, and Yandex public DoH servers.",
-      ) +
-      " " +
-      _(
-        "Note: if your upstream DNS type is set to 'DoH', enable this only after switching to UDP or DoT.",
-      ),
-  );
-  o.default = "0";
-  o.rmempty = false;
-
-  o = section.option(
-    form.Flag,
-    "enable_ipv6",
-    _("Enable IPv6 Support"),
-    _("Enable IPv6 TProxy routing, IPv6 DNS inbound, and IPv6 FakeIP support.") +
-      " " +
-      _("Use this only when the router has working IPv6 connectivity."),
-  );
-  o.default = "0";
-  o.rmempty = false;
-
-  o = section.option(
-    form.DynamicList,
-    "routing_excluded_ips",
-    _("Routing Excluded IPs"),
-    _("Specify a local IP address to be excluded from routing"),
-  );
-  o.placeholder = "IP";
-  o.rmempty = true;
-  o.validate = function (section_id, value) {
-    // Optional
-    if (!value || value.length === 0) {
-      return true;
-    }
-
-    const validation = main.validateIP(value);
-
-    if (validation.valid) {
-      return true;
-    }
-
-    return validation.message;
-  };
 }
 
 const EntryPoint = {

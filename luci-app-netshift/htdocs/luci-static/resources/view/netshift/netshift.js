@@ -32,6 +32,21 @@ const EntryPoint = {
     // Enable tab views
     netshiftMap.tabbed = true;
 
+    // Dashboard tab (first / landing tab)
+    const dashboardSection = netshiftMap.section(
+      form.TypedSection,
+      "dashboard",
+      _("Dashboard"),
+    );
+    dashboardSection.anonymous = true;
+    dashboardSection.addremove = false;
+    dashboardSection.cfgsections = function () {
+      return ["dashboard"];
+    };
+
+    // Render dashboard content
+    dashboard.createDashboardContent(dashboardSection);
+
     // Sections tab
     const sectionsSection = netshiftMap.section(
       form.TypedSection,
@@ -61,21 +76,6 @@ const EntryPoint = {
     // Render settings content
     settings.createSettingsContent(settingsSection);
 
-    // Diagnostic tab
-    const diagnosticSection = netshiftMap.section(
-      form.TypedSection,
-      "diagnostic",
-      _("Diagnostics"),
-    );
-    diagnosticSection.anonymous = true;
-    diagnosticSection.addremove = false;
-    diagnosticSection.cfgsections = function () {
-      return ["diagnostic"];
-    };
-
-    // Render diagnostic content
-    diagnostic.createDiagnosticContent(diagnosticSection);
-
     // Component Manager tab
     const managerSection = netshiftMap.section(
       form.TypedSection,
@@ -91,20 +91,20 @@ const EntryPoint = {
     // Render Component Manager content
     manager.createManagerContent(managerSection);
 
-    // Dashboard tab
-    const dashboardSection = netshiftMap.section(
+    // Diagnostic tab
+    const diagnosticSection = netshiftMap.section(
       form.TypedSection,
-      "dashboard",
-      _("Dashboard"),
+      "diagnostic",
+      _("Diagnostics"),
     );
-    dashboardSection.anonymous = true;
-    dashboardSection.addremove = false;
-    dashboardSection.cfgsections = function () {
-      return ["dashboard"];
+    diagnosticSection.anonymous = true;
+    diagnosticSection.addremove = false;
+    diagnosticSection.cfgsections = function () {
+      return ["diagnostic"];
     };
 
-    // Render dashboard content
-    dashboard.createDashboardContent(dashboardSection);
+    // Render diagnostic content
+    diagnostic.createDiagnosticContent(diagnosticSection);
 
     // Inject core service
     main.coreService();

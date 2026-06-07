@@ -56,7 +56,7 @@ function renderLoadingState(props: IRenderCheckSectionProps) {
 
   return E(
     'div',
-    { class: 'pdk_diagnostic_alert pdk_diagnostic_alert--loading' },
+    { class: 'card pdk_diagnostic_alert pdk_diagnostic_alert--loading' },
     [
       iconWrap,
       E('div', { class: 'pdk_diagnostic_alert__content' }, [
@@ -79,7 +79,7 @@ function renderWarningState(props: IRenderCheckSectionProps) {
 
   return E(
     'div',
-    { class: 'pdk_diagnostic_alert pdk_diagnostic_alert--warning' },
+    { class: 'card pdk_diagnostic_alert pdk_diagnostic_alert--warning' },
     [
       iconWrap,
       E('div', { class: 'pdk_diagnostic_alert__content' }, [
@@ -102,7 +102,7 @@ function renderErrorState(props: IRenderCheckSectionProps) {
 
   return E(
     'div',
-    { class: 'pdk_diagnostic_alert pdk_diagnostic_alert--error' },
+    { class: 'card pdk_diagnostic_alert pdk_diagnostic_alert--error' },
     [
       iconWrap,
       E('div', { class: 'pdk_diagnostic_alert__content' }, [
@@ -125,7 +125,7 @@ function renderSuccessState(props: IRenderCheckSectionProps) {
 
   return E(
     'div',
-    { class: 'pdk_diagnostic_alert pdk_diagnostic_alert--success' },
+    { class: 'card pdk_diagnostic_alert pdk_diagnostic_alert--success' },
     [
       iconWrap,
       E('div', { class: 'pdk_diagnostic_alert__content' }, [
@@ -148,7 +148,7 @@ function renderSkippedState(props: IRenderCheckSectionProps) {
 
   return E(
     'div',
-    { class: 'pdk_diagnostic_alert pdk_diagnostic_alert--skipped' },
+    { class: 'card pdk_diagnostic_alert pdk_diagnostic_alert--skipped' },
     [
       iconWrap,
       E('div', { class: 'pdk_diagnostic_alert__content' }, [

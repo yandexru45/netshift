@@ -39,7 +39,7 @@ export function renderAvailableActions({
   viewLogs,
   showSingBoxConfig,
 }: IRenderAvailableActionsProps) {
-  return E('div', { class: 'pdk_diagnostic-page__right-bar__actions' }, [
+  return E('div', { class: 'card pdk_diagnostic-page__right-bar__actions' }, [
     E('b', {}, _('Available actions')),
     ...insertIf(restart.visible, [
       renderButton({

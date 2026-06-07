@@ -9,6 +9,7 @@ export function renderWikiDisclaimer(kind: 'default' | 'error' | 'warning') {
   iconWrap.appendChild(renderBookOpenTextIcon24());
 
   const className = [
+    'card',
     'pdk_diagnostic-page__right-bar__wiki',
     ...insertIf(kind === 'error', [
       'pdk_diagnostic-page__right-bar__wiki--error',

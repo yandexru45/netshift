@@ -1,6 +1,6 @@
 export function showToast(
   message: string,
-  type: 'success' | 'error',
+  type: 'success' | 'error' | 'warning' | 'info',
   duration: number = 3000,
 ) {
   let container = document.querySelector('.toast-container');

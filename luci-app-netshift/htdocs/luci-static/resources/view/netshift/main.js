@@ -2201,1096 +2201,8 @@ var SocketManager = class _SocketManager {
 };
 var socket = SocketManager.getInstance();
 
-// src/netshift/tabs/dashboard/partials/renderSections.ts
-function renderFailedState() {
-  return E(
-    "div",
-    {
-      class: "pdk_dashboard-page__outbound-section centered",
-      style: "height: 127px"
-    },
-    E("span", {}, [E("span", {}, _("Dashboard currently unavailable"))])
-  );
-}
-function renderLoadingState() {
-  return E("div", {
-    id: "dashboard-sections-grid-skeleton",
-    class: "pdk_dashboard-page__outbound-section skeleton",
-    style: "height: 127px"
-  });
-}
-function renderDefaultState({
-  section,
-  onChooseOutbound,
-  onTestLatency,
-  latencyFetching
-}) {
-  function testLatency() {
-    if (section.withTagSelect) {
-      return onTestLatency(section.code);
-    }
-    if (section.outbounds.length) {
-      return onTestLatency(section.outbounds[0].code);
-    }
-  }
-  function renderOutbound(outbound) {
-    function getLatencyClass() {
-      if (!outbound.latency) {
-        return "pdk_dashboard-page__outbound-grid__item__latency--empty";
-      }
-      if (outbound.latency < 800) {
-        return "pdk_dashboard-page__outbound-grid__item__latency--green";
-      }
-      if (outbound.latency < 1500) {
-        return "pdk_dashboard-page__outbound-grid__item__latency--yellow";
-      }
-      return "pdk_dashboard-page__outbound-grid__item__latency--red";
-    }
-    return E(
-      "div",
-      {
-        class: `pdk_dashboard-page__outbound-grid__item ${outbound.selected ? "pdk_dashboard-page__outbound-grid__item--active" : ""} ${section.withTagSelect ? "pdk_dashboard-page__outbound-grid__item--selectable" : ""}`,
-        click: () => section.withTagSelect && onChooseOutbound(section.code, outbound.code)
-      },
-      [
-        E("b", {}, outbound.displayName),
-        E("div", { class: "pdk_dashboard-page__outbound-grid__item__footer" }, [
-          E(
-            "div",
-            { class: "pdk_dashboard-page__outbound-grid__item__type" },
-            outbound.type
-          ),
-          E(
-            "div",
-            { class: getLatencyClass() },
-            outbound.latency ? `${outbound.latency}ms` : "N/A"
-          )
-        ])
-      ]
-    );
-  }
-  return E("div", { class: "pdk_dashboard-page__outbound-section" }, [
-    // Title with test latency
-    E("div", { class: "pdk_dashboard-page__outbound-section__title-section" }, [
-      E(
-        "div",
-        {
-          class: "pdk_dashboard-page__outbound-section__title-section__title"
-        },
-        section.displayName
-      ),
-      latencyFetching ? E("div", { class: "skeleton", style: "width: 99px; height: 28px" }) : E(
-        "button",
-        {
-          class: "btn dashboard-sections-grid-item-test-latency",
-          click: () => testLatency()
-        },
-        _("Test latency")
-      )
-    ]),
-    E(
-      "div",
-      { class: "pdk_dashboard-page__outbound-grid" },
-      section.outbounds.map((outbound) => renderOutbound(outbound))
-    )
-  ]);
-}
-function renderSections(props) {
-  if (props.failed) {
-    return renderFailedState();
-  }
-  if (props.loading) {
-    return renderLoadingState();
-  }
-  return renderDefaultState(props);
-}
-
-// src/netshift/tabs/dashboard/partials/renderWidget.ts
-function renderFailedState2() {
-  return E(
-    "div",
-    {
-      id: "",
-      style: "height: 78px",
-      class: "pdk_dashboard-page__widgets-section__item centered"
-    },
-    _("Currently unavailable")
-  );
-}
-function renderLoadingState2() {
-  return E(
-    "div",
-    {
-      id: "",
-      style: "height: 78px",
-      class: "pdk_dashboard-page__widgets-section__item skeleton"
-    },
-    ""
-  );
-}
-function renderDefaultState2({ title, items }) {
-  return E("div", { class: "pdk_dashboard-page__widgets-section__item" }, [
-    E(
-      "b",
-      { class: "pdk_dashboard-page__widgets-section__item__title" },
-      title
-    ),
-    ...items.map(
-      (item) => E(
-        "div",
-        {
-          class: `pdk_dashboard-page__widgets-section__item__row ${item?.attributes?.class || ""}`
-        },
-        [
-          E(
-            "span",
-            { class: "pdk_dashboard-page__widgets-section__item__row__key" },
-            `${item.key}: `
-          ),
-          E(
-            "span",
-            { class: "pdk_dashboard-page__widgets-section__item__row__value" },
-            item.value
-          )
-        ]
-      )
-    )
-  ]);
-}
-function renderWidget(props) {
-  if (props.loading) {
-    return renderLoadingState2();
-  }
-  if (props.failed) {
-    return renderFailedState2();
-  }
-  return renderDefaultState2(props);
-}
-
-// src/netshift/tabs/dashboard/render.ts
-function render() {
-  return E(
-    "div",
-    {
-      id: "dashboard-status",
-      class: "pdk_dashboard-page"
-    },
-    [
-      // Widgets section
-      E("div", { class: "pdk_dashboard-page__widgets-section" }, [
-        E(
-          "div",
-          { id: "dashboard-widget-traffic" },
-          renderWidget({ loading: true, failed: false, title: "", items: [] })
-        ),
-        E(
-          "div",
-          { id: "dashboard-widget-traffic-total" },
-          renderWidget({ loading: true, failed: false, title: "", items: [] })
-        ),
-        E(
-          "div",
-          { id: "dashboard-widget-system-info" },
-          renderWidget({ loading: true, failed: false, title: "", items: [] })
-        ),
-        E(
-          "div",
-          { id: "dashboard-widget-service-info" },
-          renderWidget({ loading: true, failed: false, title: "", items: [] })
-        )
-      ]),
-      // All outbounds
-      E(
-        "div",
-        { id: "dashboard-sections-grid" },
-        renderSections({
-          loading: true,
-          failed: false,
-          section: {
-            code: "",
-            displayName: "",
-            outbounds: [],
-            withTagSelect: false
-          },
-          onTestLatency: () => {
-          },
-          onChooseOutbound: () => {
-          },
-          latencyFetching: false
-        })
-      )
-    ]
-  );
-}
-
-// src/helpers/prettyBytes.ts
-function prettyBytes(n) {
-  const UNITS = ["B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
-  if (n < 1e3) {
-    return n + " B";
-  }
-  const exponent = Math.min(Math.floor(Math.log10(n) / 3), UNITS.length - 1);
-  n = Number((n / Math.pow(1e3, exponent)).toPrecision(3));
-  const unit = UNITS[exponent];
-  return n + " " + unit;
-}
-
-// src/netshift/fetchers/fetchServicesInfo.ts
-async function fetchServicesInfo() {
-  const [netshift, singbox] = await Promise.all([
-    NetShiftShellMethods.getStatus(),
-    NetShiftShellMethods.getSingBoxStatus()
-  ]);
-  if (!netshift.success || !singbox.success) {
-    store.set({
-      servicesInfoWidget: {
-        loading: false,
-        failed: true,
-        data: { singbox: 0, netshift: 0 }
-      }
-    });
-  }
-  if (netshift.success && singbox.success) {
-    store.set({
-      servicesInfoWidget: {
-        loading: false,
-        failed: false,
-        data: {
-          singbox: singbox.data.running,
-          netshift: netshift.data.enabled
-        }
-      }
-    });
-  }
-}
-
-// src/netshift/tabs/dashboard/initController.ts
-async function fetchDashboardSections() {
-  const prev = store.get().sectionsWidget;
-  store.set({
-    sectionsWidget: {
-      ...prev,
-      failed: false
-    }
-  });
-  const { data, success } = await CustomNetShiftMethods.getDashboardSections();
-  if (!success) {
-    logger.error("[DASHBOARD]", "fetchDashboardSections: failed to fetch");
-  }
-  store.set({
-    sectionsWidget: {
-      latencyFetching: false,
-      loading: false,
-      failed: !success,
-      data
-    }
-  });
-}
-async function connectToClashSockets() {
-  const clashApiSecret = await getClashApiSecret();
-  socket.subscribe(
-    `${getClashWsUrl()}/traffic?token=${clashApiSecret}`,
-    (msg) => {
-      const parsedMsg = JSON.parse(msg);
-      store.set({
-        bandwidthWidget: {
-          loading: false,
-          failed: false,
-          data: { up: parsedMsg.up, down: parsedMsg.down }
-        }
-      });
-    },
-    (_err) => {
-      logger.error(
-        "[DASHBOARD]",
-        "connectToClashSockets - traffic: failed to connect to",
-        getClashWsUrl()
-      );
-      store.set({
-        bandwidthWidget: {
-          loading: false,
-          failed: true,
-          data: { up: 0, down: 0 }
-        }
-      });
-    }
-  );
-  socket.subscribe(
-    `${getClashWsUrl()}/connections?token=${clashApiSecret}`,
-    (msg) => {
-      const parsedMsg = JSON.parse(msg);
-      store.set({
-        trafficTotalWidget: {
-          loading: false,
-          failed: false,
-          data: {
-            downloadTotal: parsedMsg.downloadTotal,
-            uploadTotal: parsedMsg.uploadTotal
-          }
-        },
-        systemInfoWidget: {
-          loading: false,
-          failed: false,
-          data: {
-            connections: parsedMsg.connections?.length,
-            memory: parsedMsg.memory
-          }
-        }
-      });
-    },
-    (_err) => {
-      logger.error(
-        "[DASHBOARD]",
-        "connectToClashSockets - connections: failed to connect to",
-        getClashWsUrl()
-      );
-      store.set({
-        trafficTotalWidget: {
-          loading: false,
-          failed: true,
-          data: { downloadTotal: 0, uploadTotal: 0 }
-        },
-        systemInfoWidget: {
-          loading: false,
-          failed: true,
-          data: {
-            connections: 0,
-            memory: 0
-          }
-        }
-      });
-    }
-  );
-}
-async function handleChooseOutbound(selector, tag) {
-  await NetShiftShellMethods.setClashApiGroupProxy(selector, tag);
-  await fetchDashboardSections();
-}
-async function handleTestGroupLatency(tag) {
-  store.set({
-    sectionsWidget: {
-      ...store.get().sectionsWidget,
-      latencyFetching: true
-    }
-  });
-  await NetShiftShellMethods.getClashApiGroupLatency(tag);
-  await fetchDashboardSections();
-  store.set({
-    sectionsWidget: {
-      ...store.get().sectionsWidget,
-      latencyFetching: false
-    }
-  });
-}
-async function handleTestProxyLatency(tag) {
-  store.set({
-    sectionsWidget: {
-      ...store.get().sectionsWidget,
-      latencyFetching: true
-    }
-  });
-  await NetShiftShellMethods.getClashApiProxyLatency(tag);
-  await fetchDashboardSections();
-  store.set({
-    sectionsWidget: {
-      ...store.get().sectionsWidget,
-      latencyFetching: false
-    }
-  });
-}
-async function renderSectionsWidget() {
-  logger.debug("[DASHBOARD]", "renderSectionsWidget");
-  const sectionsWidget = store.get().sectionsWidget;
-  const container = document.getElementById("dashboard-sections-grid");
-  if (sectionsWidget.loading || sectionsWidget.failed) {
-    const renderedWidget = renderSections({
-      loading: sectionsWidget.loading,
-      failed: sectionsWidget.failed,
-      section: {
-        code: "",
-        displayName: "",
-        outbounds: [],
-        withTagSelect: false
-      },
-      onTestLatency: () => {
-      },
-      onChooseOutbound: () => {
-      },
-      latencyFetching: sectionsWidget.latencyFetching
-    });
-    return preserveScrollForPage(() => {
-      container.replaceChildren(renderedWidget);
-    });
-  }
-  const renderedWidgets = sectionsWidget.data.map(
-    (section) => renderSections({
-      loading: sectionsWidget.loading,
-      failed: sectionsWidget.failed,
-      section,
-      latencyFetching: sectionsWidget.latencyFetching,
-      onTestLatency: (tag) => {
-        if (section.withTagSelect) {
-          return handleTestGroupLatency(tag);
-        }
-        return handleTestProxyLatency(tag);
-      },
-      onChooseOutbound: (selector, tag) => {
-        handleChooseOutbound(selector, tag);
-      }
-    })
-  );
-  return preserveScrollForPage(() => {
-    container.replaceChildren(...renderedWidgets);
-  });
-}
-async function renderBandwidthWidget() {
-  logger.debug("[DASHBOARD]", "renderBandwidthWidget");
-  const traffic = store.get().bandwidthWidget;
-  const container = document.getElementById("dashboard-widget-traffic");
-  if (traffic.loading || traffic.failed) {
-    const renderedWidget2 = renderWidget({
-      loading: traffic.loading,
-      failed: traffic.failed,
-      title: "",
-      items: []
-    });
-    return container.replaceChildren(renderedWidget2);
-  }
-  const renderedWidget = renderWidget({
-    loading: traffic.loading,
-    failed: traffic.failed,
-    title: _("Traffic"),
-    items: [
-      { key: _("Uplink"), value: `${prettyBytes(traffic.data.up)}/s` },
-      { key: _("Downlink"), value: `${prettyBytes(traffic.data.down)}/s` }
-    ]
-  });
-  container.replaceChildren(renderedWidget);
-}
-async function renderTrafficTotalWidget() {
-  logger.debug("[DASHBOARD]", "renderTrafficTotalWidget");
-  const trafficTotalWidget = store.get().trafficTotalWidget;
-  const container = document.getElementById("dashboard-widget-traffic-total");
-  if (trafficTotalWidget.loading || trafficTotalWidget.failed) {
-    const renderedWidget2 = renderWidget({
-      loading: trafficTotalWidget.loading,
-      failed: trafficTotalWidget.failed,
-      title: "",
-      items: []
-    });
-    return container.replaceChildren(renderedWidget2);
-  }
-  const renderedWidget = renderWidget({
-    loading: trafficTotalWidget.loading,
-    failed: trafficTotalWidget.failed,
-    title: _("Traffic Total"),
-    items: [
-      {
-        key: _("Uplink"),
-        value: String(prettyBytes(trafficTotalWidget.data.uploadTotal))
-      },
-      {
-        key: _("Downlink"),
-        value: String(prettyBytes(trafficTotalWidget.data.downloadTotal))
-      }
-    ]
-  });
-  container.replaceChildren(renderedWidget);
-}
-async function renderSystemInfoWidget() {
-  logger.debug("[DASHBOARD]", "renderSystemInfoWidget");
-  const systemInfoWidget = store.get().systemInfoWidget;
-  const container = document.getElementById("dashboard-widget-system-info");
-  if (systemInfoWidget.loading || systemInfoWidget.failed) {
-    const renderedWidget2 = renderWidget({
-      loading: systemInfoWidget.loading,
-      failed: systemInfoWidget.failed,
-      title: "",
-      items: []
-    });
-    return container.replaceChildren(renderedWidget2);
-  }
-  const renderedWidget = renderWidget({
-    loading: systemInfoWidget.loading,
-    failed: systemInfoWidget.failed,
-    title: _("System info"),
-    items: [
-      {
-        key: _("Active Connections"),
-        value: String(systemInfoWidget.data.connections)
-      },
-      {
-        key: _("Memory Usage"),
-        value: String(prettyBytes(systemInfoWidget.data.memory))
-      }
-    ]
-  });
-  container.replaceChildren(renderedWidget);
-}
-async function renderServicesInfoWidget() {
-  logger.debug("[DASHBOARD]", "renderServicesInfoWidget");
-  const servicesInfoWidget = store.get().servicesInfoWidget;
-  const container = document.getElementById("dashboard-widget-service-info");
-  if (servicesInfoWidget.loading || servicesInfoWidget.failed) {
-    const renderedWidget2 = renderWidget({
-      loading: servicesInfoWidget.loading,
-      failed: servicesInfoWidget.failed,
-      title: "",
-      items: []
-    });
-    return container.replaceChildren(renderedWidget2);
-  }
-  const renderedWidget = renderWidget({
-    loading: servicesInfoWidget.loading,
-    failed: servicesInfoWidget.failed,
-    title: _("Services info"),
-    items: [
-      {
-        key: _("NetShift"),
-        value: servicesInfoWidget.data.netshift ? _("\u2714 Enabled") : _("\u2718 Disabled"),
-        attributes: {
-          class: servicesInfoWidget.data.netshift ? "pdk_dashboard-page__widgets-section__item__row--success" : "pdk_dashboard-page__widgets-section__item__row--error"
-        }
-      },
-      {
-        key: _("Sing-box"),
-        value: servicesInfoWidget.data.singbox ? _("\u2714 Running") : _("\u2718 Stopped"),
-        attributes: {
-          class: servicesInfoWidget.data.singbox ? "pdk_dashboard-page__widgets-section__item__row--success" : "pdk_dashboard-page__widgets-section__item__row--error"
-        }
-      }
-    ]
-  });
-  container.replaceChildren(renderedWidget);
-}
-async function onStoreUpdate(next, prev, diff) {
-  if (diff.sectionsWidget) {
-    renderSectionsWidget();
-  }
-  if (diff.bandwidthWidget) {
-    renderBandwidthWidget();
-  }
-  if (diff.trafficTotalWidget) {
-    renderTrafficTotalWidget();
-  }
-  if (diff.systemInfoWidget) {
-    renderSystemInfoWidget();
-  }
-  if (diff.servicesInfoWidget) {
-    renderServicesInfoWidget();
-  }
-}
-async function onPageMount() {
-  onPageUnmount();
-  store.subscribe(onStoreUpdate);
-  await fetchDashboardSections();
-  await fetchServicesInfo();
-  await connectToClashSockets();
-}
-function onPageUnmount() {
-  store.unsubscribe(onStoreUpdate);
-  store.reset([
-    "bandwidthWidget",
-    "trafficTotalWidget",
-    "systemInfoWidget",
-    "servicesInfoWidget",
-    "sectionsWidget"
-  ]);
-  socket.resetAll();
-}
-function registerLifecycleListeners() {
-  store.subscribe((next, prev, diff) => {
-    if (diff.tabService && next.tabService.current !== prev.tabService.current) {
-      logger.debug(
-        "[DASHBOARD]",
-        "active tab diff event, active tab:",
-        diff.tabService.current
-      );
-      const isDashboardVisible = next.tabService.current === "dashboard";
-      if (isDashboardVisible) {
-        logger.debug(
-          "[DASHBOARD]",
-          "registerLifecycleListeners",
-          "onPageMount"
-        );
-        return onPageMount();
-      }
-      if (!isDashboardVisible) {
-        logger.debug(
-          "[DASHBOARD]",
-          "registerLifecycleListeners",
-          "onPageUnmount"
-        );
-        return onPageUnmount();
-      }
-    }
-  });
-}
-async function initController() {
-  onMount("dashboard-status").then(() => {
-    logger.debug("[DASHBOARD]", "initController", "onMount");
-    onPageMount();
-    registerLifecycleListeners();
-  });
-}
-
-// src/netshift/tabs/dashboard/styles.ts
-var styles = `
-#cbi-netshift-dashboard-_mount_node > div {
-    width: 100%;
-}
-
-#cbi-netshift-dashboard > h3 {
-    display: none;
-}
-    
-.pdk_dashboard-page {
-    width: 100%;
-    --dashboard-grid-columns: 4;
-}
-
-@media (max-width: 900px) {
-    .pdk_dashboard-page {
-        --dashboard-grid-columns: 2;
-    }
-}
-
-.pdk_dashboard-page__widgets-section {
-    margin-top: 10px;
-    display: grid;
-    grid-template-columns: repeat(var(--dashboard-grid-columns), 1fr);
-    grid-gap: 10px;
-}
-
-.pdk_dashboard-page__widgets-section__item {
-    border: 2px var(--background-color-low, lightgray) solid;
-    border-radius: 4px;
-    padding: 10px;
-}
-
-.pdk_dashboard-page__widgets-section__item__title {}
-
-.pdk_dashboard-page__widgets-section__item__row {}
-
-.pdk_dashboard-page__widgets-section__item__row--success .pdk_dashboard-page__widgets-section__item__row__value {
-    color: var(--success-color-medium, green);
-}
-
-.pdk_dashboard-page__widgets-section__item__row--error .pdk_dashboard-page__widgets-section__item__row__value {
-    color: var(--error-color-medium, red);
-}
-
-.pdk_dashboard-page__widgets-section__item__row__key {}
-
-.pdk_dashboard-page__widgets-section__item__row__value {}
-
-.pdk_dashboard-page__outbound-section {
-    margin-top: 10px;
-    border: 2px var(--background-color-low, lightgray) solid;
-    border-radius: 4px;
-    padding: 10px;
-}
-
-.pdk_dashboard-page__outbound-section__title-section {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-}
-
-.pdk_dashboard-page__outbound-section__title-section__title {
-    color: var(--text-color-high);
-    font-weight: 700;
-}
-
-.pdk_dashboard-page__outbound-grid {
-    margin-top: 5px;
-    display: grid;
-    grid-template-columns: repeat(var(--dashboard-grid-columns), 1fr);
-    grid-gap: 10px;
-}
-
-.pdk_dashboard-page__outbound-grid__item {
-    border: 2px var(--background-color-low, lightgray) solid;
-    border-radius: 4px;
-    padding: 10px;
-    transition: border 0.2s ease;
-}
-
-.pdk_dashboard-page__outbound-grid__item--selectable {
-    cursor: pointer;
-}
-
-.pdk_dashboard-page__outbound-grid__item--selectable:hover {
-    border-color: var(--primary-color-high, dodgerblue);
-}
-
-.pdk_dashboard-page__outbound-grid__item--active {
-    border-color: var(--success-color-medium, green);
-}
-
-.pdk_dashboard-page__outbound-grid__item__footer {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-top: 10px;
-}
-
-.pdk_dashboard-page__outbound-grid__item__type {}
-
-.pdk_dashboard-page__outbound-grid__item__latency--empty {
-    color: var(--primary-color-low, lightgray);
-}
-
-.pdk_dashboard-page__outbound-grid__item__latency--green {
-    color: var(--success-color-medium, green);
-}
-
-.pdk_dashboard-page__outbound-grid__item__latency--yellow {
-    color: var(--warn-color-medium, orange);
-}
-
-.pdk_dashboard-page__outbound-grid__item__latency--red {
-    color: var(--error-color-medium, red);
-}
-
-`;
-
-// src/netshift/tabs/dashboard/index.ts
-var DashboardTab = {
-  render,
-  initController,
-  styles
-};
-
-// src/netshift/tabs/diagnostic/renderDiagnostic.ts
-function render2() {
-  return E("div", { id: "diagnostic-status", class: "pdk_diagnostic-page" }, [
-    E("div", { class: "pdk_diagnostic-page__left-bar" }, [
-      E("div", { id: "pdk_diagnostic-page-run-check" }),
-      E("div", {
-        class: "pdk_diagnostic-page__checks",
-        id: "pdk_diagnostic-page-checks"
-      })
-    ]),
-    E("div", { class: "pdk_diagnostic-page__right-bar" }, [
-      E("div", { id: "pdk_diagnostic-page-wiki" }),
-      E("div", { id: "pdk_diagnostic-page-actions" }),
-      E("div", { id: "pdk_diagnostic-page-system-info" })
-    ])
-  ]);
-}
-
-// src/netshift/tabs/diagnostic/checks/updateCheckStore.ts
-function updateCheckStore(check, minified) {
-  const diagnosticsChecks = store.get().diagnosticsChecks;
-  const other = diagnosticsChecks.filter((item) => item.code !== check.code);
-  const smallCheck = {
-    ...check,
-    items: check.items.filter((item) => item.state !== "success")
-  };
-  const targetCheck = minified ? smallCheck : check;
-  store.set({
-    diagnosticsChecks: [...other, targetCheck]
-  });
-}
-
-// src/netshift/tabs/diagnostic/helpers/getMeta.ts
-function getMeta({ allGood, atLeastOneGood }) {
-  if (allGood) {
-    return {
-      state: "success",
-      description: _("Checks passed")
-    };
-  }
-  if (atLeastOneGood) {
-    return {
-      state: "warning",
-      description: _("Issues detected")
-    };
-  }
-  return {
-    state: "error",
-    description: _("Checks failed")
-  };
-}
-
-// src/netshift/tabs/diagnostic/checks/runDnsCheck.ts
-async function runDnsCheck() {
-  const { order, title, code } = DIAGNOSTICS_CHECKS_MAP.DNS;
-  updateCheckStore({
-    order,
-    code,
-    title,
-    description: _("Checking, please wait"),
-    state: "loading",
-    items: []
-  });
-  const dnsChecks = await NetShiftShellMethods.checkDNSAvailable();
-  if (!dnsChecks.success) {
-    updateCheckStore({
-      order,
-      code,
-      title,
-      description: _("Cannot receive checks result"),
-      state: "error",
-      items: []
-    });
-    throw new Error("DNS checks failed");
-  }
-  const data = dnsChecks.data;
-  const allGood = Boolean(data.dns_on_router) && Boolean(data.dhcp_config_status) && Boolean(data.bootstrap_dns_status) && Boolean(data.dns_status);
-  const atLeastOneGood = Boolean(data.dns_on_router) || Boolean(data.dhcp_config_status) || Boolean(data.bootstrap_dns_status) || Boolean(data.dns_status);
-  const { state, description } = getMeta({ atLeastOneGood, allGood });
-  updateCheckStore({
-    order,
-    code,
-    title,
-    description,
-    state,
-    items: [
-      ...insertIf(
-        data.dns_type === "doh" || data.dns_type === "dot" || !data.bootstrap_dns_status,
-        [
-          {
-            state: data.bootstrap_dns_status ? "success" : "error",
-            key: _("Bootsrap DNS"),
-            value: data.bootstrap_dns_server
-          }
-        ]
-      ),
-      {
-        state: data.dns_status ? "success" : "error",
-        key: _("Main DNS"),
-        value: `${data.dns_server} [${data.dns_type}]`
-      },
-      ...insertIf(
-        typeof data.dns_via_outbound_tag === "string" && data.dns_via_outbound_tag.length > 0,
-        [
-          {
-            state: "success",
-            key: _("Main DNS via outbound"),
-            value: data.dns_via_outbound_tag ?? ""
-          }
-        ]
-      ),
-      {
-        state: data.dns_on_router ? "success" : "error",
-        key: _("DNS on router"),
-        value: ""
-      },
-      {
-        state: data.dhcp_config_status ? "success" : "error",
-        key: _("DHCP has DNS server"),
-        value: ""
-      }
-    ]
-  });
-  if (!atLeastOneGood) {
-    throw new Error("DNS checks failed");
-  }
-}
-
-// src/netshift/tabs/diagnostic/checks/runSingBoxCheck.ts
-async function runSingBoxCheck() {
-  const { order, title, code } = DIAGNOSTICS_CHECKS_MAP.SINGBOX;
-  updateCheckStore({
-    order,
-    code,
-    title,
-    description: _("Checking, please wait"),
-    state: "loading",
-    items: []
-  });
-  const singBoxChecks = await NetShiftShellMethods.checkSingBox();
-  if (!singBoxChecks.success) {
-    updateCheckStore({
-      order,
-      code,
-      title,
-      description: _("Cannot receive checks result"),
-      state: "error",
-      items: []
-    });
-    throw new Error("Sing-box checks failed");
-  }
-  const data = singBoxChecks.data;
-  const allGood = Boolean(data.sing_box_installed) && Boolean(data.sing_box_version_ok) && Boolean(data.sing_box_service_exist) && Boolean(data.sing_box_autostart_disabled) && Boolean(data.sing_box_process_running) && Boolean(data.sing_box_ports_listening);
-  const atLeastOneGood = Boolean(data.sing_box_installed) || Boolean(data.sing_box_version_ok) || Boolean(data.sing_box_service_exist) || Boolean(data.sing_box_autostart_disabled) || Boolean(data.sing_box_process_running) || Boolean(data.sing_box_ports_listening);
-  const { state, description } = getMeta({ atLeastOneGood, allGood });
-  updateCheckStore({
-    order,
-    code,
-    title,
-    description,
-    state,
-    items: [
-      {
-        state: data.sing_box_installed ? "success" : "error",
-        key: _("Sing-box installed"),
-        value: ""
-      },
-      {
-        state: data.sing_box_version_ok ? "success" : "error",
-        key: _("Sing-box version is compatible (newer than 1.12.4)"),
-        value: ""
-      },
-      {
-        state: data.sing_box_service_exist ? "success" : "error",
-        key: _("Sing-box service exist"),
-        value: ""
-      },
-      {
-        state: data.sing_box_autostart_disabled ? "success" : "error",
-        key: _("Sing-box autostart disabled"),
-        value: ""
-      },
-      {
-        state: data.sing_box_process_running ? "success" : "error",
-        key: _("Sing-box process running"),
-        value: ""
-      },
-      {
-        state: data.sing_box_ports_listening ? "success" : "error",
-        key: _("Sing-box listening ports"),
-        value: ""
-      }
-    ]
-  });
-  if (!atLeastOneGood || !data.sing_box_process_running) {
-    throw new Error("Sing-box checks failed");
-  }
-}
-
-// src/netshift/tabs/diagnostic/checks/runNftCheck.ts
-async function runNftCheck() {
-  const { order, title, code } = DIAGNOSTICS_CHECKS_MAP.NFT;
-  updateCheckStore({
-    order,
-    code,
-    title,
-    description: _("Checking, please wait"),
-    state: "loading",
-    items: []
-  });
-  await RemoteFakeIPMethods.getFakeIpCheck();
-  await RemoteFakeIPMethods.getIpCheck();
-  const nftablesChecks = await NetShiftShellMethods.checkNftRules();
-  if (!nftablesChecks.success) {
-    updateCheckStore({
-      order,
-      code,
-      title,
-      description: _("Cannot receive checks result"),
-      state: "error",
-      items: []
-    });
-    throw new Error("Nftables checks failed");
-  }
-  const data = nftablesChecks.data;
-  const allGood = Boolean(data.table_exist) && Boolean(data.rules_mangle_exist) && Boolean(data.rules_mangle_counters) && Boolean(data.rules_mangle_output_exist) && Boolean(data.rules_proxy_exist) && Boolean(data.rules_proxy_counters) && !data.rules_other_mark_exist;
-  const atLeastOneGood = Boolean(data.table_exist) || Boolean(data.rules_mangle_exist) || Boolean(data.rules_mangle_counters) || Boolean(data.rules_mangle_output_exist) || Boolean(data.rules_proxy_exist) || Boolean(data.rules_proxy_counters) || !data.rules_other_mark_exist;
-  const { state, description } = getMeta({ atLeastOneGood, allGood });
-  updateCheckStore({
-    order,
-    code,
-    title,
-    description,
-    state,
-    items: [
-      {
-        state: data.table_exist ? "success" : "error",
-        key: _("Table exist"),
-        value: ""
-      },
-      {
-        state: data.rules_mangle_exist ? "success" : "error",
-        key: _("Rules mangle exist"),
-        value: ""
-      },
-      {
-        state: data.rules_mangle_counters ? "success" : "error",
-        key: _("Rules mangle counters"),
-        value: ""
-      },
-      {
-        state: data.rules_mangle_output_exist ? "success" : "error",
-        key: _("Rules mangle output exist"),
-        value: ""
-      },
-      {
-        state: data.rules_proxy_exist ? "success" : "error",
-        key: _("Rules proxy exist"),
-        value: ""
-      },
-      {
-        state: data.rules_proxy_counters ? "success" : "error",
-        key: _("Rules proxy counters"),
-        value: ""
-      },
-      {
-        state: !data.rules_other_mark_exist ? "success" : "warning",
-        key: !data.rules_other_mark_exist ? _("No other marking rules found") : _("Additional marking rules found"),
-        value: ""
-      }
-    ]
-  });
-  if (!atLeastOneGood) {
-    throw new Error("Nftables checks failed");
-  }
-}
-
-// src/netshift/tabs/diagnostic/checks/runFakeIPCheck.ts
-async function runFakeIPCheck() {
-  const { order, title, code } = DIAGNOSTICS_CHECKS_MAP.FAKEIP;
-  updateCheckStore({
-    order,
-    code,
-    title,
-    description: _("Checking, please wait"),
-    state: "loading",
-    items: []
-  });
-  const routerFakeIPResponse = await NetShiftShellMethods.checkFakeIP();
-  const checkFakeIPResponse = await RemoteFakeIPMethods.getFakeIpCheck();
-  const checkIPResponse = await RemoteFakeIPMethods.getIpCheck();
-  const checks = {
-    router: routerFakeIPResponse.success && routerFakeIPResponse.data.fakeip,
-    browserFakeIP: checkFakeIPResponse.success && checkFakeIPResponse.data.fakeip,
-    differentIP: checkFakeIPResponse.success && checkIPResponse.success && checkFakeIPResponse.data.IP !== checkIPResponse.data.IP
-  };
-  const allGood = checks.router || checks.browserFakeIP || checks.differentIP;
-  const atLeastOneGood = checks.router && checks.browserFakeIP && checks.differentIP;
-  const { state, description } = getMeta({ atLeastOneGood, allGood });
-  updateCheckStore({
-    order,
-    code,
-    title,
-    description,
-    state,
-    items: [
-      {
-        state: checks.router ? "success" : "warning",
-        key: checks.router ? _("Router DNS is routed through sing-box") : _("Router DNS is not routed through sing-box"),
-        value: ""
-      },
-      {
-        state: checks.browserFakeIP ? "success" : "error",
-        key: checks.browserFakeIP ? _("Browser is using FakeIP correctly") : _("Browser is not using FakeIP"),
-        value: ""
-      },
-      ...insertIf(checks.browserFakeIP, [
-        {
-          state: checks.differentIP ? "success" : "error",
-          key: checks.differentIP ? _("Proxy traffic is routed via FakeIP") : _("Proxy traffic is not routed via FakeIP"),
-          value: ""
-        }
-      ])
-    ]
-  });
-}
-
 // src/partials/button/styles.ts
-var styles2 = `
+var styles = `
 .pdk-partial-button {
     text-align: center;
 }
@@ -3324,7 +2236,7 @@ var styles2 = `
 `;
 
 // src/partials/modal/styles.ts
-var styles3 = `
+var styles2 = `
 
 .pdk-partial-modal__body {}
 
@@ -3975,9 +2887,1085 @@ function renderModal(text, name) {
 
 // src/partials/index.ts
 var PartialStyles = `
+${styles}
 ${styles2}
-${styles3}
 `;
+
+// src/netshift/tabs/dashboard/partials/renderSections.ts
+function renderFailedState() {
+  return E(
+    "div",
+    {
+      class: "card pdk_dashboard-page__outbound-section centered",
+      style: "height: 127px"
+    },
+    E("span", {}, [E("span", {}, _("Dashboard currently unavailable"))])
+  );
+}
+function renderLoadingState() {
+  return E("div", {
+    id: "dashboard-sections-grid-skeleton",
+    class: "card pdk_dashboard-page__outbound-section skeleton",
+    style: "height: 127px"
+  });
+}
+function renderDefaultState({
+  section,
+  onChooseOutbound,
+  onTestLatency,
+  latencyFetching
+}) {
+  function testLatency() {
+    if (section.withTagSelect) {
+      return onTestLatency(section.code);
+    }
+    if (section.outbounds.length) {
+      return onTestLatency(section.outbounds[0].code);
+    }
+  }
+  function renderOutbound(outbound) {
+    function getLatencyClass() {
+      if (!outbound.latency) {
+        return "pdk_dashboard-page__outbound-grid__item__latency--empty";
+      }
+      if (outbound.latency < 800) {
+        return "pdk_dashboard-page__outbound-grid__item__latency--green";
+      }
+      if (outbound.latency < 1500) {
+        return "pdk_dashboard-page__outbound-grid__item__latency--yellow";
+      }
+      return "pdk_dashboard-page__outbound-grid__item__latency--red";
+    }
+    return E(
+      "div",
+      {
+        class: `card pdk_dashboard-page__outbound-grid__item ${outbound.selected ? "pdk_dashboard-page__outbound-grid__item--active" : ""} ${section.withTagSelect ? "pdk_dashboard-page__outbound-grid__item--selectable" : ""}`,
+        click: () => section.withTagSelect && onChooseOutbound(section.code, outbound.code)
+      },
+      [
+        E("b", {}, outbound.displayName),
+        E("div", { class: "pdk_dashboard-page__outbound-grid__item__footer" }, [
+          E(
+            "div",
+            { class: "pdk_dashboard-page__outbound-grid__item__type" },
+            outbound.type
+          ),
+          E(
+            "div",
+            { class: getLatencyClass() },
+            outbound.latency ? `${outbound.latency}ms` : "N/A"
+          )
+        ])
+      ]
+    );
+  }
+  return E("div", { class: "card pdk_dashboard-page__outbound-section" }, [
+    // Title with test latency
+    E("div", { class: "pdk_dashboard-page__outbound-section__title-section" }, [
+      E(
+        "div",
+        {
+          class: "pdk_dashboard-page__outbound-section__title-section__title"
+        },
+        section.displayName
+      ),
+      latencyFetching ? E("div", { class: "skeleton", style: "width: 99px; height: 28px" }) : renderButton({
+        text: _("Test latency"),
+        onClick: () => testLatency(),
+        classNames: ["dashboard-sections-grid-item-test-latency"]
+      })
+    ]),
+    E(
+      "div",
+      { class: "pdk_dashboard-page__outbound-grid" },
+      section.outbounds.map((outbound) => renderOutbound(outbound))
+    )
+  ]);
+}
+function renderSections(props) {
+  if (props.failed) {
+    return renderFailedState();
+  }
+  if (props.loading) {
+    return renderLoadingState();
+  }
+  return renderDefaultState(props);
+}
+
+// src/netshift/tabs/dashboard/partials/renderWidget.ts
+function renderFailedState2() {
+  return E(
+    "div",
+    {
+      id: "",
+      style: "height: 78px",
+      class: "card pdk_dashboard-page__widgets-section__item centered"
+    },
+    _("Currently unavailable")
+  );
+}
+function renderLoadingState2() {
+  return E(
+    "div",
+    {
+      id: "",
+      style: "height: 78px",
+      class: "card pdk_dashboard-page__widgets-section__item skeleton"
+    },
+    ""
+  );
+}
+function renderDefaultState2({ title, items }) {
+  return E("div", { class: "card pdk_dashboard-page__widgets-section__item" }, [
+    E(
+      "b",
+      { class: "pdk_dashboard-page__widgets-section__item__title" },
+      title
+    ),
+    ...items.map(
+      (item) => E(
+        "div",
+        {
+          class: `pdk_dashboard-page__widgets-section__item__row ${item?.attributes?.class || ""}`
+        },
+        [
+          E(
+            "span",
+            { class: "pdk_dashboard-page__widgets-section__item__row__key" },
+            `${item.key}: `
+          ),
+          E(
+            "span",
+            { class: "pdk_dashboard-page__widgets-section__item__row__value" },
+            item.value
+          )
+        ]
+      )
+    )
+  ]);
+}
+function renderWidget(props) {
+  if (props.loading) {
+    return renderLoadingState2();
+  }
+  if (props.failed) {
+    return renderFailedState2();
+  }
+  return renderDefaultState2(props);
+}
+
+// src/netshift/tabs/dashboard/render.ts
+function render() {
+  return E(
+    "div",
+    {
+      id: "dashboard-status",
+      class: "pdk_dashboard-page"
+    },
+    [
+      // Widgets section
+      E("div", { class: "pdk_dashboard-page__widgets-section" }, [
+        E(
+          "div",
+          { id: "dashboard-widget-traffic" },
+          renderWidget({ loading: true, failed: false, title: "", items: [] })
+        ),
+        E(
+          "div",
+          { id: "dashboard-widget-traffic-total" },
+          renderWidget({ loading: true, failed: false, title: "", items: [] })
+        ),
+        E(
+          "div",
+          { id: "dashboard-widget-system-info" },
+          renderWidget({ loading: true, failed: false, title: "", items: [] })
+        ),
+        E(
+          "div",
+          { id: "dashboard-widget-service-info" },
+          renderWidget({ loading: true, failed: false, title: "", items: [] })
+        )
+      ]),
+      // All outbounds
+      E(
+        "div",
+        { id: "dashboard-sections-grid" },
+        renderSections({
+          loading: true,
+          failed: false,
+          section: {
+            code: "",
+            displayName: "",
+            outbounds: [],
+            withTagSelect: false
+          },
+          onTestLatency: () => {
+          },
+          onChooseOutbound: () => {
+          },
+          latencyFetching: false
+        })
+      )
+    ]
+  );
+}
+
+// src/helpers/prettyBytes.ts
+function prettyBytes(n) {
+  const UNITS = ["B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
+  if (n < 1e3) {
+    return n + " B";
+  }
+  const exponent = Math.min(Math.floor(Math.log10(n) / 3), UNITS.length - 1);
+  n = Number((n / Math.pow(1e3, exponent)).toPrecision(3));
+  const unit = UNITS[exponent];
+  return n + " " + unit;
+}
+
+// src/netshift/fetchers/fetchServicesInfo.ts
+async function fetchServicesInfo() {
+  const [netshift, singbox] = await Promise.all([
+    NetShiftShellMethods.getStatus(),
+    NetShiftShellMethods.getSingBoxStatus()
+  ]);
+  if (!netshift.success || !singbox.success) {
+    store.set({
+      servicesInfoWidget: {
+        loading: false,
+        failed: true,
+        data: { singbox: 0, netshift: 0 }
+      }
+    });
+  }
+  if (netshift.success && singbox.success) {
+    store.set({
+      servicesInfoWidget: {
+        loading: false,
+        failed: false,
+        data: {
+          singbox: singbox.data.running,
+          netshift: netshift.data.enabled
+        }
+      }
+    });
+  }
+}
+
+// src/netshift/tabs/dashboard/initController.ts
+async function fetchDashboardSections() {
+  const prev = store.get().sectionsWidget;
+  store.set({
+    sectionsWidget: {
+      ...prev,
+      failed: false
+    }
+  });
+  const { data, success } = await CustomNetShiftMethods.getDashboardSections();
+  if (!success) {
+    logger.error("[DASHBOARD]", "fetchDashboardSections: failed to fetch");
+  }
+  store.set({
+    sectionsWidget: {
+      latencyFetching: false,
+      loading: false,
+      failed: !success,
+      data
+    }
+  });
+}
+async function connectToClashSockets() {
+  const clashApiSecret = await getClashApiSecret();
+  socket.subscribe(
+    `${getClashWsUrl()}/traffic?token=${clashApiSecret}`,
+    (msg) => {
+      const parsedMsg = JSON.parse(msg);
+      store.set({
+        bandwidthWidget: {
+          loading: false,
+          failed: false,
+          data: { up: parsedMsg.up, down: parsedMsg.down }
+        }
+      });
+    },
+    (_err) => {
+      logger.error(
+        "[DASHBOARD]",
+        "connectToClashSockets - traffic: failed to connect to",
+        getClashWsUrl()
+      );
+      store.set({
+        bandwidthWidget: {
+          loading: false,
+          failed: true,
+          data: { up: 0, down: 0 }
+        }
+      });
+    }
+  );
+  socket.subscribe(
+    `${getClashWsUrl()}/connections?token=${clashApiSecret}`,
+    (msg) => {
+      const parsedMsg = JSON.parse(msg);
+      store.set({
+        trafficTotalWidget: {
+          loading: false,
+          failed: false,
+          data: {
+            downloadTotal: parsedMsg.downloadTotal,
+            uploadTotal: parsedMsg.uploadTotal
+          }
+        },
+        systemInfoWidget: {
+          loading: false,
+          failed: false,
+          data: {
+            connections: parsedMsg.connections?.length,
+            memory: parsedMsg.memory
+          }
+        }
+      });
+    },
+    (_err) => {
+      logger.error(
+        "[DASHBOARD]",
+        "connectToClashSockets - connections: failed to connect to",
+        getClashWsUrl()
+      );
+      store.set({
+        trafficTotalWidget: {
+          loading: false,
+          failed: true,
+          data: { downloadTotal: 0, uploadTotal: 0 }
+        },
+        systemInfoWidget: {
+          loading: false,
+          failed: true,
+          data: {
+            connections: 0,
+            memory: 0
+          }
+        }
+      });
+    }
+  );
+}
+async function handleChooseOutbound(selector, tag) {
+  await NetShiftShellMethods.setClashApiGroupProxy(selector, tag);
+  await fetchDashboardSections();
+}
+async function handleTestGroupLatency(tag) {
+  store.set({
+    sectionsWidget: {
+      ...store.get().sectionsWidget,
+      latencyFetching: true
+    }
+  });
+  await NetShiftShellMethods.getClashApiGroupLatency(tag);
+  await fetchDashboardSections();
+  store.set({
+    sectionsWidget: {
+      ...store.get().sectionsWidget,
+      latencyFetching: false
+    }
+  });
+}
+async function handleTestProxyLatency(tag) {
+  store.set({
+    sectionsWidget: {
+      ...store.get().sectionsWidget,
+      latencyFetching: true
+    }
+  });
+  await NetShiftShellMethods.getClashApiProxyLatency(tag);
+  await fetchDashboardSections();
+  store.set({
+    sectionsWidget: {
+      ...store.get().sectionsWidget,
+      latencyFetching: false
+    }
+  });
+}
+async function renderSectionsWidget() {
+  logger.debug("[DASHBOARD]", "renderSectionsWidget");
+  const sectionsWidget = store.get().sectionsWidget;
+  const container = document.getElementById("dashboard-sections-grid");
+  if (sectionsWidget.loading || sectionsWidget.failed) {
+    const renderedWidget = renderSections({
+      loading: sectionsWidget.loading,
+      failed: sectionsWidget.failed,
+      section: {
+        code: "",
+        displayName: "",
+        outbounds: [],
+        withTagSelect: false
+      },
+      onTestLatency: () => {
+      },
+      onChooseOutbound: () => {
+      },
+      latencyFetching: sectionsWidget.latencyFetching
+    });
+    return preserveScrollForPage(() => {
+      container.replaceChildren(renderedWidget);
+    });
+  }
+  const renderedWidgets = sectionsWidget.data.map(
+    (section) => renderSections({
+      loading: sectionsWidget.loading,
+      failed: sectionsWidget.failed,
+      section,
+      latencyFetching: sectionsWidget.latencyFetching,
+      onTestLatency: (tag) => {
+        if (section.withTagSelect) {
+          return handleTestGroupLatency(tag);
+        }
+        return handleTestProxyLatency(tag);
+      },
+      onChooseOutbound: (selector, tag) => {
+        handleChooseOutbound(selector, tag);
+      }
+    })
+  );
+  return preserveScrollForPage(() => {
+    container.replaceChildren(...renderedWidgets);
+  });
+}
+async function renderBandwidthWidget() {
+  logger.debug("[DASHBOARD]", "renderBandwidthWidget");
+  const traffic = store.get().bandwidthWidget;
+  const container = document.getElementById("dashboard-widget-traffic");
+  if (traffic.loading || traffic.failed) {
+    const renderedWidget2 = renderWidget({
+      loading: traffic.loading,
+      failed: traffic.failed,
+      title: "",
+      items: []
+    });
+    return container.replaceChildren(renderedWidget2);
+  }
+  const renderedWidget = renderWidget({
+    loading: traffic.loading,
+    failed: traffic.failed,
+    title: _("Traffic"),
+    items: [
+      { key: _("Uplink"), value: `${prettyBytes(traffic.data.up)}/s` },
+      { key: _("Downlink"), value: `${prettyBytes(traffic.data.down)}/s` }
+    ]
+  });
+  container.replaceChildren(renderedWidget);
+}
+async function renderTrafficTotalWidget() {
+  logger.debug("[DASHBOARD]", "renderTrafficTotalWidget");
+  const trafficTotalWidget = store.get().trafficTotalWidget;
+  const container = document.getElementById("dashboard-widget-traffic-total");
+  if (trafficTotalWidget.loading || trafficTotalWidget.failed) {
+    const renderedWidget2 = renderWidget({
+      loading: trafficTotalWidget.loading,
+      failed: trafficTotalWidget.failed,
+      title: "",
+      items: []
+    });
+    return container.replaceChildren(renderedWidget2);
+  }
+  const renderedWidget = renderWidget({
+    loading: trafficTotalWidget.loading,
+    failed: trafficTotalWidget.failed,
+    title: _("Traffic Total"),
+    items: [
+      {
+        key: _("Uplink"),
+        value: String(prettyBytes(trafficTotalWidget.data.uploadTotal))
+      },
+      {
+        key: _("Downlink"),
+        value: String(prettyBytes(trafficTotalWidget.data.downloadTotal))
+      }
+    ]
+  });
+  container.replaceChildren(renderedWidget);
+}
+async function renderSystemInfoWidget() {
+  logger.debug("[DASHBOARD]", "renderSystemInfoWidget");
+  const systemInfoWidget = store.get().systemInfoWidget;
+  const container = document.getElementById("dashboard-widget-system-info");
+  if (systemInfoWidget.loading || systemInfoWidget.failed) {
+    const renderedWidget2 = renderWidget({
+      loading: systemInfoWidget.loading,
+      failed: systemInfoWidget.failed,
+      title: "",
+      items: []
+    });
+    return container.replaceChildren(renderedWidget2);
+  }
+  const renderedWidget = renderWidget({
+    loading: systemInfoWidget.loading,
+    failed: systemInfoWidget.failed,
+    title: _("System info"),
+    items: [
+      {
+        key: _("Active Connections"),
+        value: String(systemInfoWidget.data.connections)
+      },
+      {
+        key: _("Memory Usage"),
+        value: String(prettyBytes(systemInfoWidget.data.memory))
+      }
+    ]
+  });
+  container.replaceChildren(renderedWidget);
+}
+async function renderServicesInfoWidget() {
+  logger.debug("[DASHBOARD]", "renderServicesInfoWidget");
+  const servicesInfoWidget = store.get().servicesInfoWidget;
+  const container = document.getElementById("dashboard-widget-service-info");
+  if (servicesInfoWidget.loading || servicesInfoWidget.failed) {
+    const renderedWidget2 = renderWidget({
+      loading: servicesInfoWidget.loading,
+      failed: servicesInfoWidget.failed,
+      title: "",
+      items: []
+    });
+    return container.replaceChildren(renderedWidget2);
+  }
+  const renderedWidget = renderWidget({
+    loading: servicesInfoWidget.loading,
+    failed: servicesInfoWidget.failed,
+    title: _("Services info"),
+    items: [
+      {
+        key: _("NetShift"),
+        value: servicesInfoWidget.data.netshift ? _("\u2714 Enabled") : _("\u2718 Disabled"),
+        attributes: {
+          class: servicesInfoWidget.data.netshift ? "pdk_dashboard-page__widgets-section__item__row--success" : "pdk_dashboard-page__widgets-section__item__row--error"
+        }
+      },
+      {
+        key: _("Sing-box"),
+        value: servicesInfoWidget.data.singbox ? _("\u2714 Running") : _("\u2718 Stopped"),
+        attributes: {
+          class: servicesInfoWidget.data.singbox ? "pdk_dashboard-page__widgets-section__item__row--success" : "pdk_dashboard-page__widgets-section__item__row--error"
+        }
+      }
+    ]
+  });
+  container.replaceChildren(renderedWidget);
+}
+async function onStoreUpdate(next, prev, diff) {
+  if (diff.sectionsWidget) {
+    renderSectionsWidget();
+  }
+  if (diff.bandwidthWidget) {
+    renderBandwidthWidget();
+  }
+  if (diff.trafficTotalWidget) {
+    renderTrafficTotalWidget();
+  }
+  if (diff.systemInfoWidget) {
+    renderSystemInfoWidget();
+  }
+  if (diff.servicesInfoWidget) {
+    renderServicesInfoWidget();
+  }
+}
+async function onPageMount() {
+  onPageUnmount();
+  store.subscribe(onStoreUpdate);
+  await fetchDashboardSections();
+  await fetchServicesInfo();
+  await connectToClashSockets();
+}
+function onPageUnmount() {
+  store.unsubscribe(onStoreUpdate);
+  store.reset([
+    "bandwidthWidget",
+    "trafficTotalWidget",
+    "systemInfoWidget",
+    "servicesInfoWidget",
+    "sectionsWidget"
+  ]);
+  socket.resetAll();
+}
+function registerLifecycleListeners() {
+  store.subscribe((next, prev, diff) => {
+    if (diff.tabService && next.tabService.current !== prev.tabService.current) {
+      logger.debug(
+        "[DASHBOARD]",
+        "active tab diff event, active tab:",
+        diff.tabService.current
+      );
+      const isDashboardVisible = next.tabService.current === "dashboard";
+      if (isDashboardVisible) {
+        logger.debug(
+          "[DASHBOARD]",
+          "registerLifecycleListeners",
+          "onPageMount"
+        );
+        return onPageMount();
+      }
+      if (!isDashboardVisible) {
+        logger.debug(
+          "[DASHBOARD]",
+          "registerLifecycleListeners",
+          "onPageUnmount"
+        );
+        return onPageUnmount();
+      }
+    }
+  });
+}
+async function initController() {
+  onMount("dashboard-status").then(() => {
+    logger.debug("[DASHBOARD]", "initController", "onMount");
+    onPageMount();
+    registerLifecycleListeners();
+  });
+}
+
+// src/netshift/tabs/dashboard/styles.ts
+var styles3 = `
+#cbi-netshift-dashboard-_mount_node > div {
+    width: 100%;
+}
+
+#cbi-netshift-dashboard > h3 {
+    display: none;
+}
+    
+.pdk_dashboard-page {
+    width: 100%;
+    --dashboard-grid-columns: 4;
+}
+
+@media (max-width: 900px) {
+    .pdk_dashboard-page {
+        --dashboard-grid-columns: 2;
+    }
+}
+
+.pdk_dashboard-page__widgets-section {
+    margin-top: 10px;
+    display: grid;
+    grid-template-columns: repeat(var(--dashboard-grid-columns), 1fr);
+    grid-gap: 10px;
+}
+
+.pdk_dashboard-page__widgets-section__item {
+}
+
+.pdk_dashboard-page__widgets-section__item__title {}
+
+.pdk_dashboard-page__widgets-section__item__row {}
+
+.pdk_dashboard-page__widgets-section__item__row--success .pdk_dashboard-page__widgets-section__item__row__value {
+    color: var(--success-color-medium, green);
+}
+
+.pdk_dashboard-page__widgets-section__item__row--error .pdk_dashboard-page__widgets-section__item__row__value {
+    color: var(--error-color-medium, red);
+}
+
+.pdk_dashboard-page__widgets-section__item__row__key {}
+
+.pdk_dashboard-page__widgets-section__item__row__value {}
+
+.pdk_dashboard-page__outbound-section {
+    margin-top: 10px;
+}
+
+.pdk_dashboard-page__outbound-section__title-section {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.pdk_dashboard-page__outbound-section__title-section__title {
+    color: var(--text-color-high);
+    font-weight: 700;
+}
+
+.pdk_dashboard-page__outbound-grid {
+    margin-top: 5px;
+    display: grid;
+    grid-template-columns: repeat(var(--dashboard-grid-columns), 1fr);
+    grid-gap: 10px;
+}
+
+.pdk_dashboard-page__outbound-grid__item {
+    transition: border 0.2s ease;
+}
+
+.pdk_dashboard-page__outbound-grid__item--selectable {
+    cursor: pointer;
+}
+
+.pdk_dashboard-page__outbound-grid__item--selectable:hover {
+    border-color: var(--primary-color-high, dodgerblue);
+}
+
+.pdk_dashboard-page__outbound-grid__item--active {
+    border-color: var(--success-color-medium, green);
+}
+
+.pdk_dashboard-page__outbound-grid__item__footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 10px;
+}
+
+.pdk_dashboard-page__outbound-grid__item__type {}
+
+.pdk_dashboard-page__outbound-grid__item__latency--empty {
+    color: var(--primary-color-low, lightgray);
+}
+
+.pdk_dashboard-page__outbound-grid__item__latency--green {
+    color: var(--success-color-medium, green);
+}
+
+.pdk_dashboard-page__outbound-grid__item__latency--yellow {
+    color: var(--warn-color-medium, orange);
+}
+
+.pdk_dashboard-page__outbound-grid__item__latency--red {
+    color: var(--error-color-medium, red);
+}
+
+`;
+
+// src/netshift/tabs/dashboard/index.ts
+var DashboardTab = {
+  render,
+  initController,
+  styles: styles3
+};
+
+// src/netshift/tabs/diagnostic/renderDiagnostic.ts
+function render2() {
+  return E("div", { id: "diagnostic-status", class: "pdk_diagnostic-page" }, [
+    E("div", { class: "pdk_diagnostic-page__left-bar" }, [
+      E("div", { id: "pdk_diagnostic-page-run-check" }),
+      E("div", {
+        class: "pdk_diagnostic-page__checks",
+        id: "pdk_diagnostic-page-checks"
+      })
+    ]),
+    E("div", { class: "pdk_diagnostic-page__right-bar" }, [
+      E("div", { id: "pdk_diagnostic-page-wiki" }),
+      E("div", { id: "pdk_diagnostic-page-actions" }),
+      E("div", { id: "pdk_diagnostic-page-system-info" })
+    ])
+  ]);
+}
+
+// src/netshift/tabs/diagnostic/checks/updateCheckStore.ts
+function updateCheckStore(check, minified) {
+  const diagnosticsChecks = store.get().diagnosticsChecks;
+  const other = diagnosticsChecks.filter((item) => item.code !== check.code);
+  const smallCheck = {
+    ...check,
+    items: check.items.filter((item) => item.state !== "success")
+  };
+  const targetCheck = minified ? smallCheck : check;
+  store.set({
+    diagnosticsChecks: [...other, targetCheck]
+  });
+}
+
+// src/netshift/tabs/diagnostic/helpers/getMeta.ts
+function getMeta({ allGood, atLeastOneGood }) {
+  if (allGood) {
+    return {
+      state: "success",
+      description: _("Checks passed")
+    };
+  }
+  if (atLeastOneGood) {
+    return {
+      state: "warning",
+      description: _("Issues detected")
+    };
+  }
+  return {
+    state: "error",
+    description: _("Checks failed")
+  };
+}
+
+// src/netshift/tabs/diagnostic/checks/runDnsCheck.ts
+async function runDnsCheck() {
+  const { order, title, code } = DIAGNOSTICS_CHECKS_MAP.DNS;
+  updateCheckStore({
+    order,
+    code,
+    title,
+    description: _("Checking, please wait"),
+    state: "loading",
+    items: []
+  });
+  const dnsChecks = await NetShiftShellMethods.checkDNSAvailable();
+  if (!dnsChecks.success) {
+    updateCheckStore({
+      order,
+      code,
+      title,
+      description: _("Cannot receive checks result"),
+      state: "error",
+      items: []
+    });
+    throw new Error("DNS checks failed");
+  }
+  const data = dnsChecks.data;
+  const allGood = Boolean(data.dns_on_router) && Boolean(data.dhcp_config_status) && Boolean(data.bootstrap_dns_status) && Boolean(data.dns_status);
+  const atLeastOneGood = Boolean(data.dns_on_router) || Boolean(data.dhcp_config_status) || Boolean(data.bootstrap_dns_status) || Boolean(data.dns_status);
+  const { state, description } = getMeta({ atLeastOneGood, allGood });
+  updateCheckStore({
+    order,
+    code,
+    title,
+    description,
+    state,
+    items: [
+      ...insertIf(
+        data.dns_type === "doh" || data.dns_type === "dot" || !data.bootstrap_dns_status,
+        [
+          {
+            state: data.bootstrap_dns_status ? "success" : "error",
+            key: _("Bootsrap DNS"),
+            value: data.bootstrap_dns_server
+          }
+        ]
+      ),
+      {
+        state: data.dns_status ? "success" : "error",
+        key: _("Main DNS"),
+        value: `${data.dns_server} [${data.dns_type}]`
+      },
+      ...insertIf(
+        typeof data.dns_via_outbound_tag === "string" && data.dns_via_outbound_tag.length > 0,
+        [
+          {
+            state: "success",
+            key: _("Main DNS via outbound"),
+            value: data.dns_via_outbound_tag ?? ""
+          }
+        ]
+      ),
+      {
+        state: data.dns_on_router ? "success" : "error",
+        key: _("DNS on router"),
+        value: ""
+      },
+      {
+        state: data.dhcp_config_status ? "success" : "error",
+        key: _("DHCP has DNS server"),
+        value: ""
+      }
+    ]
+  });
+  if (!atLeastOneGood) {
+    throw new Error("DNS checks failed");
+  }
+}
+
+// src/netshift/tabs/diagnostic/checks/runSingBoxCheck.ts
+async function runSingBoxCheck() {
+  const { order, title, code } = DIAGNOSTICS_CHECKS_MAP.SINGBOX;
+  updateCheckStore({
+    order,
+    code,
+    title,
+    description: _("Checking, please wait"),
+    state: "loading",
+    items: []
+  });
+  const singBoxChecks = await NetShiftShellMethods.checkSingBox();
+  if (!singBoxChecks.success) {
+    updateCheckStore({
+      order,
+      code,
+      title,
+      description: _("Cannot receive checks result"),
+      state: "error",
+      items: []
+    });
+    throw new Error("Sing-box checks failed");
+  }
+  const data = singBoxChecks.data;
+  const allGood = Boolean(data.sing_box_installed) && Boolean(data.sing_box_version_ok) && Boolean(data.sing_box_service_exist) && Boolean(data.sing_box_autostart_disabled) && Boolean(data.sing_box_process_running) && Boolean(data.sing_box_ports_listening);
+  const atLeastOneGood = Boolean(data.sing_box_installed) || Boolean(data.sing_box_version_ok) || Boolean(data.sing_box_service_exist) || Boolean(data.sing_box_autostart_disabled) || Boolean(data.sing_box_process_running) || Boolean(data.sing_box_ports_listening);
+  const { state, description } = getMeta({ atLeastOneGood, allGood });
+  updateCheckStore({
+    order,
+    code,
+    title,
+    description,
+    state,
+    items: [
+      {
+        state: data.sing_box_installed ? "success" : "error",
+        key: _("Sing-box installed"),
+        value: ""
+      },
+      {
+        state: data.sing_box_version_ok ? "success" : "error",
+        key: _("Sing-box version is compatible (newer than 1.12.4)"),
+        value: ""
+      },
+      {
+        state: data.sing_box_service_exist ? "success" : "error",
+        key: _("Sing-box service exist"),
+        value: ""
+      },
+      {
+        state: data.sing_box_autostart_disabled ? "success" : "error",
+        key: _("Sing-box autostart disabled"),
+        value: ""
+      },
+      {
+        state: data.sing_box_process_running ? "success" : "error",
+        key: _("Sing-box process running"),
+        value: ""
+      },
+      {
+        state: data.sing_box_ports_listening ? "success" : "error",
+        key: _("Sing-box listening ports"),
+        value: ""
+      }
+    ]
+  });
+  if (!atLeastOneGood || !data.sing_box_process_running) {
+    throw new Error("Sing-box checks failed");
+  }
+}
+
+// src/netshift/tabs/diagnostic/checks/runNftCheck.ts
+async function runNftCheck() {
+  const { order, title, code } = DIAGNOSTICS_CHECKS_MAP.NFT;
+  updateCheckStore({
+    order,
+    code,
+    title,
+    description: _("Checking, please wait"),
+    state: "loading",
+    items: []
+  });
+  await RemoteFakeIPMethods.getFakeIpCheck();
+  await RemoteFakeIPMethods.getIpCheck();
+  const nftablesChecks = await NetShiftShellMethods.checkNftRules();
+  if (!nftablesChecks.success) {
+    updateCheckStore({
+      order,
+      code,
+      title,
+      description: _("Cannot receive checks result"),
+      state: "error",
+      items: []
+    });
+    throw new Error("Nftables checks failed");
+  }
+  const data = nftablesChecks.data;
+  const allGood = Boolean(data.table_exist) && Boolean(data.rules_mangle_exist) && Boolean(data.rules_mangle_counters) && Boolean(data.rules_mangle_output_exist) && Boolean(data.rules_proxy_exist) && Boolean(data.rules_proxy_counters) && !data.rules_other_mark_exist;
+  const atLeastOneGood = Boolean(data.table_exist) || Boolean(data.rules_mangle_exist) || Boolean(data.rules_mangle_counters) || Boolean(data.rules_mangle_output_exist) || Boolean(data.rules_proxy_exist) || Boolean(data.rules_proxy_counters) || !data.rules_other_mark_exist;
+  const { state, description } = getMeta({ atLeastOneGood, allGood });
+  updateCheckStore({
+    order,
+    code,
+    title,
+    description,
+    state,
+    items: [
+      {
+        state: data.table_exist ? "success" : "error",
+        key: _("Table exist"),
+        value: ""
+      },
+      {
+        state: data.rules_mangle_exist ? "success" : "error",
+        key: _("Rules mangle exist"),
+        value: ""
+      },
+      {
+        state: data.rules_mangle_counters ? "success" : "error",
+        key: _("Rules mangle counters"),
+        value: ""
+      },
+      {
+        state: data.rules_mangle_output_exist ? "success" : "error",
+        key: _("Rules mangle output exist"),
+        value: ""
+      },
+      {
+        state: data.rules_proxy_exist ? "success" : "error",
+        key: _("Rules proxy exist"),
+        value: ""
+      },
+      {
+        state: data.rules_proxy_counters ? "success" : "error",
+        key: _("Rules proxy counters"),
+        value: ""
+      },
+      {
+        state: !data.rules_other_mark_exist ? "success" : "warning",
+        key: !data.rules_other_mark_exist ? _("No other marking rules found") : _("Additional marking rules found"),
+        value: ""
+      }
+    ]
+  });
+  if (!atLeastOneGood) {
+    throw new Error("Nftables checks failed");
+  }
+}
+
+// src/netshift/tabs/diagnostic/checks/runFakeIPCheck.ts
+async function runFakeIPCheck() {
+  const { order, title, code } = DIAGNOSTICS_CHECKS_MAP.FAKEIP;
+  updateCheckStore({
+    order,
+    code,
+    title,
+    description: _("Checking, please wait"),
+    state: "loading",
+    items: []
+  });
+  const routerFakeIPResponse = await NetShiftShellMethods.checkFakeIP();
+  const checkFakeIPResponse = await RemoteFakeIPMethods.getFakeIpCheck();
+  const checkIPResponse = await RemoteFakeIPMethods.getIpCheck();
+  const checks = {
+    router: routerFakeIPResponse.success && routerFakeIPResponse.data.fakeip,
+    browserFakeIP: checkFakeIPResponse.success && checkFakeIPResponse.data.fakeip,
+    differentIP: checkFakeIPResponse.success && checkIPResponse.success && checkFakeIPResponse.data.IP !== checkIPResponse.data.IP
+  };
+  const allGood = checks.router || checks.browserFakeIP || checks.differentIP;
+  const atLeastOneGood = checks.router && checks.browserFakeIP && checks.differentIP;
+  const { state, description } = getMeta({ atLeastOneGood, allGood });
+  updateCheckStore({
+    order,
+    code,
+    title,
+    description,
+    state,
+    items: [
+      {
+        state: checks.router ? "success" : "warning",
+        key: checks.router ? _("Router DNS is routed through sing-box") : _("Router DNS is not routed through sing-box"),
+        value: ""
+      },
+      {
+        state: checks.browserFakeIP ? "success" : "error",
+        key: checks.browserFakeIP ? _("Browser is using FakeIP correctly") : _("Browser is not using FakeIP"),
+        value: ""
+      },
+      ...insertIf(checks.browserFakeIP, [
+        {
+          state: checks.differentIP ? "success" : "error",
+          key: checks.differentIP ? _("Proxy traffic is routed via FakeIP") : _("Proxy traffic is not routed via FakeIP"),
+          value: ""
+        }
+      ])
+    ]
+  });
+}
 
 // src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts
 function renderAvailableActions({
@@ -3990,7 +3978,7 @@ function renderAvailableActions({
   viewLogs,
   showSingBoxConfig
 }) {
-  return E("div", { class: "pdk_diagnostic-page__right-bar__actions" }, [
+  return E("div", { class: "card pdk_diagnostic-page__right-bar__actions" }, [
     E("b", {}, _("Available actions")),
     ...insertIf(restart.visible, [
       renderButton({
@@ -4108,7 +4096,7 @@ function renderLoadingState3(props) {
   iconWrap.appendChild(renderLoaderCircleIcon24());
   return E(
     "div",
-    { class: "pdk_diagnostic_alert pdk_diagnostic_alert--loading" },
+    { class: "card pdk_diagnostic_alert pdk_diagnostic_alert--loading" },
     [
       iconWrap,
       E("div", { class: "pdk_diagnostic_alert__content" }, [
@@ -4129,7 +4117,7 @@ function renderWarningState(props) {
   iconWrap.appendChild(renderCircleAlertIcon24());
   return E(
     "div",
-    { class: "pdk_diagnostic_alert pdk_diagnostic_alert--warning" },
+    { class: "card pdk_diagnostic_alert pdk_diagnostic_alert--warning" },
     [
       iconWrap,
       E("div", { class: "pdk_diagnostic_alert__content" }, [
@@ -4150,7 +4138,7 @@ function renderErrorState(props) {
   iconWrap.appendChild(renderCircleXIcon24());
   return E(
     "div",
-    { class: "pdk_diagnostic_alert pdk_diagnostic_alert--error" },
+    { class: "card pdk_diagnostic_alert pdk_diagnostic_alert--error" },
     [
       iconWrap,
       E("div", { class: "pdk_diagnostic_alert__content" }, [
@@ -4171,7 +4159,7 @@ function renderSuccessState(props) {
   iconWrap.appendChild(renderCircleCheckIcon24());
   return E(
     "div",
-    { class: "pdk_diagnostic_alert pdk_diagnostic_alert--success" },
+    { class: "card pdk_diagnostic_alert pdk_diagnostic_alert--success" },
     [
       iconWrap,
       E("div", { class: "pdk_diagnostic_alert__content" }, [
@@ -4192,7 +4180,7 @@ function renderSkippedState(props) {
   iconWrap.appendChild(renderCircleSlashIcon24());
   return E(
     "div",
-    { class: "pdk_diagnostic_alert pdk_diagnostic_alert--skipped" },
+    { class: "card pdk_diagnostic_alert pdk_diagnostic_alert--skipped" },
     [
       iconWrap,
       E("div", { class: "pdk_diagnostic_alert__content" }, [
@@ -4245,35 +4233,39 @@ function renderRunAction({
 
 // src/netshift/tabs/diagnostic/partials/renderSystemInfo.ts
 function renderSystemInfo({ items }) {
-  return E("div", { class: "pdk_diagnostic-page__right-bar__system-info" }, [
-    E(
-      "b",
-      { class: "pdk_diagnostic-page__right-bar__system-info__title" },
-      _("System information")
-    ),
-    ...items.map((item) => {
-      const tagClass = [
-        "pdk_diagnostic-page__right-bar__system-info__row__tag",
-        ...insertIf(item.tag?.kind === "warning", [
-          "pdk_diagnostic-page__right-bar__system-info__row__tag--warning"
-        ]),
-        ...insertIf(item.tag?.kind === "success", [
-          "pdk_diagnostic-page__right-bar__system-info__row__tag--success"
-        ])
-      ].filter(Boolean).join(" ");
-      return E(
-        "div",
-        { class: "pdk_diagnostic-page__right-bar__system-info__row" },
-        [
-          E("b", {}, item.key),
-          E("div", {}, [
-            E("span", {}, item.value),
-            E("span", { class: tagClass }, item?.tag?.label)
+  return E(
+    "div",
+    { class: "card pdk_diagnostic-page__right-bar__system-info" },
+    [
+      E(
+        "b",
+        { class: "pdk_diagnostic-page__right-bar__system-info__title" },
+        _("System information")
+      ),
+      ...items.map((item) => {
+        const tagClass = [
+          "pdk_diagnostic-page__right-bar__system-info__row__tag",
+          ...insertIf(item.tag?.kind === "warning", [
+            "pdk_diagnostic-page__right-bar__system-info__row__tag--warning"
+          ]),
+          ...insertIf(item.tag?.kind === "success", [
+            "pdk_diagnostic-page__right-bar__system-info__row__tag--success"
           ])
-        ]
-      );
-    })
-  ]);
+        ].filter(Boolean).join(" ");
+        return E(
+          "div",
+          { class: "pdk_diagnostic-page__right-bar__system-info__row" },
+          [
+            E("b", {}, item.key),
+            E("div", {}, [
+              E("span", {}, item.value),
+              E("span", { class: tagClass }, item?.tag?.label)
+            ])
+          ]
+        );
+      })
+    ]
+  );
 }
 
 // src/helpers/normalizeCompiledVersion.ts
@@ -4291,6 +4283,7 @@ function renderWikiDisclaimer(kind) {
   });
   iconWrap.appendChild(renderBookOpenTextIcon24());
   const className = [
+    "card",
     "pdk_diagnostic-page__right-bar__wiki",
     ...insertIf(kind === "error", [
       "pdk_diagnostic-page__right-bar__wiki--error"
@@ -4952,10 +4945,6 @@ var styles4 = `
 }
 
 .pdk_diagnostic-page__right-bar__wiki {
-    border: 2px var(--background-color-low, lightgray) solid;
-    border-radius: 4px;
-    padding: 10px;
-
     display: grid;
     grid-template-columns: auto;
     grid-row-gap: 10px;
@@ -4977,21 +4966,12 @@ var styles4 = `
 .pdk_diagnostic-page__right-bar__wiki__texts {}
 
 .pdk_diagnostic-page__right-bar__actions {
-    border: 2px var(--background-color-low, lightgray) solid;
-    border-radius: 4px;
-    padding: 10px;
-
     display: grid;
     grid-template-columns: auto;
     grid-row-gap: 10px;
-
 }
 
 .pdk_diagnostic-page__right-bar__system-info {
-    border: 2px var(--background-color-low, lightgray) solid;
-    border-radius: 4px;
-    padding: 10px;
-
     display: grid;
     grid-template-columns: auto;
     grid-row-gap: 10px;
@@ -5043,14 +5023,10 @@ var styles4 = `
 }
 
 .pdk_diagnostic_alert {
-    border: 2px var(--background-color-low, lightgray) solid;
-    border-radius: 4px;
-
     display: grid;
     grid-template-columns: 24px 1fr;
     grid-column-gap: 10px;
     align-items: center;
-    padding: 10px;
 }
 
 .pdk_diagnostic_alert--loading {
@@ -5390,10 +5366,7 @@ async function runNetshiftCheck(button) {
 }
 async function runSingBoxMutation(component, button) {
   setActionLoading(button.loadingKey, true);
-  showToast(
-    _("Switching sing-box core, this may take a few minutes\u2026"),
-    "success"
-  );
+  showToast(_("Switching sing-box core, this may take a few minutes\u2026"), "info");
   try {
     const result = await NetShiftShellMethods.singBoxComponentAction(
       button.backendAction === "install_stable" ? "install_stable" : "install_extended"
@@ -5423,7 +5396,7 @@ async function runNetshiftSelfUpdate(button) {
   setActionLoading(button.loadingKey, true);
   showToast(
     _("Updating NetShift, this may take a few minutes; the page will reload\u2026"),
-    "success",
+    "warning",
     6e3
   );
   try {
@@ -5490,7 +5463,7 @@ function renderComponentCard(card) {
       E("div", { class: "pdk_manager-page__component__status" }, [tag])
     );
   }
-  return E("div", { class: "pdk_manager-page__component" }, [
+  return E("div", { class: "card pdk_manager-page__component" }, [
     E("div", { class: "pdk_manager-page__component__header" }, headerChildren),
     E("div", { class: "pdk_manager-page__component__version" }, [
       E(
@@ -5616,10 +5589,6 @@ var styles5 = `
 }
 
 .pdk_manager-page__component {
-    border: 2px var(--background-color-low, lightgray) solid;
-    border-radius: 4px;
-    padding: 10px;
-    min-width: 0;
     display: grid;
     grid-template-columns: 1fr;
     grid-row-gap: 10px;
@@ -5708,6 +5677,38 @@ var ManagerTab = {
 
 // src/styles.ts
 var GlobalStyles = `
+/*
+ * NetShift design tokens (Stage 1 foundation \u2014 task-024).
+ * Each token layers over the LuCI theme var (with a hardcoded fallback) so
+ * themes still win. Reused by the custom tabs and the form redesigns
+ * (task-025/026). Keep these names stable.
+ */
+:root,
+.cbi-map {
+    --ns-card-border: var(--background-color-low, lightgray);
+    --ns-card-border-width: 2px;
+    --ns-card-radius: 4px;
+    --ns-gap: 10px;
+    --ns-card-padding: var(--ns-gap);
+    --ns-success: var(--success-color-medium, #28a745);
+    --ns-warning: var(--warn-color-medium, #f0ad4e);
+    --ns-error: var(--error-color-medium, #dc3545);
+    --ns-info: var(--primary-color-high, #2196f3);
+}
+
+/*
+ * Shared card primitive. Mirrors the Manager component card look
+ * (2px solid border, 4px radius, 10px padding, overflow-safe min-width:0).
+ * Defined BEFORE the per-tab styles so colored-border modifiers
+ * (e.g. .pdk_diagnostic_alert--warning) still win via source order.
+ */
+.card {
+    border: var(--ns-card-border-width) solid var(--ns-card-border);
+    border-radius: var(--ns-card-radius);
+    padding: var(--ns-card-padding);
+    min-width: 0;
+}
+
 ${DashboardTab.styles}
 ${DiagnosticTab.styles}
 ${ManagerTab.styles}
@@ -5727,6 +5728,42 @@ ${PartialStyles}
 /* Vertical align for remove section action button */
 #cbi-netshift-section > .cbi-section-remove {
     margin-bottom: -32px;
+}
+
+/*
+ * Sections (connection) form \u2014 native CBI option-group tabs styled as a
+ * card (task-025). Reuses task-024's --ns-* tokens. The tab strip
+ * (ul.cbi-tabmenu) sits on top; each tab pane (.cbi-section-node-tabbed)
+ * reads as the card body. depends()-driven auto-hide of tabs is unaffected.
+ */
+#cbi-netshift-section .cbi-section-node-tabbed {
+    border: var(--ns-card-border-width) solid var(--ns-card-border);
+    border-radius: var(--ns-card-radius);
+    padding: var(--ns-card-padding);
+    min-width: 0;
+}
+
+#cbi-netshift-section ul.cbi-tabmenu {
+    margin-bottom: var(--ns-gap);
+}
+
+/*
+ * Settings form \u2014 native CBI option-group tabs styled as a card (task-026).
+ * Reuses task-024's --ns-* tokens and mirrors the #cbi-netshift-section
+ * pattern above. The tab strip (ul.cbi-tabmenu) sits on top; each tab pane
+ * (.cbi-section-node-tabbed) reads as the card body. depends()-driven
+ * auto-hide of tabs is unaffected. The existing
+ * #cbi-netshift-settings > h3 hide rule above stays valid.
+ */
+#cbi-netshift-settings .cbi-section-node-tabbed {
+    border: var(--ns-card-border-width) solid var(--ns-card-border);
+    border-radius: var(--ns-card-radius);
+    padding: var(--ns-card-padding);
+    min-width: 0;
+}
+
+#cbi-netshift-settings ul.cbi-tabmenu {
+    margin-bottom: var(--ns-gap);
 }
 
 /* Centered class helper */
@@ -5804,11 +5841,19 @@ ${PartialStyles}
 }
 
 .toast-success {
-    background-color: #28a745;
+    background-color: var(--ns-success, #28a745);
 }
 
 .toast-error {
-    background-color: #dc3545;
+    background-color: var(--ns-error, #dc3545);
+}
+
+.toast-warning {
+    background-color: var(--ns-warning, #f0ad4e);
+}
+
+.toast-info {
+    background-color: var(--ns-info, #2196f3);
 }
 
 .toast.visible {
