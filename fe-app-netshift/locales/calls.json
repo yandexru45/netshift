@@ -116,7 +116,7 @@
     "call": "Available actions",
     "key": "Available actions",
     "places": [
-      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:43"
+      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:45"
     ]
   },
   {
@@ -231,6 +231,20 @@
     "key": "CIDR must be between 0 and 32",
     "places": [
       "src/validators/validateSubnet.ts:25"
+    ]
+  },
+  {
+    "call": "Clear subscription cache",
+    "key": "Clear subscription cache",
+    "places": [
+      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:127"
+    ]
+  },
+  {
+    "call": "Clearing subscription cache and re-downloading… this may take a minute",
+    "key": "Clearing subscription cache and re-downloading… this may take a minute",
+    "places": [
+      "src/netshift/tabs/diagnostic/initController.ts:329"
     ]
   },
   {
@@ -400,7 +414,7 @@
     "call": "Disable autostart",
     "key": "Disable autostart",
     "places": [
-      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:79"
+      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:81"
     ]
   },
   {
@@ -583,7 +597,7 @@
     "call": "Enable autostart",
     "key": "Enable autostart",
     "places": [
-      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:89"
+      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:91"
     ]
   },
   {
@@ -769,6 +783,15 @@
     ]
   },
   {
+    "call": "Failed to clear subscription cache",
+    "key": "Failed to clear subscription cache",
+    "places": [
+      "src/netshift/methods/shell/index.ts:254",
+      "src/netshift/tabs/diagnostic/initController.ts:344",
+      "src/netshift/tabs/diagnostic/initController.ts:348"
+    ]
+  },
+  {
     "call": "Failed to copy!",
     "key": "Failed to copy!",
     "places": [
@@ -816,7 +839,7 @@
     "call": "Get global check",
     "key": "Get global check",
     "places": [
-      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:98"
+      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:100"
     ]
   },
   {
@@ -1479,11 +1502,11 @@
     "call": "Not running",
     "key": "Not running",
     "places": [
-      "src/netshift/tabs/diagnostic/diagnostic.store.ts:56",
-      "src/netshift/tabs/diagnostic/diagnostic.store.ts:64",
-      "src/netshift/tabs/diagnostic/diagnostic.store.ts:72",
-      "src/netshift/tabs/diagnostic/diagnostic.store.ts:80",
-      "src/netshift/tabs/diagnostic/diagnostic.store.ts:88"
+      "src/netshift/tabs/diagnostic/diagnostic.store.ts:59",
+      "src/netshift/tabs/diagnostic/diagnostic.store.ts:67",
+      "src/netshift/tabs/diagnostic/diagnostic.store.ts:75",
+      "src/netshift/tabs/diagnostic/diagnostic.store.ts:83",
+      "src/netshift/tabs/diagnostic/diagnostic.store.ts:91"
     ]
   },
   {
@@ -1561,11 +1584,11 @@
     "call": "Pending",
     "key": "Pending",
     "places": [
-      "src/netshift/tabs/diagnostic/diagnostic.store.ts:104",
-      "src/netshift/tabs/diagnostic/diagnostic.store.ts:112",
-      "src/netshift/tabs/diagnostic/diagnostic.store.ts:120",
-      "src/netshift/tabs/diagnostic/diagnostic.store.ts:128",
-      "src/netshift/tabs/diagnostic/diagnostic.store.ts:136"
+      "src/netshift/tabs/diagnostic/diagnostic.store.ts:107",
+      "src/netshift/tabs/diagnostic/diagnostic.store.ts:115",
+      "src/netshift/tabs/diagnostic/diagnostic.store.ts:123",
+      "src/netshift/tabs/diagnostic/diagnostic.store.ts:131",
+      "src/netshift/tabs/diagnostic/diagnostic.store.ts:139"
     ]
   },
   {
@@ -1628,7 +1651,7 @@
     "call": "Restart NetShift",
     "key": "Restart NetShift",
     "places": [
-      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:49"
+      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:51"
     ]
   },
   {
@@ -1853,7 +1876,7 @@
     "call": "Self-update failed",
     "key": "Self-update failed",
     "places": [
-      "src/netshift/methods/shell/index.ts:253"
+      "src/netshift/methods/shell/index.ts:303"
     ]
   },
   {
@@ -1882,7 +1905,7 @@
     "key": "Show sing-box config",
     "places": [
       "src/netshift/tabs/diagnostic/initController.ts:292",
-      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:116"
+      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:118"
     ]
   },
   {
@@ -1996,14 +2019,14 @@
     "call": "Start NetShift",
     "key": "Start NetShift",
     "places": [
-      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:69"
+      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:71"
     ]
   },
   {
     "call": "Stop NetShift",
     "key": "Stop NetShift",
     "places": [
-      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:59"
+      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:61"
     ]
   },
   {
@@ -2012,6 +2035,13 @@
     "places": [
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:21",
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:57"
+    ]
+  },
+  {
+    "call": "Subscription cache cleared and re-downloaded",
+    "key": "Subscription cache cleared and re-downloaded",
+    "places": [
+      "src/netshift/tabs/diagnostic/initController.ts:337"
     ]
   },
   {
@@ -2411,7 +2441,7 @@
     "key": "View logs",
     "places": [
       "src/netshift/tabs/diagnostic/initController.ts:258",
-      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:107"
+      "src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:109"
     ]
   },
   {

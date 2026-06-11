@@ -1056,6 +1056,46 @@ var NetShiftShellMethods = {
       message: response.stderr || ""
     };
   },
+  // Clear subscription cache (async) — task-039/040 contract:
+  // component_action_async subscription clear_cache + component_action_status
+  // <job>. Deletes all subscription caches then re-downloads, which restarts
+  // the service and can exceed the rpcd ~30s wall — so it MUST run through the
+  // SAME async start+poll mechanism as the sing-box core switch (reusing the
+  // component-agnostic `pollSingBoxComponentAction`). The component/action
+  // strings are EXACTLY 'subscription'/'clear_cache' (match task-039's router).
+  clearSubscriptionCache: async () => {
+    const startResponse = await executeShellCommand({
+      command: "/usr/bin/netshift",
+      args: ["component_action_async", "subscription", "clear_cache"]
+    });
+    let start = null;
+    if (startResponse.stdout) {
+      try {
+        start = JSON.parse(
+          startResponse.stdout
+        );
+      } catch (_e) {
+        start = null;
+      }
+    }
+    if (!start || start.success !== true || !start.job_id) {
+      return {
+        success: false,
+        message: start?.message || startResponse.stderr || _("Failed to clear subscription cache")
+      };
+    }
+    const jobId = start.job_id;
+    return pollSingBoxComponentAction(async () => {
+      const statusResponse = await executeShellCommand({
+        command: "/usr/bin/netshift",
+        args: ["component_action_status", jobId]
+      });
+      if (!statusResponse.stdout) {
+        return null;
+      }
+      return parseComponentActionStatus(statusResponse.stdout);
+    });
+  },
   // NetShift self-update (async) — STABLE task-017 contract:
   // component_action_async netshift self_update + component_action_status <job>.
   // Reuses the component-agnostic poll. Because the package install swaps
@@ -1656,6 +1696,9 @@ var initialDiagnosticStore = {
       loading: false
     },
     showSingBoxConfig: {
+      loading: false
+    },
+    clearSubscriptionCache: {
       loading: false
     }
   },
@@ -3996,7 +4039,8 @@ function renderAvailableActions({
   disable,
   globalCheck,
   viewLogs,
-  showSingBoxConfig
+  showSingBoxConfig,
+  clearSubscriptionCache
 }) {
   return E("div", { class: "card pdk_diagnostic-page__right-bar__actions" }, [
     E("b", {}, _("Available actions")),
@@ -4075,6 +4119,15 @@ function renderAvailableActions({
         text: _("Show sing-box config"),
         loading: showSingBoxConfig.loading,
         disabled: showSingBoxConfig.disabled
+      })
+    ]),
+    ...insertIf(clearSubscriptionCache.visible, [
+      renderButton({
+        onClick: clearSubscriptionCache.onClick,
+        icon: renderRotateCcwIcon24,
+        text: _("Clear subscription cache"),
+        loading: clearSubscriptionCache.loading,
+        disabled: clearSubscriptionCache.disabled
       })
     ])
   ]);
@@ -4738,6 +4791,44 @@ async function handleShowSingBoxConfig() {
     });
   }
 }
+async function handleClearSubscriptionCache() {
+  const diagnosticsActions = store.get().diagnosticsActions;
+  store.set({
+    diagnosticsActions: {
+      ...diagnosticsActions,
+      clearSubscriptionCache: { loading: true }
+    }
+  });
+  showToast(
+    _("Clearing subscription cache and re-downloading\u2026 this may take a minute"),
+    "info"
+  );
+  try {
+    const result = await NetShiftShellMethods.clearSubscriptionCache();
+    if (result.success) {
+      showToast(_("Subscription cache cleared and re-downloaded"), "success");
+    } else {
+      logger.error(
+        "[DIAGNOSTIC]",
+        "handleClearSubscriptionCache - result",
+        result
+      );
+      showToast(_("Failed to clear subscription cache"), "error");
+    }
+  } catch (e) {
+    logger.error("[DIAGNOSTIC]", "handleClearSubscriptionCache - e", e);
+    showToast(_("Failed to clear subscription cache"), "error");
+  } finally {
+    await fetchServicesInfo();
+    store.set({
+      diagnosticsActions: {
+        ...diagnosticsActions,
+        clearSubscriptionCache: { loading: false }
+      }
+    });
+    store.reset(["diagnosticsChecks"]);
+  }
+}
 function renderWikiDisclaimerWidget() {
   const diagnosticsChecks = store.get().diagnosticsChecks;
   function getWikiKind() {
@@ -4810,6 +4901,12 @@ function renderDiagnosticAvailableActionsWidget() {
       loading: diagnosticsActions.showSingBoxConfig.loading,
       visible: true,
       onClick: handleShowSingBoxConfig,
+      disabled: atLeastOneServiceCommandLoading
+    },
+    clearSubscriptionCache: {
+      loading: diagnosticsActions.clearSubscriptionCache.loading,
+      visible: true,
+      onClick: handleClearSubscriptionCache,
       disabled: atLeastOneServiceCommandLoading
     }
   });

@@ -220,6 +220,56 @@ export const NetShiftShellMethods = {
         message: response.stderr || '',
       };
     },
+  // Clear subscription cache (async) — task-039/040 contract:
+  // component_action_async subscription clear_cache + component_action_status
+  // <job>. Deletes all subscription caches then re-downloads, which restarts
+  // the service and can exceed the rpcd ~30s wall — so it MUST run through the
+  // SAME async start+poll mechanism as the sing-box core switch (reusing the
+  // component-agnostic `pollSingBoxComponentAction`). The component/action
+  // strings are EXACTLY 'subscription'/'clear_cache' (match task-039's router).
+  clearSubscriptionCache: async (): Promise<SingBoxComponentActionResult> => {
+    const startResponse = await executeShellCommand({
+      command: '/usr/bin/netshift',
+      args: ['component_action_async', 'subscription', 'clear_cache'],
+    });
+
+    let start: ComponentActionStartResponse | null = null;
+
+    if (startResponse.stdout) {
+      try {
+        start = JSON.parse(
+          startResponse.stdout,
+        ) as ComponentActionStartResponse;
+      } catch (_e) {
+        start = null;
+      }
+    }
+
+    if (!start || start.success !== true || !start.job_id) {
+      return {
+        success: false,
+        message:
+          start?.message ||
+          startResponse.stderr ||
+          _('Failed to clear subscription cache'),
+      };
+    }
+
+    const jobId = start.job_id;
+
+    return pollSingBoxComponentAction(async () => {
+      const statusResponse = await executeShellCommand({
+        command: '/usr/bin/netshift',
+        args: ['component_action_status', jobId],
+      });
+
+      if (!statusResponse.stdout) {
+        return null;
+      }
+
+      return parseComponentActionStatus(statusResponse.stdout);
+    });
+  },
   // NetShift self-update (async) — STABLE task-017 contract:
   // component_action_async netshift self_update + component_action_status <job>.
   // Reuses the component-agnostic poll. Because the package install swaps

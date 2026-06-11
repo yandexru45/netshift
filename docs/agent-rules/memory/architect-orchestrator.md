@@ -1013,3 +1013,42 @@ save+`sing-box check` -> cron jobs -> start sing-box -> dnsmasq_configure ->
   APPROVED+gated+(033/034/035/036 hardware-verified). task-037/038 verified via
   smoke 155/0 + real-private.json extraction; full-config sing-box check on the
   real sub is covered by the shipped smoke (fb-caseO), not my hand harness.
+
+## task-039 + task-040: "Clear subscription cache" button in Diagnostics (2026-06-11)
+
+- USER: a Diagnostics-tab button that wipes ALL subscription caches and
+  re-downloads fresh ("частенько нужно"). OPERATOR DECISIONS: async
+  (component_action_async + poll, like core-switch/self-update); FULL reset
+  (delete all 4 per-feed files .json/.url/.rejected/.user_agent — the whole
+  SUBSCRIPTION_CACHE_FOLDER contents).
+- KEY REUSE: there is a GENERIC async component-action mechanism already —
+  `component_action()` router in updater.sh (case "$component:$action"),
+  `component_action_async <c> <a>` (forks worker, echoes job_id),
+  `component_action_status <job_id>` (JSON result). Adding a new long-running
+  async backend op = ONE case arm + ONE worker (echo {json}; return N, NEVER exit
+  — the fork at updater.sh:429-433 captures one JSON line then writes finished
+  state from $?). NO new async framework, NO ACL change (/usr/bin/netshift exec
+  already granted, not per-arg). Frontend reuses the existing
+  pollSingBoxComponentAction helper — no new poll loop.
+- task-039 (backend, APPROVED W/ COND→met, smoke 166/0): worker
+  subscription_clear_cache_and_redownload (bin/netshift, where subscription_update
+  + path builders + SUBSCRIPTION_CACHE_FOLDER are in scope) guard-deletes the cache
+  dir CONTENTS then runs subscription_update verbatim (redownload+restart-on-change).
+  RM-SAFETY (make-or-break): dual guard `[ -n "$SUBSCRIPTION_CACHE_FOLDER" ] && [ -d
+  ... ]` before `for f in "$DIR"/*; do [ -e ]||continue; rm -f "$f"`, never rm -rf
+  the dir, never a path where empty/unset constant → rm /*. Router arm
+  `subscription:clear_cache)` in updater.sh. Action string EXACTLY
+  subscription/clear_cache.
+- task-040 (frontend, APPROVED): "Clear subscription cache" button in the
+  Diagnostics Available-actions card; NetShiftShellMethods.clearSubscriptionCache
+  starts component_action_async subscription clear_cache + REUSES
+  pollSingBoxComponentAction; handleClearSubscriptionCache mirrors handleRestart
+  (loading→info toast→success/error toast→finally: fetchServicesInfo +
+  loading:false + store.reset(['diagnosticsChecks'])); rotate-ccw icon; store slice
+  in services/store.service.ts + diagnostic.store.ts; 4 new i18n msgids (en+ru),
+  fe↔luci byte-identical. main.js rebuilt idempotent, export block unchanged
+  (clearSubscriptionCache is a property, no barrel leak).
+- INTEGRATION VERIFIED: backend router arm ↔ frontend
+  ["component_action_async","subscription","clear_cache"] in built main.js match;
+  smoke all 166/0 (11 new cc-case all green); 472 vitest; no yarn pollution. All
+  UNCOMMITTED, stacked with tasks 027..038 — operator commits manually.

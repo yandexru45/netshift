@@ -7,8 +7,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: NETSHIFT\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-06-07 20:04+0300\n"
-"PO-Revision-Date: 2026-06-07 20:04+0300\n"
+"POT-Creation-Date: 2026-06-11 20:31+0300\n"
+"PO-Revision-Date: 2026-06-11 20:31+0300\n"
 "Last-Translator: yandexru45\n"
 "Language-Team: none\n"
 "Language: ru\n"
@@ -112,6 +112,12 @@ msgstr "Проверки пройдены"
 
 msgid "CIDR must be between 0 and 32"
 msgstr "CIDR должен быть между 0 и 32"
+
+msgid "Clear subscription cache"
+msgstr "Очистить кеш подписок"
+
+msgid "Clearing subscription cache and re-downloading… this may take a minute"
+msgstr "Очистка кеша подписок и повторная загрузка… это может занять минуту"
 
 msgid "Close"
 msgstr "Закрыть"
@@ -337,6 +343,9 @@ msgstr "Исключите трафик протокола NTP из туннел
 
 msgid "Exclude servers by keyword"
 msgstr "Исключать серверы по ключевому слову"
+
+msgid "Failed to clear subscription cache"
+msgstr "Не удалось очистить кеш подписок"
 
 msgid "Failed to copy!"
 msgstr "Не удалось скопировать!"
@@ -853,6 +862,9 @@ msgstr "Остановить NetShift"
 
 msgid "Subscription"
 msgstr "Подписка"
+
+msgid "Subscription cache cleared and re-downloaded"
+msgstr "Кеш подписок очищен и загружен заново"
 
 msgid "Subscription feeds, server filters and URLTest tuning"
 msgstr "Источники подписок, фильтры серверов и настройка URLTest"

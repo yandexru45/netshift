@@ -186,6 +186,7 @@ export interface StoreType {
     globalCheck: { loading: boolean };
     viewLogs: { loading: boolean };
     showSingBoxConfig: { loading: boolean };
+    clearSubscriptionCache: { loading: boolean };
   };
   diagnosticsSystemInfo: {
     loading: boolean;

@@ -741,3 +741,73 @@ append findings; keep under ~200 lines.
   diff on src = ONLY my 1 types.ts line (no churn). yarn.lock unchanged, no
   .yarn/.yarnrc.yml. FLAG (no browser): dropdown rendering/auto-hide not
   screenshotted — verified structurally.
+
+## task-040 — "Clear subscription cache" button in Diagnostics (async)
+
+- BACKEND CONTRACT (task-039, APPROVED): `component_action subscription
+  clear_cache` deletes all subscription caches + redownloads (restarts service
+  on change), driven via the EXISTING async job machinery
+  `component_action_async subscription clear_cache` → `{success,job_id,message}`,
+  poll `component_action_status <job>`. ACL already allows `/usr/bin/netshift`
+  exec — NO ACL change. Action strings are EXACTLY component='subscription',
+  action='clear_cache'.
+- SHELL METHOD: added `clearSubscriptionCache()` to `methods/shell/index.ts` as
+  a COPY of `netshiftSelfUpdate`'s start-then-poll shape BUT with the STRICT
+  (non-lenient) poll callback used by `singBoxComponentAction` install path
+  (return `null` on empty stdout — no binary swap here, so a parse/exec failure
+  IS terminal). args `['component_action_async','subscription','clear_cache']`,
+  REUSES the component-agnostic `pollSingBoxComponentAction` (NO new poll loop).
+  Returns `SingBoxComponentActionResult {success,version?,message?}`. It's a
+  PROPERTY on `NetShiftShellMethods` → NO new top-level export symbol (the
+  baseclass.extend export block is byte-identical to HEAD). NO new
+  `AvailableMethods` enum entry needed — the existing async actions pass
+  `'component_action_async'`/`'component_action_status'` + the component/action
+  as RAW string-literal args (not enum members), so I mirrored that exactly.
+- HANDLER: `handleClearSubscriptionCache` in diagnostic/initController.ts mirrors
+  `handleRestart`'s service-mutation idiom + globalCheck's toast idiom: set
+  `clearSubscriptionCache.loading=true` → `showToast(_('Clearing subscription
+  cache and re-downloading… this may take a minute'),'info')` → await the async
+  method → success→`showToast(...,'success')` else logger.error+error toast →
+  catch→logger.error+error toast → finally→`await fetchServicesInfo()` +
+  loading=false + `store.reset(['diagnosticsChecks'])`. NB: did NOT use
+  handleRestart's `setTimeout(...,5000)` — the async method ALREADY polls to
+  completion (service restart finished by the time it resolves), so refresh
+  immediately in finally. Wired into `renderDiagnosticAvailableActionsWidget`
+  (visible:true, disabled:atLeastOneServiceCommandLoading).
+- BUTTON: added `clearSubscriptionCache: ActionProps` to renderAvailableActions.ts
+  + an `insertIf(visible,[renderButton(...)])` block using `renderRotateCcwIcon24`
+  (already imported for Restart — rotate/refresh fits "clear+redownload"; the
+  icon set has NO trash icon). Label `_('Clear subscription cache')`. No custom
+  classNames (neutral btn, like globalCheck/viewLogs/showSingBoxConfig).
+- STORE: added `clearSubscriptionCache: { loading: boolean }` to
+  `diagnosticsActions` in store.service.ts type AND
+  `clearSubscriptionCache: { loading: false }` to initialDiagnosticStore in
+  diagnostic.store.ts (after showSingBoxConfig in both).
+- i18n: 4 NEW msgids (PURELY additive): 'Clear subscription cache', 'Clearing
+  subscription cache and re-downloading… this may take a minute', 'Failed to
+  clear subscription cache' (used in BOTH the shell method fallback + handler →
+  same msgid), 'Subscription cache cleared and re-downloaded'. NB the ellipsis is
+  a real `…` char (U+2026), not three dots — kept literal-consistent fe↔ru. Ran
+  `node {extract-calls,generate-pot,generate-po ru,distribute-locales}.js` (NOT
+  yarn). generate-po reported 343/346 (its count metric undercounts; there were
+  4 truly-new empty msgstr + the header). Filled ru in SOURCE
+  locales/netshift.ru.po (Очистить кеш подписок / Очистка кеша подписок и
+  повторная загрузка… это может занять минуту / Не удалось очистить кеш подписок
+  / Кеш подписок очищен и загружен заново), re-ran distribute → po/ru +
+  po/templates byte-identical to source (diff -q). Only header msgstr empty.
+- main.js: REAL +98/-1 runtime diff (new method block + handler + button +
+  widget wiring). IDEMPOTENT (md5 aa89dfc… across 2 builds), banner +
+  `return baseclass.extend({` intact, top-level export block byte-identical to
+  HEAD (no barrel leak — clearSubscriptionCache is a NetShiftShellMethods
+  property). Confirmed action args in main.js are exactly
+  `["component_action_async","subscription","clear_cache"]` + poll via
+  `component_action_status`.
+- NO new test: reused existing `pollSingBoxComponentAction` (already
+  table-tested); the method+handler is wiring (DOM/store untestable in node
+  env). vitest 472 pass unchanged.
+- yarn classic 1.22.22; ran gate via node_modules/.bin (prettier --check src
+  clean / eslint src --ext .ts,.tsx --max-warnings=0 / vitest 472 / tsup).
+  yarn.lock unchanged, no .yarn/.yarnrc.yml. Working tree also carried UNRELATED
+  task-039 backend changes (netshift bin, updater.sh, tests/entrypoint.sh) +
+  .opencode/agent edits — NOT mine. FLAG (no browser): button render + toast
+  sequence verified by reasoning + the gate, NOT screenshotted.

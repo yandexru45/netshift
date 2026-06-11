@@ -7,8 +7,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: NETSHIFT\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-06-07 17:04+0300\n"
-"PO-Revision-Date: 2026-06-07 17:04+0300\n"
+"POT-Creation-Date: 2026-06-11 17:31+0300\n"
+"PO-Revision-Date: 2026-06-11 17:31+0300\n"
 "Last-Translator: yandexru45 <>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
 "Language: \n"
@@ -81,7 +81,7 @@ msgstr ""
 msgid "Auto"
 msgstr ""
 
-#: src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:43
+#: src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:45
 msgid "Available actions"
 msgstr ""
 
@@ -152,6 +152,14 @@ msgstr ""
 
 #: src/validators/validateSubnet.ts:25
 msgid "CIDR must be between 0 and 32"
+msgstr ""
+
+#: src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:127
+msgid "Clear subscription cache"
+msgstr ""
+
+#: src/netshift/tabs/diagnostic/initController.ts:329
+msgid "Clearing subscription cache and re-downloading… this may take a minute"
 msgstr ""
 
 #: src/partials/modal/renderModal.ts:26
@@ -248,7 +256,7 @@ msgstr ""
 msgid "Diagnostics"
 msgstr ""
 
-#: src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:79
+#: src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:81
 msgid "Disable autostart"
 msgstr ""
 
@@ -356,7 +364,7 @@ msgstr ""
 msgid "Dynamic List"
 msgstr ""
 
-#: src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:89
+#: src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:91
 msgid "Enable autostart"
 msgstr ""
 
@@ -464,6 +472,12 @@ msgstr ""
 msgid "Exclude servers by keyword"
 msgstr ""
 
+#: src/netshift/methods/shell/index.ts:254
+#: src/netshift/tabs/diagnostic/initController.ts:344
+#: src/netshift/tabs/diagnostic/initController.ts:348
+msgid "Failed to clear subscription cache"
+msgstr ""
+
 #: src/helpers/copyToClipboard.ts:12
 msgid "Failed to copy!"
 msgstr ""
@@ -496,7 +510,7 @@ msgstr ""
 msgid "Fully Routed IPs"
 msgstr ""
 
-#: src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:98
+#: src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:100
 msgid "Get global check"
 msgstr ""
 
@@ -880,11 +894,11 @@ msgstr ""
 msgid "Not responding"
 msgstr ""
 
-#: src/netshift/tabs/diagnostic/diagnostic.store.ts:56
-#: src/netshift/tabs/diagnostic/diagnostic.store.ts:64
-#: src/netshift/tabs/diagnostic/diagnostic.store.ts:72
-#: src/netshift/tabs/diagnostic/diagnostic.store.ts:80
-#: src/netshift/tabs/diagnostic/diagnostic.store.ts:88
+#: src/netshift/tabs/diagnostic/diagnostic.store.ts:59
+#: src/netshift/tabs/diagnostic/diagnostic.store.ts:67
+#: src/netshift/tabs/diagnostic/diagnostic.store.ts:75
+#: src/netshift/tabs/diagnostic/diagnostic.store.ts:83
+#: src/netshift/tabs/diagnostic/diagnostic.store.ts:91
 msgid "Not running"
 msgstr ""
 
@@ -929,11 +943,11 @@ msgstr ""
 msgid "Path must end with cache.db"
 msgstr ""
 
-#: src/netshift/tabs/diagnostic/diagnostic.store.ts:104
-#: src/netshift/tabs/diagnostic/diagnostic.store.ts:112
-#: src/netshift/tabs/diagnostic/diagnostic.store.ts:120
-#: src/netshift/tabs/diagnostic/diagnostic.store.ts:128
-#: src/netshift/tabs/diagnostic/diagnostic.store.ts:136
+#: src/netshift/tabs/diagnostic/diagnostic.store.ts:107
+#: src/netshift/tabs/diagnostic/diagnostic.store.ts:115
+#: src/netshift/tabs/diagnostic/diagnostic.store.ts:123
+#: src/netshift/tabs/diagnostic/diagnostic.store.ts:131
+#: src/netshift/tabs/diagnostic/diagnostic.store.ts:139
 msgid "Pending"
 msgstr ""
 
@@ -969,7 +983,7 @@ msgstr ""
 msgid "Resolve real IP for routing"
 msgstr ""
 
-#: src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:49
+#: src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:51
 msgid "Restart NetShift"
 msgstr ""
 
@@ -1098,7 +1112,7 @@ msgstr ""
 msgid "Selector Proxy Links"
 msgstr ""
 
-#: src/netshift/methods/shell/index.ts:253
+#: src/netshift/methods/shell/index.ts:303
 msgid "Self-update failed"
 msgstr ""
 
@@ -1115,7 +1129,7 @@ msgid "Settings"
 msgstr ""
 
 #: src/netshift/tabs/diagnostic/initController.ts:292
-#: src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:116
+#: src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:118
 msgid "Show sing-box config"
 msgstr ""
 
@@ -1181,17 +1195,21 @@ msgstr ""
 msgid "Specify the path to the list file located on the router filesystem"
 msgstr ""
 
-#: src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:69
+#: src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:71
 msgid "Start NetShift"
 msgstr ""
 
-#: src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:59
+#: src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:61
 msgid "Stop NetShift"
 msgstr ""
 
 #: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:21
 #: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:57
 msgid "Subscription"
+msgstr ""
+
+#: src/netshift/tabs/diagnostic/initController.ts:337
+msgid "Subscription cache cleared and re-downloaded"
 msgstr ""
 
 #: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:22
@@ -1434,7 +1452,7 @@ msgid "Version"
 msgstr ""
 
 #: src/netshift/tabs/diagnostic/initController.ts:258
-#: src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:107
+#: src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:109
 msgid "View logs"
 msgstr ""
 

@@ -1795,6 +1795,15 @@ component_action() {
     netshift:self_update)
         updates_self_update_netshift
         ;;
+    subscription:clear_cache)
+        # Worker lives in bin/netshift (where subscription_update + the cache-path
+        # builders + SUBSCRIPTION_CACHE_FOLDER are in scope). updater.sh is sourced
+        # by bin/netshift, and the async fork re-execs "$0" component_action ...,
+        # so the function is always defined when this arm dispatches. Reachable via
+        # BOTH the sync `component_action subscription clear_cache` and the async
+        # component_action_async/component_action_status paths.
+        subscription_clear_cache_and_redownload
+        ;;
     *)
         echo '{"success":false,"message":"Unknown component action"}'
         return 1

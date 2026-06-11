@@ -3296,6 +3296,246 @@ MUEOF
     done
 
     rm -f "$mu"
+
+    # ── Clear-subscription-cache worker (task-039) ───────────────────
+    # Exercises subscription_clear_cache_and_redownload (bin/netshift) which
+    # backs `component_action subscription clear_cache`. The worker is
+    # awk-extracted VERBATIM from the shipped bin; subscription_update is STUBBED
+    # to a no-op so the test is hermetic (no network/restart). The driver is
+    # parsed in the CURRENT shell (`while read < "$out"`, NO pipe) so the
+    # assertions get EXACT state — and we verify both the guarded deletion and
+    # the JSON shape the async status layer consumes.
+    printf "\n  ${BOLD}Clear Subscription Cache${NC}\n"
+
+    local ccbin="${NETSHIFT_SRC}/usr/bin/netshift"
+    local ccupd="${NETSHIFT_LIB_DIR}/updater.sh"
+    if [ ! -r "$ccbin" ] || [ ! -r "$ccupd" ]; then
+        skip "clear-cache worker (bin / updater.sh not found)"
+        return
+    fi
+
+    local cc="/tmp/netshift-sub-clearcache-$$.sh"
+    cat > "$cc" << 'CCEOF'
+# Isolated synthetic cache dir — NEVER the real /etc/netshift/subscriptions.
+SUBSCRIPTION_CACHE_FOLDER="/tmp/netshift-cc-cache-$$"
+
+# Quiet logger; record subscription_update invocation count + control its rc.
+SUB_UPDATE_CALLS=0
+SUB_UPDATE_RC=0
+log() { :; }
+echolog() { :; }
+nolog() { :; }
+# Hermetic no-op stub for the redownload+restart path (verbatim reuse is what
+# the production worker does; here we only assert the worker CALLS it).
+subscription_update() { SUB_UPDATE_CALLS=$((SUB_UPDATE_CALLS + 1)); return "$SUB_UPDATE_RC"; }
+
+# config_foreach / config_get stubs driven by the CC_SECTIONS table:
+#   CC_SECTIONS = newline list of "<section>|<connection_type>|<proxy_config_type>"
+config_foreach() {
+    # $1=callback $2=type ; iterate sections in the CURRENT shell (no pipe) so
+    # the callback can mutate accumulator globals like has_subscription.
+    _cf_tmp="/tmp/netshift-cc-cf-$$"
+    printf '%s\n' "$CC_SECTIONS" > "$_cf_tmp"
+    while IFS= read -r _row || [ -n "$_row" ]; do
+        [ -n "$_row" ] || continue
+        CC_CUR_SECTION="${_row%%|*}"
+        _rest="${_row#*|}"
+        CC_CUR_CT="${_rest%%|*}"
+        CC_CUR_PCT="${_rest##*|}"
+        "$1" "$CC_CUR_SECTION"
+    done < "$_cf_tmp"
+    rm -f "$_cf_tmp"
+}
+config_get() {
+    # $1=varname $2=section $3=option [default]
+    case "$3" in
+        connection_type) eval "$1=\"\$CC_CUR_CT\"" ;;
+        proxy_config_type) eval "$1=\"\$CC_CUR_PCT\"" ;;
+        *) eval "$1=\"\${4:-}\"" ;;
+    esac
+}
+
+# Extract the worker VERBATIM from the shipped bin (column-0 opener → column-0 '}').
+eval "$(awk '/^subscription_clear_cache_and_redownload\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
+
+# Seed helper: write the four per-feed sidecars for a synthetic (section,hash).
+seed_feed() {
+    _s="$1"; _h="$2"
+    printf 'json'  > "$SUBSCRIPTION_CACHE_FOLDER/${_s}.${_h}.json"
+    printf 'url'   > "$SUBSCRIPTION_CACHE_FOLDER/${_s}.${_h}.url"
+    printf 'rej'   > "$SUBSCRIPTION_CACHE_FOLDER/${_s}.${_h}.rejected"
+    printf 'ua'    > "$SUBSCRIPTION_CACHE_FOLDER/${_s}.${_h}.user_agent"
+}
+
+# ── CASE 1: ≥2 feeds seeded, sections configured → all files deleted, dir
+#            preserved, subscription_update called, JSON success:true ───────
+rm -rf "$SUBSCRIPTION_CACHE_FOLDER"
+mkdir -p "$SUBSCRIPTION_CACHE_FOLDER"
+seed_feed "sec1" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+seed_feed "sec1" "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+seed_feed "sec2" "cccccccccccccccccccccccccccccccc"
+before_count=$(ls -1 "$SUBSCRIPTION_CACHE_FOLDER" 2>/dev/null | wc -l)
+CC_SECTIONS="sec1|proxy|subscription
+sec2|proxy|subscription"
+SUB_UPDATE_CALLS=0
+SUB_UPDATE_RC=0
+# Run WITHOUT $()-capture so SUB_UPDATE_CALLS (set by the stub) survives — a
+# $() subshell would trap the mutation (the documented capture landmine).
+cc1_out="/tmp/netshift-cc-json1-$$"
+subscription_clear_cache_and_redownload > "$cc1_out"
+cc1_rc=$?
+cc1_json="$(cat "$cc1_out")"
+rm -f "$cc1_out"
+after_count=$(ls -1 "$SUBSCRIPTION_CACHE_FOLDER" 2>/dev/null | wc -l)
+if [ "$before_count" -ge 8 ] && [ "$after_count" -eq 0 ]; then
+    echo "cc-case1-all-deleted(before=$before_count after=$after_count):OK"
+else
+    echo "cc-case1-all-deleted(before=$before_count after=$after_count):FAIL"
+fi
+if [ -d "$SUBSCRIPTION_CACHE_FOLDER" ]; then
+    echo 'cc-case1-dir-preserved:OK'
+else
+    echo 'cc-case1-dir-preserved:FAIL'
+fi
+if printf '%s' "$cc1_json" | jq -e '.success == true' >/dev/null 2>&1; then
+    echo 'cc-case1-json-success-true:OK'
+else
+    echo "cc-case1-json-success-true(got '$cc1_json'):FAIL"
+fi
+if [ "$SUB_UPDATE_CALLS" -eq 1 ] && [ "$cc1_rc" -eq 0 ]; then
+    echo 'cc-case1-redownload-invoked:OK'
+else
+    echo "cc-case1-redownload-invoked(calls=$SUB_UPDATE_CALLS rc=$cc1_rc):FAIL"
+fi
+
+# ── CASE 2: empty cache dir → graceful success:true ──────────────────
+rm -rf "$SUBSCRIPTION_CACHE_FOLDER"
+mkdir -p "$SUBSCRIPTION_CACHE_FOLDER"
+CC_SECTIONS="sec1|proxy|subscription"
+SUB_UPDATE_CALLS=0
+cc2_json="$(subscription_clear_cache_and_redownload)"
+if printf '%s' "$cc2_json" | jq -e '.success == true' >/dev/null 2>&1; then
+    echo 'cc-case2-empty-dir-success:OK'
+else
+    echo "cc-case2-empty-dir-success(got '$cc2_json'):FAIL"
+fi
+
+# ── CASE 2b: missing cache dir → graceful success:true, no error ─────
+rm -rf "$SUBSCRIPTION_CACHE_FOLDER"
+CC_SECTIONS="sec1|proxy|subscription"
+cc2b_json="$(subscription_clear_cache_and_redownload 2>/dev/null)"
+if printf '%s' "$cc2b_json" | jq -e '.success == true' >/dev/null 2>&1; then
+    echo 'cc-case2b-missing-dir-success:OK'
+else
+    echo "cc-case2b-missing-dir-success(got '$cc2b_json'):FAIL"
+fi
+mkdir -p "$SUBSCRIPTION_CACHE_FOLDER"
+
+# ── CASE 3: no subscription sections → graceful success:true, no redownload ─
+rm -rf "$SUBSCRIPTION_CACHE_FOLDER"
+mkdir -p "$SUBSCRIPTION_CACHE_FOLDER"
+seed_feed "sec1" "dddddddddddddddddddddddddddddddd"
+CC_SECTIONS="sec1|proxy|url"
+SUB_UPDATE_CALLS=0
+cc3_out="/tmp/netshift-cc-json3-$$"
+subscription_clear_cache_and_redownload > "$cc3_out"
+cc3_json="$(cat "$cc3_out")"
+rm -f "$cc3_out"
+cc3_after=$(ls -1 "$SUBSCRIPTION_CACHE_FOLDER" 2>/dev/null | wc -l)
+if printf '%s' "$cc3_json" | jq -e '.success == true' >/dev/null 2>&1 \
+   && [ "$SUB_UPDATE_CALLS" -eq 0 ] && [ "$cc3_after" -eq 0 ]; then
+    echo 'cc-case3-no-subs-graceful:OK'
+else
+    echo "cc-case3-no-subs-graceful(calls=$SUB_UPDATE_CALLS after=$cc3_after json='$cc3_json'):FAIL"
+fi
+
+# ── CASE 4: redownload failure → success:false, message surfaced ─────
+rm -rf "$SUBSCRIPTION_CACHE_FOLDER"
+mkdir -p "$SUBSCRIPTION_CACHE_FOLDER"
+seed_feed "sec1" "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+CC_SECTIONS="sec1|proxy|subscription"
+SUB_UPDATE_RC=1
+cc4_json="$(subscription_clear_cache_and_redownload)"
+SUB_UPDATE_RC=0
+if printf '%s' "$cc4_json" | jq -e '.success == false and (.message | length > 0)' >/dev/null 2>&1; then
+    echo 'cc-case4-redownload-fail-surfaced:OK'
+else
+    echo "cc-case4-redownload-fail-surfaced(got '$cc4_json'):FAIL"
+fi
+
+# ── CASE 5: guarded delete — empty constant can NEVER `rm -f /*` ─────
+# Structural proof: the worker only deletes when the constant is non-empty AND
+# the dir exists. Point the constant at a guarded sentinel tree and confirm an
+# UNRELATED file outside SUBSCRIPTION_CACHE_FOLDER survives, and that an empty
+# constant is a no-op (guard short-circuits before any glob).
+guard_root="/tmp/netshift-cc-guard-$$"
+rm -rf "$guard_root"
+mkdir -p "$guard_root/sub" "$guard_root/other"
+printf 'keep' > "$guard_root/other/sentinel"
+printf 'wipe' > "$guard_root/sub/feed.json"
+SUBSCRIPTION_CACHE_FOLDER="$guard_root/sub"
+CC_SECTIONS="sec1|proxy|subscription"
+subscription_clear_cache_and_redownload >/dev/null 2>&1
+if [ -f "$guard_root/other/sentinel" ] && [ ! -f "$guard_root/sub/feed.json" ] \
+   && [ -d "$guard_root/sub" ]; then
+    echo 'cc-case5-guard-scoped-to-cache-dir:OK'
+else
+    echo 'cc-case5-guard-scoped-to-cache-dir:FAIL'
+fi
+# Empty constant → guard short-circuits, sentinel still alive, no error.
+SUBSCRIPTION_CACHE_FOLDER=""
+CC_SECTIONS="sec1|proxy|subscription"
+subscription_clear_cache_and_redownload >/dev/null 2>&1
+if [ -f "$guard_root/other/sentinel" ]; then
+    echo 'cc-case5-empty-constant-noop:OK'
+else
+    echo 'cc-case5-empty-constant-noop:FAIL'
+fi
+rm -rf "$guard_root"
+
+# ── CASE 6: router dispatch — `component_action subscription clear_cache`
+#            reaches the worker (also the path the async fork uses) ──────────
+# Source the SHIPPED updater.sh component_action(); the worker is already defined
+# above, so the arm must dispatch to it. Re-point the cache dir + a fresh stub
+# that records the call so we prove the arm reached our worker.
+ROUTER_HIT=0
+subscription_clear_cache_and_redownload() {
+    ROUTER_HIT=1
+    echo '{"success":true,"message":"router-hit"}'
+    return 0
+}
+# Silence updater.sh's own logger if it defines one after sourcing.
+eval "$(awk '/^component_action\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "UPD_PATH")"
+# No $()-capture (would subshell-trap ROUTER_HIT); write JSON to a file.
+router_out="/tmp/netshift-cc-router-$$"
+component_action subscription clear_cache > "$router_out"
+router_json="$(cat "$router_out")"
+rm -f "$router_out"
+if [ "$ROUTER_HIT" -eq 1 ] && printf '%s' "$router_json" | jq -e '.success == true' >/dev/null 2>&1; then
+    echo 'cc-case6-router-dispatch:OK'
+else
+    echo "cc-case6-router-dispatch(hit=$ROUTER_HIT json='$router_json'):FAIL"
+fi
+
+rm -rf "/tmp/netshift-cc-cache-$$"
+echo 'DONE'
+CCEOF
+
+    sed -i "s|BIN_PATH|$ccbin|g; s|UPD_PATH|$ccupd|g" "$cc"
+
+    local cc_out="/tmp/netshift-cc-out-$$"
+    sh "$cc" > "$cc_out" 2>/dev/null
+    while IFS= read -r line; do
+        case "$line" in
+            *:OK) pass "$line" ;;
+            *:FAIL) fail "$line" ;;
+            *:SKIP) skip "$line" ;;
+            DONE) ;;
+            *) ;;
+        esac
+    done < "$cc_out"
+
+    rm -f "$cc" "$cc_out"
 }
 
 # ─────────────────────────────────────────────────────────────────

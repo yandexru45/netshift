@@ -316,6 +316,48 @@ async function handleShowSingBoxConfig() {
   }
 }
 
+async function handleClearSubscriptionCache() {
+  const diagnosticsActions = store.get().diagnosticsActions;
+  store.set({
+    diagnosticsActions: {
+      ...diagnosticsActions,
+      clearSubscriptionCache: { loading: true },
+    },
+  });
+
+  showToast(
+    _('Clearing subscription cache and re-downloading… this may take a minute'),
+    'info',
+  );
+
+  try {
+    const result = await NetShiftShellMethods.clearSubscriptionCache();
+
+    if (result.success) {
+      showToast(_('Subscription cache cleared and re-downloaded'), 'success');
+    } else {
+      logger.error(
+        '[DIAGNOSTIC]',
+        'handleClearSubscriptionCache - result',
+        result,
+      );
+      showToast(_('Failed to clear subscription cache'), 'error');
+    }
+  } catch (e) {
+    logger.error('[DIAGNOSTIC]', 'handleClearSubscriptionCache - e', e);
+    showToast(_('Failed to clear subscription cache'), 'error');
+  } finally {
+    await fetchServicesInfo();
+    store.set({
+      diagnosticsActions: {
+        ...diagnosticsActions,
+        clearSubscriptionCache: { loading: false },
+      },
+    });
+    store.reset(['diagnosticsChecks']);
+  }
+}
+
 function renderWikiDisclaimerWidget() {
   const diagnosticsChecks = store.get().diagnosticsChecks;
 
@@ -402,6 +444,12 @@ function renderDiagnosticAvailableActionsWidget() {
       loading: diagnosticsActions.showSingBoxConfig.loading,
       visible: true,
       onClick: handleShowSingBoxConfig,
+      disabled: atLeastOneServiceCommandLoading,
+    },
+    clearSubscriptionCache: {
+      loading: diagnosticsActions.clearSubscriptionCache.loading,
+      visible: true,
+      onClick: handleClearSubscriptionCache,
       disabled: atLeastOneServiceCommandLoading,
     },
   });

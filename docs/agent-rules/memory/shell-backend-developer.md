@@ -1273,3 +1273,64 @@ findings; keep under ~200 lines.
   task-037's hysteria2 marks (fb-caseL/N/O) all still green. Pre-existing
   `rh-case1/2/6:FAIL` red marks persist (task-031 quirk; suite EXIT=0). No sacred
   value/port/mark/path/ACL changed.
+
+## task-039: `component_action subscription clear_cache` (wipe caches + redownload)
+
+- NEW worker `subscription_clear_cache_and_redownload` in **bin/netshift** (placed
+  right after `subscription_update`, where the cache-path builders +
+  `SUBSCRIPTION_CACHE_FOLDER` + `subscription_update` are in scope). Wired into
+  `updater.sh component_action()` via a new arm `subscription:clear_cache)
+  subscription_clear_cache_and_redownload ;;` beside sing_box:*/netshift:*. Works
+  via BOTH sync `component_action subscription clear_cache` AND async
+  `component_action_async subscription clear_cache`→job_id +
+  `component_action_status <job_id>` — NO new plumbing. Help line added in
+  show_help. NO ACL change (component_action is wholesale exec-allowed).
+- **Cross-package reachability proof**: updater.sh is SOURCED by bin/netshift, and
+  the async fork does `"$0" component_action "$c" "$a"` (re-execs bin/netshift), so
+  a worker DEFINED in bin/netshift is always in scope when the `component_action`
+  arm (FROM updater.sh) dispatches it. A worker can live in either file as long as
+  it's reachable at dispatch time.
+- **Guarded full-reset delete (the only new logic)**: `[ -n
+  "$SUBSCRIPTION_CACHE_FOLDER" ] && [ -d "$SUBSCRIPTION_CACHE_FOLDER" ]` BEFORE any
+  glob, then a `for cache_file in "$SUBSCRIPTION_CACHE_FOLDER"/*; do [ -e ] || continue;
+  rm -f ...; done` (counts removed files, logs the count at info). The two guards
+  make a mistyped/empty constant → `rm -f /*` IMPOSSIBLE. Only ever removes dir
+  CONTENTS, never `rm -rf` the dir. No error on empty/missing dir (the `[ -e ]`
+  continue handles the literal-glob-when-empty case). Deleting `.json` defeats the
+  unchanged guard, deleting `.rejected` defeats the rejected-hash veto → genuine
+  full re-download.
+- **Reused subscription_update VERBATIM** for redownload+revalidate+restart — the
+  ONLY new code is the deletion + the JSON wrapper. Echo+return discipline (NEVER
+  `exit` — runs inside the async fork; an exit would kill it before the finished
+  state is written, same rule as updates_*): success → `{"success":true,
+  "message":"..."}` return 0; redownload fail → `{"success":false,"message":"..."}`
+  return $rc. No subscription sections configured → graceful
+  `{"success":true,"message":"No subscriptions configured;..."}` return 0 (detected
+  via a `config_foreach` callback identical to subscription_update's own
+  has_subscription probe). Action string is EXACTLY `subscription` / `clear_cache`
+  (frontend task-040 must match).
+- TEST: extended `test_subscription` (NO registration change — already in all)) with
+  a `Clear Subscription Cache` driver block (11 cc-case assertions). awk-extracts
+  the SHIPPED worker VERBATIM + the SHIPPED `component_action` from updater.sh,
+  stubs `subscription_update` to a no-op (records call count + controllable rc),
+  table-driven `config_foreach`/`config_get` via `CC_SECTIONS`
+  ("sec|ct|pct" rows). Cases: 1 ≥2-feeds-all-deleted+dir-preserved+success:true+
+  redownload-invoked, 2 empty-dir-graceful, 2b missing-dir-graceful, 3 no-subs→
+  success+no-redownload+files-cleared, 4 redownload-fail→success:false+message,
+  5 guard scoped to cache dir (unrelated sentinel survives) + empty-constant no-op,
+  6 router `component_action subscription clear_cache` dispatches to the worker.
+- **CAPTURE LANDMINE (bit me once, the documented `$()`-subshell variant)**:
+  `cc_json="$(worker)"` runs the worker in a SUBSHELL, so a stub's call-counter
+  (`SUB_UPDATE_CALLS`) or `ROUTER_HIT` flag mutation is TRAPPED and never reaches
+  the parent → the assertion reads the parent's stale reset value (false pass/fail).
+  When a test asserts on a side-effect VARIABLE set inside the worker, run it
+  WITHOUT `$()`: `worker > "$out"; json="$(cat "$out")"`. Cases that assert only on
+  the echoed JSON can use `$()` safely. CASE 6's `component_action()` is awk-extracted
+  function-only — its other arms reference undefined `updates_*` fns but those are
+  just `case` branches (never executed), so no need to source the whole updater.sh.
+- GATES: shellcheck -S error clean (bin/netshift + updater.sh + lib/*.sh + install.sh).
+  `smoke-tests all` = 166 passed / 0 failed (155 baseline + 11 new cc-case, suite
+  total reflects them as the driver parses in the CURRENT shell `while read <
+  "$out"` so counts are EXACT). Pre-existing `rh-case1/2/6:FAIL` red marks persist
+  (task-031 piped-while quirk; suite EXIT=0). No sacred value/port/mark/path/ACL/
+  frontend/async-machinery/download-guard change.

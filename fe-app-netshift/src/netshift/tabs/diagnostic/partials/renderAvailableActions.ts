@@ -27,6 +27,7 @@ interface IRenderAvailableActionsProps {
   globalCheck: ActionProps;
   viewLogs: ActionProps;
   showSingBoxConfig: ActionProps;
+  clearSubscriptionCache: ActionProps;
 }
 
 export function renderAvailableActions({
@@ -38,6 +39,7 @@ export function renderAvailableActions({
   globalCheck,
   viewLogs,
   showSingBoxConfig,
+  clearSubscriptionCache,
 }: IRenderAvailableActionsProps) {
   return E('div', { class: 'card pdk_diagnostic-page__right-bar__actions' }, [
     E('b', {}, _('Available actions')),
@@ -116,6 +118,15 @@ export function renderAvailableActions({
         text: _('Show sing-box config'),
         loading: showSingBoxConfig.loading,
         disabled: showSingBoxConfig.disabled,
+      }),
+    ]),
+    ...insertIf(clearSubscriptionCache.visible, [
+      renderButton({
+        onClick: clearSubscriptionCache.onClick,
+        icon: renderRotateCcwIcon24,
+        text: _('Clear subscription cache'),
+        loading: clearSubscriptionCache.loading,
+        disabled: clearSubscriptionCache.disabled,
       }),
     ]),
   ]);

@@ -1976,6 +1976,72 @@ subscription_update() {
     fi
 }
 
+# Worker for `component_action subscription clear_cache` (updater.sh router).
+# Wipes ALL per-feed subscription cache files under SUBSCRIPTION_CACHE_FOLDER
+# (the four "${section}.<md5(url)>.{json,url,rejected,user_agent}" sidecars per
+# feed), then re-runs subscription_update verbatim so every feed is re-downloaded
+# fresh, re-validated, and the service restarts on change. Deleting the .json
+# defeats the unchanged guard and deleting the .rejected defeats the rejected-hash
+# veto, so the redownload is a genuine full reset.
+#
+# CRITICAL: this runs inside the component_action async fork (component_action_async
+# → "$0" component_action subscription clear_cache). It MUST echo a single JSON
+# result and `return N` — NEVER `exit` (an exit would kill the fork before the
+# finished-state file is written). Mirrors the updates_* workers' echo+return
+# discipline.
+#
+# SAFETY: the globbed delete is guarded so a mistyped/empty SUBSCRIPTION_CACHE_FOLDER
+# can never become `rm -f /*`. We require a non-empty constant AND an existing
+# directory before `rm -f "$SUBSCRIPTION_CACHE_FOLDER"/*`, and only ever remove the
+# directory CONTENTS — never `rm -rf` the directory itself.
+subscription_clear_cache_and_redownload() {
+    local has_subscription removed cache_file update_rc
+
+    # Detect whether any subscription section is configured at all. If none,
+    # there is nothing to clear or redownload — succeed gracefully.
+    has_subscription=0
+    _detect_subscription_section_for_clear() {
+        local section="$1"
+        local connection_type proxy_config_type
+
+        config_get connection_type "$section" "connection_type"
+        [ "$connection_type" = "proxy" ] || return 0
+
+        config_get proxy_config_type "$section" "proxy_config_type"
+        [ "$proxy_config_type" = "subscription" ] && has_subscription=1
+    }
+    config_foreach _detect_subscription_section_for_clear "section"
+
+    # Guarded full-reset delete of the cache directory CONTENTS. The two guards
+    # (non-empty constant AND existing directory) make a wild `rm -f /*`
+    # impossible. No error when the directory is empty or missing.
+    removed=0
+    if [ -n "$SUBSCRIPTION_CACHE_FOLDER" ] && [ -d "$SUBSCRIPTION_CACHE_FOLDER" ]; then
+        for cache_file in "$SUBSCRIPTION_CACHE_FOLDER"/*; do
+            [ -e "$cache_file" ] || continue
+            rm -f "$cache_file" 2>/dev/null && removed=$((removed + 1))
+        done
+    fi
+    log "Cleared subscription cache: removed $removed file(s) from '$SUBSCRIPTION_CACHE_FOLDER'" "info"
+
+    if [ "$has_subscription" -eq 0 ]; then
+        echo "{\"success\":true,\"message\":\"No subscriptions configured; cleared $removed cache file(s), nothing to redownload\"}"
+        return 0
+    fi
+
+    # Reuse subscription_update ENTIRELY for the redownload + re-validate + restart.
+    subscription_update
+    update_rc=$?
+
+    if [ "$update_rc" -eq 0 ]; then
+        echo "{\"success\":true,\"message\":\"Cleared $removed subscription cache file(s) and re-downloaded all feeds\"}"
+        return 0
+    fi
+
+    echo "{\"success\":false,\"message\":\"Cleared $removed subscription cache file(s) but the redownload failed (rc=$update_rc); kept the last working cache\"}"
+    return "$update_rc"
+}
+
 # sing-box funcs
 sing_box_configure_service() {
     local sing_box_enabled sing_box_user sing_box_config_path sing_box_conffile
@@ -4900,7 +4966,8 @@ Available commands:
     check_dns_available     Check DNS server availability
     global_check            Run global system check
     component_action        Run component action: <component> <action>
-                            (e.g. sing_box install_extended|install_stable|check_update)
+                            (e.g. sing_box install_extended|install_stable|check_update,
+                            subscription clear_cache to wipe all caches + redownload)
     component_action_async  Start component_action in background; echoes a job_id
                             (use with component_action_status to poll the outcome)
     component_action_status Report an async component action by job_id: <job_id>
