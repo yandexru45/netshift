@@ -824,3 +824,69 @@ save+`sing-box check` -> cron jobs -> start sing-box -> dnsmasq_configure ->
   hardware with multiple sections — the live-kernel loop/escape proof is in the
   smoke container (egress mark chain + real ip rule); a real LAN-client end-to-end
   path needs a device (container busybox ip lacks netns/veth).
+
+## task-034 selective marking (CPU regression) + hardware test (2026-06-10)
+
+- SECOND facet of the 0.8.6 nft "mark everything" regression (sibling of
+  task-033): users (Oleg etc.) report ALL traffic goes through sing-box even when
+  only selected lists are proxied -> torrent/4K pins sing-box at 100% CPU on weak
+  routers (Orange Pi R1 Plus LTS / RK3328). 0.8.5 marked selectively (proxied
+  subnets + FakeIP range) so direct traffic bypassed sing-box. task-033's
+  default_mark fixed the egress LOOP, NOT the ingress VOLUME — different bug.
+- FIX (Option 1, operator-chosen): restore destination-selective nft marking —
+  mark (union of proxied subnets) + FakeIP 198.18/15 + DoH-CIDRs (+IPv6 mirror);
+  mark-EVERYTHING only when global_proxy active. Re-added NFT_COMMON_SET_NAME
+  (+_V6) set, restored the subnet-population path deleted in d391e32 (feeding the
+  nft set ALONGSIDE the sing-box ip_cidr rule_set from ONE centralized point so
+  they can't drift). KEY INSIGHT: nft only decides ENTER-or-not; per-section
+  outbound selection stays inside sing-box route rules -> a single union set is
+  correct for multi-section. router-origin stays direct (task-033 default_mark +
+  mangle_output untouched). global_proxy read in nft layer via
+  get_global_proxy_section (UCI-only, no side effects).
+- RE-OPEN: smoke 143/0 + code-review APPROVED, but ON HARDWARE the live nft chain
+  was STILL mark-all + netshift_subnets set absent, despite the installed binary
+  containing the selective code. ROOT: create_nft_rules was NOT IDEMPOTENT —
+  `nft add chain/rule` only APPEND, the table was never flushed. On the
+  respawn/upgrade path (no clean stop) a STALE mark-all rule from the prior build
+  sat ATOP the prerouting chain and marked everything before the selective rules.
+  clean stop->start was fine (stop_main deletes the table); apk reinstall / procd
+  respawn / crash was not. FIX: `nft_delete_table` (new nft.sh helper) as the
+  FIRST action in create_nft_rules -> idempotent rebuild. Strengthened smoke test
+  Scenario 6 PRESEEDS a stale mark-all table + runs create_nft_rules with NO
+  external delete -> proves flush clears it (revert flush => 16/1; with => 17/17).
+  smoke all 148/0. code-review-002 APPROVED.
+- HARDWARE VERIFIED (router 192.168.1.101, OWRT25/apk): after the flush fix, a
+  real `create_nft_rules` (direct + via init restart) produces SELECTIVE rules
+  (`daddr @netshift_subnets` + `daddr 198.18.0.0/15`, NO `l4proto tcp/udp meta
+  mark set` mark-all) and CREATES netshift_subnets. Final live chain: 0 mark-all /
+  2 selective, sing-box up, internet+DNS OK. The CPU regression is fixed (direct
+  traffic no longer enters sing-box). Counters 0 on the subnet set only because
+  that subscription has domain lists (FakeIP), no subnet lists — normal.
+- LANDMINE #A (apk equal-version no-overwrite): `apk add --force-reinstall
+  <pkg>` with the SAME version (0.8.6-r1 over 0.8.6-r1) does NOT reliably
+  overwrite the on-disk files on OWRT25/apk — I chased a ghost for several steps
+  thinking the new code was installed when nft.sh was still the old build. To
+  force a real file refresh, BUMP THE VERSION (built 0.8.7) so apk does a true
+  upgrade. Always verify a fix landed on-disk by grepping the installed file
+  (e.g. `grep -c nft_delete_table /usr/lib/netshift/nft.sh`), not by trusting
+  apk's "force-reinstall".
+- LANDMINE #B (apk post-install/upgrade trigger HANGS on OWRT25): the netshift
+  post-upgrade trigger (which runs the service start/restart) BLOCKS apk
+  indefinitely (start waits on network/subscription), leaving the apk DB on the
+  OLD version + holding /lib/apk/db/lock, while the FILES are already unpacked
+  correctly. Symptom: `apk add` "stuck", `ERROR: Unable to lock database:
+  Resource temporarily unavailable` on the next call, a zombie `apk add` in
+  `ps`. Recovery: `pkill -9 apk; rm -f /lib/apk/db/lock`. This is a REAL apk-path
+  bug worth a packaging fix (post-install must not synchronously block on a
+  network-dependent service start — enable/start should be detached/non-blocking
+  or deferred). Functionally the files install fine; only the DB version record
+  and the trigger hang. Flag to packaging.
+- LANDMINE #C (router teardown drops the SSH session): `/etc/init.d/netshift
+  stop`/`restart` rebuilds DNS/nft and frequently kills the ssh control session
+  mid-command; run teardown/restart with `&` + a generous sleep, then RE-CONNECT
+  in a fresh session to read results. Don't trust a truncated command as failure.
+- LANDMINE #D (procd respawn contaminates manual nft tests): killing sing-box /
+  deleting the nft table for an isolated test is instantly undone by procd
+  respawn / the monitor re-applying the service ruleset; to test create_nft_rules
+  in isolation you must disable the service (shutdown_correctly=1 + kill monitor)
+  or do it in the smoke container, not on a live procd-managed router.

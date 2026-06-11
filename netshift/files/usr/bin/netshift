@@ -1116,7 +1116,109 @@ nft_init_interfaces_set() {
     done
 }
 
+# ── task-034: destination-selective marking population ──────────────────────
+# The prerouting `mangle` chain marks ONLY proxied destinations into tproxy.
+# Those destinations live in the union nft set NFT_COMMON_SET_NAME (IPv4) and
+# its IPv6 mirror NFT_COMMON_SET_NAME_V6. These two helpers are the SINGLE
+# centralized population point: every place that adds an ip_cidr to a sing-box
+# route rule_set ALSO calls one of these so the nft set and the sing-box
+# rule_set cannot drift (the historical 0.8.5 two-sources-of-truth fragility).
+#
+# Fail-open: if the set does not exist yet (table not built) or a line is
+# malformed, that subnet simply isn't marked (goes direct) — never a blackhole.
+
+# Add the IPv4/IPv6 CIDRs found in a file into the union destination set(s).
+populate_netshift_subnets_from_file() {
+    local filepath="$1"
+
+    [ -f "$filepath" ] || return 0
+
+    if nft list set inet "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME" > /dev/null 2>&1; then
+        nft_add_set_elements_from_file_chunked "$filepath" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
+    fi
+
+    if netshift_ipv6_enabled &&
+        nft list set inet "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME_V6" > /dev/null 2>&1; then
+        nft_add_set_elements_from_file_chunked_v6 "$filepath" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME_V6"
+    fi
+}
+
+# Add a comma/space-separated string of CIDRs into the union destination set(s).
+# Items are written to a temp file and routed through the file-based path so the
+# v4/v6 split logic is shared.
+populate_netshift_subnets_from_string() {
+    local items="$1"
+    local tmpfile
+
+    [ -n "$items" ] || return 0
+
+    tmpfile="$(mktemp)" || return 0
+    printf '%s\n' "$items" | tr ', ' '\n\n' > "$tmpfile"
+    populate_netshift_subnets_from_file "$tmpfile"
+    rm -f "$tmpfile"
+}
+
+# task-034: add source-based mark-all rules for every section's fully_routed_ips
+# (LAN clients whose ALL traffic must enter sing-box, regardless of destination).
+# Only used in the destination-selective default mode; under global_proxy ALL
+# traffic is already marked. Fail-open: a missing/empty list adds no rule.
+nft_mark_fully_routed_source_ips() {
+    config_foreach _nft_mark_fully_routed_ips_for_section "section"
+}
+
+_nft_mark_fully_routed_ips_for_section() {
+    local section="$1"
+    local connection_type fully_routed_ips ip
+
+    config_get connection_type "$section" "connection_type"
+    case "$connection_type" in
+    proxy | vpn) ;;
+    *) return 0 ;;
+    esac
+
+    config_get fully_routed_ips "$section" "fully_routed_ips"
+    [ -n "$fully_routed_ips" ] || return 0
+
+    _nft_fully_routed_list_seen=""
+    config_list_foreach "$section" "fully_routed_ips" _nft_mark_fully_routed_ip_handler
+    # Fallback for option-form (space-separated) values.
+    if [ -z "$_nft_fully_routed_list_seen" ]; then
+        for ip in $fully_routed_ips; do
+            _nft_mark_fully_routed_ip_handler "$ip"
+        done
+    fi
+}
+
+_nft_mark_fully_routed_ip_handler() {
+    local ip="$1"
+
+    _nft_fully_routed_list_seen=1
+    [ -n "$ip" ] || return 0
+
+    case "$ip" in
+    *:*)
+        if netshift_ipv6_enabled; then
+            nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip6 saddr "$ip" meta mark set "$NFT_FAKEIP_MARK" counter
+        fi
+        ;;
+    *)
+        nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip saddr "$ip" meta mark set "$NFT_FAKEIP_MARK" counter
+        ;;
+    esac
+}
+
 create_nft_rules() {
+    # Rebuild the table deterministically. `nft add chain`/`nft add rule` only
+    # ever APPEND, so if a NetShiftTable was left behind by a previous start
+    # that was not cleanly stopped (procd respawn, in-place package upgrade, or
+    # a crash), its STALE rules survive and the new rules pile on top. A leftover
+    # mark-EVERYTHING rule would then sit at the top of the prerouting chain and
+    # mark all traffic before the destination-selective rules below ever run —
+    # re-introducing the 100% CPU regression even though the selective code is
+    # present. Flush first so create_nft_rules always yields exactly this chain.
+    log "Flush stale nft table before rebuild"
+    nft_delete_table "$NFT_TABLE_NAME"
+
     log "Create nft table"
     nft_create_table "$NFT_TABLE_NAME"
 
@@ -1149,6 +1251,12 @@ create_nft_rules() {
         }'
     fi
 
+    log "Create proxied-subnets union set"
+    nft_create_ipv4_set "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
+    if netshift_ipv6_enabled; then
+        nft_create_ipv6_set "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME_V6"
+    fi
+
     log "Create interface set"
     nft_init_interfaces_set
 
@@ -1162,8 +1270,61 @@ create_nft_rules() {
     if netshift_ipv6_enabled; then
         nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip6 daddr "@$NFT_LOCALV6_SET_NAME" return
     fi
-    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
+
+    # task-034: destination-selective marking.
+    #
+    # DEFAULT (no global_proxy section): mark ONLY traffic whose DESTINATION is
+    #   - a proxied subnet (@NFT_COMMON_SET_NAME / its v6 mirror), or
+    #   - the FakeIP range (proxied DOMAINS resolve to FakeIPs via the dns-in
+    #     inbound, so marking the FakeIP range carries domain routing in), or
+    #   - a DoH-block CIDR (when block_doh is on, so DoH probes are forced into
+    #     sing-box where the route-level reject rule drops them).
+    # Everything else (a torrent/4K stream to a random direct IP) is NEVER
+    # marked -> never enters sing-box -> CPU stays at 0.8.5 levels.
+    # `fully_routed_ips` are SOURCE clients whose ALL traffic must be proxied,
+    # so they are marked by source regardless of destination.
+    #
+    # GLOBAL_PROXY OVERRIDE: when a global_proxy section is active, ALL LAN
+    # tcp/udp is legitimately wanted inside sing-box (it routes every unmatched
+    # flow through the proxy), so we keep the mark-EVERYTHING rules. The same
+    # condition is read independently here (UCI only, via get_global_proxy_section)
+    # because create_nft_rules runs separately from sing_box_configure_route.
+    local nft_global_proxy_section
+    nft_global_proxy_section="$(get_global_proxy_section)"
+    if [ -n "$nft_global_proxy_section" ]; then
+        log "Global proxy section '$nft_global_proxy_section' active: marking ALL LAN traffic into sing-box" "info"
+        nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
+        nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
+    else
+        # Source-based mark-all for fully_routed_ips clients (regardless of dest).
+        nft_mark_fully_routed_source_ips
+
+        # Destination-selective: proxied subnets (union set).
+        nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "@$NFT_COMMON_SET_NAME" meta mark set "$NFT_FAKEIP_MARK" counter
+        # Destination-selective: FakeIP range (proxied domains).
+        nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "$SB_FAKEIP_INET4_RANGE" meta mark set "$NFT_FAKEIP_MARK" counter
+        if netshift_ipv6_enabled; then
+            nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip6 daddr "@$NFT_COMMON_SET_NAME_V6" meta mark set "$NFT_FAKEIP_MARK" counter
+            nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip6 daddr "$SB_FAKEIP_INET6_RANGE" meta mark set "$NFT_FAKEIP_MARK" counter
+        fi
+
+        # DoH-block CIDRs (when enabled): force well-known DoH resolver IPs into
+        # sing-box so the route-level DoH reject rule can drop them.
+        local nft_block_doh
+        config_get_bool nft_block_doh "settings" "block_doh" 0
+        if [ "$nft_block_doh" -eq 1 ]; then
+            log "DoH blocking enabled: marking DoH resolver CIDRs into sing-box" "info"
+            local doh_cidr
+            for doh_cidr in $DOH_BLOCK_IPV4_CIDRS; do
+                nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "$doh_cidr" meta mark set "$NFT_FAKEIP_MARK" counter
+            done
+            if netshift_ipv6_enabled; then
+                for doh_cidr in $DOH_BLOCK_IPV6_CIDRS; do
+                    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip6 daddr "$doh_cidr" meta mark set "$NFT_FAKEIP_MARK" counter
+                done
+            fi
+        fi
+    fi
 
     nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto tcp tproxy ip to "$SB_TPROXY_INBOUND_ADDRESS:$SB_TPROXY_INBOUND_PORT" counter
     nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto udp tproxy ip to "$SB_TPROXY_INBOUND_ADDRESS:$SB_TPROXY_INBOUND_PORT" counter
@@ -2696,6 +2857,9 @@ configure_user_subnet_list() {
     items="$(parse_domain_or_subnet_string_to_commas_string "$items" "subnets")"
     json_array="$(comma_string_to_json_array "$items")"
     patch_source_ruleset_rules "$ruleset_filepath" "ip_cidr" "$json_array"
+    # task-034: feed the same subnets into the nft union set so the prerouting
+    # mangle chain marks them into sing-box (centralized alongside the rule_set).
+    populate_netshift_subnets_from_string "$items"
 }
 
 configure_local_domain_lists() {
@@ -2738,6 +2902,8 @@ import_local_subnets_list_handler() {
     fi
 
     import_plain_subnet_list_to_local_source_ruleset_chunked "$local_subnet_list_filepath" "$ruleset_filepath"
+    # task-034: also feed the nft union set (centralized alongside the rule_set).
+    populate_netshift_subnets_from_file "$local_subnet_list_filepath"
 }
 
 configure_remote_domain_or_subnet_list_handler() {
@@ -2936,14 +3102,34 @@ import_community_service_subnet_list_handler() {
 
     # Routing for every community service is carried by a sing-box remote rule
     # set (see configure_community_list_handler -> $SRS_MAIN_URL/<service>.srs).
-    # Only discord still needs an nft path here: it has a live dport-restricted
-    # mangle rule (@netshift_discord_subnets udp dport {...}) that a sing-box
-    # route rule cannot express, so its subnets must populate that nft set.
-    # The other services formerly populated @netshift_subnets, but that set was
-    # matched by NO nft rule (dead path) and is no longer created/populated.
+    # task-034: the SUBNET-based community services (twitter/meta/telegram/
+    # cloudflare/hetzner/ovh/digitalocean/cloudfront/roblox/discord) route by IP,
+    # not by domain, so their destination IPs would NOT be covered by the FakeIP
+    # mark rule. We therefore (re)populate the nft union set NFT_COMMON_SET_NAME
+    # so the prerouting mangle chain marks them into sing-box. Domain-based
+    # services (youtube, russia_inside, ...) are carried by the FakeIP range
+    # mark rule and need no nft set population here.
+    #
+    # discord is special: it ALSO needs its own dport-restricted mangle rule
+    # (@netshift_discord_subnets udp dport {...}) that a sing-box route rule
+    # cannot express, so its subnets populate BOTH the discord set (for the
+    # dport rule) and the general union set (so TCP/other-UDP discord traffic
+    # is marked too, without the dport restriction).
+    local url is_discord
+    is_discord=0
     case "$service" in
+    "twitter") url=$SUBNETS_TWITTER ;;
+    "meta") url=$SUBNETS_META ;;
+    "telegram") url=$SUBNETS_TELERAM ;;
+    "cloudflare") url=$SUBNETS_CLOUDFLARE ;;
+    "hetzner") url=$SUBNETS_HETZNER ;;
+    "ovh") url=$SUBNETS_OVH ;;
+    "digitalocean") url=$SUBNETS_DIGITALOCEAN ;;
+    "cloudfront") url=$SUBNETS_CLOUDFRONT ;;
+    "roblox") url=$SUBNETS_ROBLOX ;;
     "discord")
-        URL=$SUBNETS_DISCORD
+        url=$SUBNETS_DISCORD
+        is_discord=1
         if ! nft list set inet "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME" > /dev/null 2>&1; then
             nft_create_ipv4_set "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME"
         fi
@@ -2960,14 +3146,18 @@ import_community_service_subnet_list_handler() {
     tmpfile=$(mktemp)
     http_proxy_address="$(get_service_proxy_address)"
 
-    download_to_file "$URL" "$tmpfile" "$http_proxy_address"
+    download_to_file "$url" "$tmpfile" "$http_proxy_address"
 
     if [ $? -ne 0 ] || [ ! -s "$tmpfile" ]; then
         log "Download $service list failed" "error"
         return 1
     fi
 
-    nft_add_set_elements_from_file_chunked "$tmpfile" "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME"
+    if [ "$is_discord" -eq 1 ]; then
+        nft_add_set_elements_from_file_chunked "$tmpfile" "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME"
+    fi
+    # task-034: feed the union set (centralized with the sing-box .srs rule_set).
+    populate_netshift_subnets_from_file "$tmpfile"
 
     rm -f "$tmpfile"
 }
@@ -3045,18 +3235,78 @@ import_subnets_from_remote_subnet_list_handler() {
     file_extension="$(url_get_file_extension "$url")"
     log "Detected file extension: '$file_extension'" "debug"
     case "$file_extension" in
-    json | srs)
-        # JSON/SRS remote subnet lists are routed via a sing-box remote rule set
+    json)
+        # JSON/SRS remote subnet lists are ROUTED via a sing-box remote rule set
         # (configure_remote_domain_or_subnet_list_handler -> sing_box_cm_add_remote_ruleset),
-        # and sing-box manages their updates automatically. The previous import
-        # here only fed the dead nft @netshift_subnets set, so it is dropped.
-        log "No subnet import needed for $file_extension list - sing-box manages updates automatically."
+        # and sing-box manages their updates automatically. But task-034 needs
+        # their destination IPs in the nft union set so the prerouting mangle
+        # chain marks them into sing-box (an .srs/.json ruleset matches IPs that
+        # are NOT in the FakeIP range). So we extract the ip_cidr entries and
+        # feed the union set here.
+        log "Import subnets from a remote JSON list (for nft selective marking)" "info"
+        import_subnets_from_remote_json_file "$url"
+        ;;
+    srs)
+        log "Import subnets from a remote SRS list (for nft selective marking)" "info"
+        import_subnets_from_remote_srs_file "$url"
         ;;
     *)
         log "Import subnets from a remote plain-text list" "info"
         import_subnets_from_remote_plain_file "$url" "$section"
         ;;
     esac
+}
+
+# task-034: download a remote JSON sing-box ruleset, extract its ip_cidr entries
+# and feed the nft union set. Routing is still done by the sing-box remote rule
+# set; this only adds the nft-layer ingress gating. Fail-open on download error.
+import_subnets_from_remote_json_file() {
+    local url="$1"
+    local json_tmpfile subnets_tmpfile http_proxy_address
+    json_tmpfile="$(mktemp)"
+    subnets_tmpfile="$(mktemp)"
+    http_proxy_address="$(get_service_proxy_address)"
+
+    download_to_file "$url" "$json_tmpfile" "$http_proxy_address"
+
+    if [ $? -ne 0 ] || [ ! -s "$json_tmpfile" ]; then
+        log "Download $url list failed" "error"
+        rm -f "$json_tmpfile" "$subnets_tmpfile"
+        return 1
+    fi
+
+    extract_ip_cidr_from_json_ruleset_to_file "$json_tmpfile" "$subnets_tmpfile"
+    populate_netshift_subnets_from_file "$subnets_tmpfile"
+    rm -f "$json_tmpfile" "$subnets_tmpfile"
+}
+
+# task-034: download a remote binary (.srs) ruleset, decompile to JSON, extract
+# its ip_cidr entries and feed the nft union set. Fail-open on download/decompile.
+import_subnets_from_remote_srs_file() {
+    local url="$1"
+    local binary_tmpfile json_tmpfile subnets_tmpfile http_proxy_address
+    binary_tmpfile="$(mktemp)"
+    json_tmpfile="$(mktemp)"
+    subnets_tmpfile="$(mktemp)"
+    http_proxy_address="$(get_service_proxy_address)"
+
+    download_to_file "$url" "$binary_tmpfile" "$http_proxy_address"
+
+    if [ $? -ne 0 ] || [ ! -s "$binary_tmpfile" ]; then
+        log "Download $url list failed" "error"
+        rm -f "$binary_tmpfile" "$json_tmpfile" "$subnets_tmpfile"
+        return 1
+    fi
+
+    if ! decompile_binary_ruleset "$binary_tmpfile" "$json_tmpfile"; then
+        log "Failed to decompile binary rule set file" "error"
+        rm -f "$binary_tmpfile" "$json_tmpfile" "$subnets_tmpfile"
+        return 1
+    fi
+
+    extract_ip_cidr_from_json_ruleset_to_file "$json_tmpfile" "$subnets_tmpfile"
+    populate_netshift_subnets_from_file "$subnets_tmpfile"
+    rm -f "$binary_tmpfile" "$json_tmpfile" "$subnets_tmpfile"
 }
 
 import_subnets_from_remote_plain_file() {
@@ -3079,6 +3329,8 @@ import_subnets_from_remote_plain_file() {
     ruleset_tag=$(get_ruleset_tag "$section" "remote" "subnets")
     ruleset_filepath="$TMP_RULESET_FOLDER/$ruleset_tag.json"
     import_plain_subnet_list_to_local_source_ruleset_chunked "$tmpfile" "$ruleset_filepath"
+    # task-034: also feed the nft union set (centralized with the rule_set).
+    populate_netshift_subnets_from_file "$tmpfile"
 
     rm -f "$tmpfile"
 }

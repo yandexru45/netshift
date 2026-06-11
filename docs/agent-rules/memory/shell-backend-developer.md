@@ -938,3 +938,126 @@ findings; keep under ~200 lines.
   direct pass calls counted, its 8 piped-while ✓ marks are the source of truth,
   all green). The pre-existing `rh-case1/2/6:FAIL` red marks persist (documented
   task-031 quirk, suite still EXIT=0).
+
+## task-034 — Destination-selective nft marking (CPU regression fix)
+
+- ROOT: 0.8.6 marked ALL LAN tcp/udp into tproxy (mangle prerouting), so every
+  forwarded flow entered sing-box (sniff + full route-rule walk per conn) →
+  100% CPU on weak routers. 0.8.5 marked SELECTIVELY: only `@netshift_subnets`
+  (proxied dest subnets) + FakeIP range `198.18.0.0/15` (proxied domains).
+  Commit 03806d7 went mark-all; d391e32 then deleted NFT_COMMON_SET_NAME + its
+  population. Restored Option-1 selective marking.
+- KEY INSIGHT: nft only decides ENTER-or-not. Inside sing-box, per-section
+  ip_cidr/domain route rules still pick `<section>-out`. So ONE union nft set
+  (all sections' proxied subnets) + FakeIP range gates ingress; multi-section
+  outbound selection is unaffected. No per-section nft sets needed.
+- Re-added `NFT_COMMON_SET_NAME="netshift_subnets"` + v6 mirror
+  `NFT_COMMON_SET_NAME_V6` to constants.sh (NEW SET, not a changed sacred
+  value). Created in create_nft_rules (v4 always, v6 only if
+  netshift_ipv6_enabled).
+- New prerouting mangle (DEFAULT, no global_proxy): `ip daddr @localv4 return`
+  (kept) → `ip daddr @netshift_subnets mark set FAKEIP_MARK` → `ip daddr
+  198.18.0.0/15 mark set` → (ipv6: `@netshift_subnets_v6` + `fd00:ec3a::/32`) →
+  DoH-block CIDRs inline when block_doh=1. NO unconditional mark-all.
+- GLOBAL_PROXY OVERRIDE: `get_global_proxy_section` is a standalone UCI-only
+  helper (reads config_foreach, NOT the `$config` string) so create_nft_rules
+  can call it directly (it runs separately from sing_box_configure_route). When
+  non-empty → keep mark-EVERYTHING tcp/udp (global proxy wants all traffic in).
+- fully_routed_ips are SOURCE clients (source_ip_cidr) — selective dest marking
+  would bypass them for direct dests. Added `nft_mark_fully_routed_source_ips`
+  (config_foreach over proxy/vpn sections) emitting `ip[6] saddr <ip> mark set`
+  rules in the default branch only (global_proxy already marks all).
+- ONE centralized population point (no drift): `populate_netshift_subnets_from_file`
+  / `_from_string` feed the nft union set (v4 via nft_add_set_elements_from_file_chunked,
+  v6 via NEW `nft_add_set_elements_from_file_chunked_v6` in nft.sh — splits by
+  presence of `:`; there is NO is_ipv6 helper). Called ALONGSIDE every sing-box
+  ip_cidr rule_set population: configure_user_subnet_list (string),
+  import_local_subnets_list_handler (file), import_community_service_subnet_list_handler
+  (restored twitter/meta/telegram/cloudflare/hetzner/ovh/digitalocean/cloudfront/
+  roblox/discord URLs; discord ALSO keeps its dport set), import_subnets_from_remote_*
+  (restored json/srs extract via extract_ip_cidr_from_json_ruleset_to_file +
+  decompile_binary_ruleset; plain too).
+- TIMING: user/local subnets populate at config-gen (sing_box_init_config, after
+  create_nft_rules → set exists). community/remote populate in background
+  list_update (set exists; ensure_nft_ready_for_list_update recreates table if
+  missing). reload/restart = stop+start so both regenerate. Matches 0.8.5.
+- PRESERVED: dns-in (127.0.0.42:53) is a separate inbound, not via marked
+  tproxy — localv4 return (127.0.0.0/8) doesn't break DNS steering. Domain
+  routing via FakeIP range mark. task-033 route.default_mark + mangle_output
+  router-origin direct UNTOUCHED. discord dport rule + general @set rule both
+  just set the same mark (idempotent, no shadow/double-mark harm).
+- TEST: new `test_selective_marking` (alias `selmark`) awk-extracts the SHIPPED
+  create_nft_rules + helpers VERBATIM, stubs UCI/predicates via SCN_* env,
+  builds the REAL ruleset on a real nft table (override NFT_TABLE_NAME), dumps
+  `nft list chain ... mangle` and asserts: (1) @set+FakeIP present & NO mark-all
+  (structural: `meta mark set` + `l4proto` line WITHOUT daddr/saddr = mark-all),
+  (2) direct-IP bypass = that mark-all absent, (3) global_proxy → mark-all
+  present + @set absent, (4) ipv6 mirror present + no mark-all + FakeIP v6,
+  (5) fully_routed saddr rule + sing-box check on a 2-section config. 12 asserts
+  all green on real nft. Registered all)/alias/usage/compose comment.
+- GATES: shellcheck -S error clean (bin + nft.sh + constants.sh + install.sh +
+  tests). `smoke-tests all` = 143 passed / 0 failed.
+
+## task-034 RE-OPEN: create_nft_rules was NOT idempotent (stale mark-all survived)
+
+- HARDWARE BUG the first pass + smoke missed: on a real router the LIVE mangle
+  chain was STILL mark-all + the `netshift_subnets` set was absent, even though
+  the installed bin had the selective code and `get_global_proxy_section`
+  returned empty. CONTRADICTION: stubbed-nft trace = selective; real-nft service
+  start = mark-all.
+- HYPOTHESIS VERDICT: **H1 FALSE, H2-variant TRUE.** Faithful container repro
+  (REAL get_global_proxy_section / _determine_global_proxy_section /
+  section_has_configured_outbound / get_subscription_urls_for_section via a real
+  `config_load` of a hardware-shaped config: one subscription proxy section,
+  global_proxy=0) confirmed `get_global_proxy_section` correctly returns EMPTY →
+  selective branch taken (H1 false; the mark-all branch is NOT wrongly entered).
+  The mark-all rules came from a LEFTOVER table (H2): `create_nft_rules` is NOT
+  idempotent — `nft add chain`/`nft add rule` only ever APPEND, and the function
+  did `nft add table` (idempotent, no flush) but never deleted the existing
+  table. So a `NetShiftTable` left behind by a previous start that was not
+  cleanly stopped — **procd respawn (`command /usr/bin/netshift start` re-run
+  with no `stop`), in-place package upgrade, or a crash** — keeps its stale
+  rules and the new selective rules pile on TOP. A stale mark-EVERYTHING rule
+  (from a prior global_proxy run or the 0.8.6 mark-all build) sits at the TOP of
+  the prerouting chain and marks ALL traffic before the new destination-selective
+  rules ever evaluate → "everything proxied / 100% CPU" even though the selective
+  code is present. Reproduced in-container: two consecutive create_nft_rules
+  (1st global_proxy, 2nd selective, NO stop between) → final chain had BOTH the
+  mark-all rules (first) AND the selective rules (dead). `stop_main` DOES delete
+  the table, so the clean stop→start path was always fine; the bug only bit the
+  no-stop respawn/upgrade path. `ensure_nft_ready_for_list_update` only calls
+  create_nft_rules when the table is MISSING, so it was never the rebuild path.
+- FIX (minimal, deterministic): new `nft_delete_table` helper in nft.sh (delete
+  inet table iff it exists, fail-open `2>/dev/null`) called at the TOP of
+  create_nft_rules (`log "Flush stale nft table before rebuild"; nft_delete_table
+  "$NFT_TABLE_NAME"`) BEFORE `nft_create_table`. create_nft_rules rebuilds the
+  whole table (sets+chains+rules) from scratch, so flush-first is safe and makes
+  it idempotent: the FINAL live chain is always exactly the intended ruleset
+  regardless of prior state. No sacred VALUE changed; ensure_nft_ready no-op
+  (table already absent when it calls). task-033 default_mark + mangle_output
+  untouched.
+- WHY THE OLD TEST MISSED IT: `test_selective_marking` (1) STUBBED
+  `get_global_proxy_section`, so it never ran the real UCI helper, and (2) always
+  did `nft delete table` first (clean slate) and called create_nft_rules ONCE —
+  so it never exercised the stale-table/respawn path that is the actual service
+  reality.
+- STRENGTHENED TEST (5 new asserts, now 17 total for selmark, suite 143→148):
+  * Scenario 6 (THE regression repro): env `SCN_PRESEED=1` makes the driver
+    leave a STALE mark-all table (full localv4/interface sets + ct/return +
+    mark-all tcp/udp) then run create_nft_rules ON TOP with REAL nft and NO
+    delete — faithfully reproducing the respawn/upgrade path. Asserts the FINAL
+    live chain has NO mark-all (`meta mark set`+`l4proto` line w/o daddr/saddr),
+    the @set rule IS present, the union set exists, and EXACTLY ONE @set rule
+    (proves rebuild, not append).
+  * Scenario 7 (`selective:realgp`): sources real /lib/functions.sh +
+    /lib/config/uci.sh, awk-extracts the SHIPPED get_global_proxy_section chain,
+    `config_load`s a real hardware-shaped config (subscription proxy,
+    global_proxy=0), asserts `GP=[]` → selective branch (kills the stub blind
+    spot). Skips if LuCI/uci absent.
+  * PROVEN to catch the bug: reverting the flush makes `selective:respawn —
+    stale mark-all rule SURVIVED the rebuild` FAIL (16/1); with the fix 17/0.
+- GATES: shellcheck -S error clean (bin + nft.sh + constants.sh + install.sh +
+  tests/entrypoint.sh). `smoke-tests all` = 148 passed / 0 failed (143 + 5).
+  Pre-existing `rh-case1/2/6:FAIL` red marks persist (documented task-031 quirk;
+  suite still EXIT=0). No registration change needed (selmark already in
+  all)/alias/usage/compose).

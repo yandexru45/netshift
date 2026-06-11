@@ -43,6 +43,15 @@ RT_TABLE_NAME="netshift"
 NFT_TABLE_NAME="NetShiftTable"
 NFT_LOCALV4_SET_NAME="localv4"
 NFT_LOCALV6_SET_NAME="localv6"
+# Destination set holding the UNION of every proxy section's proxied IPv4
+# subnets (user/local/remote/community subnet lists). Used by the prerouting
+# `mangle` chain to mark ONLY proxied destinations into the tproxy path, so
+# non-proxied traffic (e.g. a torrent to a random direct IP) never enters
+# sing-box (task-034). The per-section outbound is still selected by sing-box
+# route rules — nft only decides enter-or-not, so a single union set is enough.
+NFT_COMMON_SET_NAME="netshift_subnets"
+# IPv6 mirror of NFT_COMMON_SET_NAME (only created/used when IPv6 is enabled).
+NFT_COMMON_SET_NAME_V6="netshift_subnets_v6"
 NFT_DISCORD_SET_NAME="netshift_discord_subnets"
 NFT_INTERFACE_SET_NAME="interfaces"
 NFT_FAKEIP_MARK="0x00100000"
