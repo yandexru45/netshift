@@ -1104,3 +1104,44 @@ save+`sing-box check` -> cron jobs -> start sing-box -> dnsmasq_configure ->
   text; rely on rc PLUS an explicit post-install version re-check. opkg
   compare-versions is available on-device for a robust numeric compare if needed
   (but the installer should not need the leading v at all once verify is added).
+
+## task-043 Xray subscription UA — versioned UAs (2026-06-11)
+
+- USER reported: with subscription_format_preference=xray, the panel returns 502
+  and NetShift falls back to singbox/<ver> (sing-box JSON WITHOUT xhttp/hysteria2
+  — the original task-031 complaint). PRIVACY: operator required NO
+  subscription-identifying data anywhere (no panel host/IP/URL/path/query/server/
+  keys) in code/tests/comments/memory — only generic client UA strings are safe.
+  Diagnosis lived in the ephemeral SSH session only; never committed.
+- ROOT CAUSE (reproduced on a live panel, abstractly): the Xray-probe constant
+  SUBSCRIPTION_USER_AGENT_XRAY_CANDIDATES was bare/version-less ("v2rayN Happ").
+  That panel UA-gates its Xray branch on a <client>/<version> shape: a BARE Happ
+  (and v2rayN in any form) → 502 Bad Gateway; a VERSIONED Happ/<x.y.z> → 200 with
+  the wanted Xray-JSON ARRAY (multi-profile). The download path/headers
+  (_wget_subscription_request, helpers.sh:803) are correct & unchanged — only the
+  UA VALUE decides 502-vs-200.
+- DIAGNOSIS METHOD (reusable, privacy-safe): on the router, replay the exact
+  request per UA with `curl -A "$UA" -H <same X-* headers netshift sends> -w
+  "HTTP %{http_code}"` to isolate UA-vs-headers; the headers were identical for
+  all UAs, so the UA alone is the variable. Sniff the 200 body's FORMAT (first
+  char `[`/`{`, jq top-keys) to confirm it's the Xray-JSON array
+  (dns,inbounds,log,outbounds,remarks,routing per element) — NOT to read values.
+  Clean up /tmp on the router after.
+- FIX (task-043, APPROVED W/ CONDITIONS, smoke 170/0): constants-only —
+  SUBSCRIPTION_USER_AGENT_XRAY_CANDIDATES -> versioned ("Happ/1.0.0 v2rayN/7.0.0
+  v2rayNG/1.9.0", versioned Happ FIRST). The xray-mode probe order in
+  build_subscription_user_agent_candidates (helpers.sh:765-771) front-loads these
+  before default+cached+whitelist, dedup whole-entry, so the working versioned
+  Happ wins first; non-working UAs just fall through. Coupled smoke
+  fb-caseI-xraypref-* updated to DERIVE expected first/second/third from the
+  constant (won't rot) + a generic guard that the first candidate contains "/"
+  (bare-UA regression catch). Operator REJECTED making it a UI option (overkill /
+  system-level) and rejected touching headers / auto-mode list.
+- DEDUP NOTE: versioned "Happ/1.0.0" is DISTINCT from the bare "Happ" still in the
+  main auto-mode SUBSCRIPTION_USER_AGENT_CANDIDATES whitelist, so neither is
+  dropped by the whole-entry dedup. The bare v2rayN/Happ in the MAIN list still
+  502 on this panel but are only reached AFTER the versioned UAs already win, so
+  no wasted probes in practice. Did NOT change the main list (broader/auto-mode).
+- The CONDITION (M1) is commit-hygiene only: keep the pre-existing unrelated
+  .opencode/agent/*.md churn (model rename + bash permission) OUT of the task-043
+  commit — not a code issue. Those were already in the tree at session start.

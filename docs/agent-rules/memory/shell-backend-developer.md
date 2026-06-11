@@ -1391,3 +1391,35 @@ findings; keep under ~200 lines.
   No constants.sh / frontend / async-machinery / version-decision(:1679) /
   sing-box-install-path / sacred-value change. apk path: the same verify belt
   covers apk's equal-version no-overwrite quirk (reasoned; opkg covered in smoke).
+
+## task-043 — versioned Xray-JSON probe User-Agents (constants-only)
+
+- Finding (abstract, no identifiers): some panels gate their Xray-JSON branch on
+  a `<client>/<version>` UA SHAPE. A bare/version-less UA can be rejected (server
+  502); a VERSIONED UA of the same client yields the wanted Xray-JSON array body
+  (the multi-profile format `xray_json_to_uri_lines` parses, carrying
+  xhttp/hysteria2). Fix = make the probe send versioned UAs first.
+- `SUBSCRIPTION_USER_AGENT_XRAY_CANDIDATES` (constants.sh) is the ordered set
+  probed FIRST in `xray` format-preference mode by
+  `build_subscription_user_agent_candidates` (helpers.sh:765-771;
+  order = XRAY_CANDIDATES → default(singbox/<ver>) → cached-winner → main
+  whitelist, deduped). Changed it from bare `"v2rayN Happ"` to versioned
+  `"Happ/1.0.0 v2rayN/7.0.0 v2rayNG/1.9.0"` (versioned client first). The
+  separate auto-mode `SUBSCRIPTION_USER_AGENT_CANDIDATES` (still has bare names)
+  and the request headers in `_wget_subscription_request` were untouched — only
+  the UA VALUE decides the 502-vs-200 outcome, no header change needed.
+- Coupled smoke test: `fb-caseI-xraypref-*` (tests/entrypoint.sh CASE I, run via
+  the `subscription` category) hardcoded the old bare literals. Rewrote them to
+  DERIVE the expected first/second/third candidates from
+  `$SUBSCRIPTION_USER_AGENT_XRAY_CANDIDATES` (sourced in the CASE-I subshell via
+  `set -- $SUBSCRIPTION_USER_AGENT_XRAY_CANDIDATES`) so a future version bump
+  won't rot the test. Added one generic guard `fb-caseI-xraypref-first-versioned`
+  (`case "$first" in */*)`) so we never regress to a bare UA. The auto-mode
+  `fb-caseI-auto-has-v2rayN` assertion is unrelated (tests the auto whitelist).
+- shellcheck -S error clean (entrypoint.sh is OUT of the lint scope — only
+  bin/lib/install.sh). `smoke-tests all` = 170 passed / 0 failed (same total
+  before+after; the standalone `subscription` category went 86→87 from the +1
+  guard, but the aggregate `all` "Results:" counter reported 170 either way — a
+  harness counting quirk, not a regression; all four `fb-caseI-xraypref-*` lines
+  print :OK in both runs). No ports/marks/paths/schema touched; runtime contract
+  intact.

@@ -2512,44 +2512,61 @@ else
     echo "fb-caseI-singboxpref-default-first(got '$caseI_sbp_first'):FAIL"
 fi
 
-# (f) xray preference: the Xray-JSON UAs (Happ/v2rayN) come FIRST — before the
+# (f) xray preference: the versioned Xray-JSON UAs come FIRST — before the
 # default singbox/<ver> AND before the cached preferred winner. Pass a cached
-# preferred ('Hiddify') to prove the xray UAs outrank it.
+# preferred ('Hiddify') to prove the xray UAs outrank it. The expected first two
+# candidates are DERIVED from the SUBSCRIPTION_USER_AGENT_XRAY_CANDIDATES constant
+# (sourced above) so a future constant tweak doesn't rot this test.
 caseI_xray="$(build_subscription_user_agent_candidates "" "Hiddify" "xray")"
 caseI_xray_first="$(printf '%s\n' "$caseI_xray" | sed -n '1p')"
 caseI_xray_second="$(printf '%s\n' "$caseI_xray" | sed -n '2p')"
+# Expected first/second/third xray UAs, split from the constant (in order).
+# shellcheck disable=SC2086 # word-splitting of the candidate list is intentional
+set -- $SUBSCRIPTION_USER_AGENT_XRAY_CANDIDATES
+caseI_xray_exp1="$1"
+caseI_xray_exp2="$2"
+caseI_xray_exp3="$3"
 # Position helper: line number of an exact match (empty if absent).
 caseI_pos() { printf '%s\n' "$1" | grep -Fxn "$2" | head -n1 | cut -d: -f1; }
-caseI_xray_p_v2rayn="$(caseI_pos "$caseI_xray" 'v2rayN')"
-caseI_xray_p_happ="$(caseI_pos "$caseI_xray" 'Happ')"
+caseI_xray_p_1="$(caseI_pos "$caseI_xray" "$caseI_xray_exp1")"
+caseI_xray_p_2="$(caseI_pos "$caseI_xray" "$caseI_xray_exp2")"
+caseI_xray_p_3="$(caseI_pos "$caseI_xray" "$caseI_xray_exp3")"
 caseI_xray_p_default="$(caseI_pos "$caseI_xray" "$caseI_default")"
 caseI_xray_p_pref="$(caseI_pos "$caseI_xray" 'Hiddify')"
-# First two lines are the xray subset "v2rayN Happ" (in constant order).
-if [ "$caseI_xray_first" = 'v2rayN' ] && [ "$caseI_xray_second" = 'Happ' ]; then
+# First two lines are the first two xray candidates (in constant order).
+if [ "$caseI_xray_first" = "$caseI_xray_exp1" ] && [ "$caseI_xray_second" = "$caseI_xray_exp2" ]; then
     echo 'fb-caseI-xraypref-xray-first:OK'
 else
     echo "fb-caseI-xraypref-xray-first(1st='$caseI_xray_first' 2nd='$caseI_xray_second'):FAIL"
 fi
-# xray UAs precede the default and the cached preferred winner.
-if [ -n "$caseI_xray_p_v2rayn" ] && [ -n "$caseI_xray_p_happ" ] &&
+# Guard: the first xray candidate is VERSIONED (contains a '/'), not a bare UA.
+case "$caseI_xray_first" in
+*/*) echo 'fb-caseI-xraypref-first-versioned:OK' ;;
+*) echo "fb-caseI-xraypref-first-versioned(got '$caseI_xray_first'):FAIL" ;;
+esac
+# Every xray UA precedes the default and the cached preferred winner.
+if [ -n "$caseI_xray_p_1" ] && [ -n "$caseI_xray_p_2" ] && [ -n "$caseI_xray_p_3" ] &&
     [ -n "$caseI_xray_p_default" ] && [ -n "$caseI_xray_p_pref" ] &&
-    [ "$caseI_xray_p_v2rayn" -lt "$caseI_xray_p_default" ] &&
-    [ "$caseI_xray_p_happ" -lt "$caseI_xray_p_default" ] &&
-    [ "$caseI_xray_p_v2rayn" -lt "$caseI_xray_p_pref" ] &&
-    [ "$caseI_xray_p_happ" -lt "$caseI_xray_p_pref" ]; then
+    [ "$caseI_xray_p_1" -lt "$caseI_xray_p_default" ] &&
+    [ "$caseI_xray_p_2" -lt "$caseI_xray_p_default" ] &&
+    [ "$caseI_xray_p_3" -lt "$caseI_xray_p_default" ] &&
+    [ "$caseI_xray_p_1" -lt "$caseI_xray_p_pref" ] &&
+    [ "$caseI_xray_p_2" -lt "$caseI_xray_p_pref" ] &&
+    [ "$caseI_xray_p_3" -lt "$caseI_xray_p_pref" ]; then
     echo 'fb-caseI-xraypref-outranks-default-and-cache:OK'
 else
-    echo "fb-caseI-xraypref-outranks-default-and-cache(v2rayN=$caseI_xray_p_v2rayn happ=$caseI_xray_p_happ def=$caseI_xray_p_default pref=$caseI_xray_p_pref):FAIL"
+    echo "fb-caseI-xraypref-outranks-default-and-cache(1=$caseI_xray_p_1 2=$caseI_xray_p_2 3=$caseI_xray_p_3 def=$caseI_xray_p_default pref=$caseI_xray_p_pref):FAIL"
 fi
-# Dedup holds: no UA emitted twice (each of v2rayN/Happ/default appears once).
-caseI_xray_v2rayn_count="$(printf '%s\n' "$caseI_xray" | grep -Fxc 'v2rayN')"
-caseI_xray_happ_count="$(printf '%s\n' "$caseI_xray" | grep -Fxc 'Happ')"
+# Dedup holds: no UA emitted twice (each xray UA and the default appears once).
+caseI_xray_1_count="$(printf '%s\n' "$caseI_xray" | grep -Fxc "$caseI_xray_exp1")"
+caseI_xray_2_count="$(printf '%s\n' "$caseI_xray" | grep -Fxc "$caseI_xray_exp2")"
+caseI_xray_3_count="$(printf '%s\n' "$caseI_xray" | grep -Fxc "$caseI_xray_exp3")"
 caseI_xray_def_count="$(printf '%s\n' "$caseI_xray" | grep -Fxc "$caseI_default")"
-if [ "$caseI_xray_v2rayn_count" = "1" ] && [ "$caseI_xray_happ_count" = "1" ] &&
-    [ "$caseI_xray_def_count" = "1" ]; then
+if [ "$caseI_xray_1_count" = "1" ] && [ "$caseI_xray_2_count" = "1" ] &&
+    [ "$caseI_xray_3_count" = "1" ] && [ "$caseI_xray_def_count" = "1" ]; then
     echo 'fb-caseI-xraypref-dedup:OK'
 else
-    echo "fb-caseI-xraypref-dedup(v2rayN=$caseI_xray_v2rayn_count happ=$caseI_xray_happ_count def=$caseI_xray_def_count):FAIL"
+    echo "fb-caseI-xraypref-dedup(1=$caseI_xray_1_count 2=$caseI_xray_2_count 3=$caseI_xray_3_count def=$caseI_xray_def_count):FAIL"
 fi
 
 # (g) Unrecognised preference falls back to auto order: default first.
