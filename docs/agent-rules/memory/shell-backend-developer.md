@@ -1334,3 +1334,60 @@ findings; keep under ~200 lines.
   "$out"` so counts are EXACT). Pre-existing `rh-case1/2/6:FAIL` red marks persist
   (task-031 piped-while quirk; suite EXIT=0). No sacred value/port/mark/path/ACL/
   frontend/async-machinery/download-guard change.
+
+## task-041: self-update verify-after-install (opkg silent no-op fix)
+
+- **Root cause (proven on router):** opkg returns rc=0 for "Not downgrading"/
+  "already installed"/"up to date". A legacy v-prefixed build (`v0.8.6-r1`) sorts
+  ABOVE the no-v target (`0.8.7-r1`) in opkg's dpkg-style compare, so a plain
+  `opkg install` refuses AND returns rc=0. The self-update worker trusted rc and
+  emitted `{"success":true}` while NOTHING installed. **opkg install rc is NOT a
+  reliable success signal** — the only robust check is to RE-READ the installed
+  version after the call.
+- Fix #1 (`updates_pkg_install_file` opkg branch): `opkg install
+  --force-downgrade --force-reinstall "$pkg_file"`. `--force-downgrade` lands the
+  v→no-v transition; `--force-reinstall` covers the same-exact-version no-op. apk
+  branch unchanged (`apk add --allow-untrusted`; apk overwrites by default).
+- Fix #2 new helper `updates_pkg_installed_version <pkg>` (mirrors
+  `updates_pkg_is_installed`/`_candidate_version` but reads INSTALLED not feed):
+  opkg `list-installed | grep "^<pkg> " | head -n1 | awk -F' - ' '{print $2}'`;
+  apk `list --installed <pkg> | awk '{print $1}' | head -n1` then strip `<pkg>-`
+  prefix via `${line#"$pkg"-}`. grep/awk only, NO Oniguruma.
+- Fix #3 verify-after-install belt in `_updates_self_update_netshift_core` (after
+  the install loop, BEFORE the defensive restore + success cleanup): re-read the
+  CORE installed version, normalize with the SAME rules the version-decision uses
+  (`${x#v}` then `${x%%-*}` to drop `-rN`), and gate on
+  `[ "$inst_semver" != "$latest_semver" ] && ! is_min_package_version
+  "$inst_semver" "$latest_semver"` (i.e. fail unless installed == target OR
+  installed >= target). On fail: `_updates_self_update_restore_config
+  "$backup_made"` + `rm -rf "$UPDATES_NETSHIFT_DOWNLOAD_DIR"` + `updates_log ...
+  "error"` + `echo '{"success":false,"message":"NetShift core package did not
+  upgrade ...; configuration preserved"}'` + **`return 1` (NEVER exit** — async
+  worker; exit skips the wrapper's `updates_restore_after_swap` epilogue + the
+  finished-job-state write). Only a verified change reaches the existing success
+  JSON. Gates the CORE pkg only (luci/ru stay non-critical).
+- `is_min_package_version current required` returns 0 when `current >= required`
+  (it's a `sort -V | head -1 == required` test) — so call it as
+  `is_min_package_version "$installed" "$target"`.
+- All new vars declared at the TOP of the core fn (`core_installed
+  core_installed_semver latest_semver`) — shellcheck `-S error` clean.
+- **Smoke (test_self_update_netshift, alias `selfupdate`, no new top-level test):**
+  extended the fake opkg stub: `install` arm now skips leading `--*` flags
+  (`while ...; case --*) shift;; *) break;; esac`) so `$1` is the file path even
+  with the new force flags; on a REAL success it rewrites the `netshift -` line in
+  `$SU_INSTALLED_LIST` to `$SU_TARGET_INSTALLED_VER` (so verify passes) UNLESS
+  `$SU_NOOP` is set (then list keeps the OLD version → simulates "Not
+  downgrading"). luci-* files excluded from the rewrite via nested case. Each
+  scenario now seeds `installed.list` with `netshift - 0.8.0-r1` (the install arm
+  mutates it, so reset per-scenario). New Scenario 6 (`SU_NOOP=1`, all other
+  markers ok): asserts `selfupdate-noop-detected-successfalse` (success:false),
+  `-noop-install-attempted`, `-noop-config-intact`, `-noop-download-dir-cleaned`.
+  Happy path Scenario 3 still `success:true version 0.8.1` (verify passes because
+  the stub reports the target post-install). SELF-PROVED the guard: temporarily
+  prefixed the verify `if` with `false &&` → `selfupdate-noop-detected-successfalse`
+  FAILED (worker falsely reported success on the no-op), then restored → passes.
+- shellcheck -S error clean (bin+libs+install.sh); `smoke-tests all` = 170 passed
+  / 0 failed (166 baseline + 4 new no-op assertions; selfupdate category 13→17).
+  No constants.sh / frontend / async-machinery / version-decision(:1679) /
+  sing-box-install-path / sacred-value change. apk path: the same verify belt
+  covers apk's equal-version no-overwrite quirk (reasoned; opkg covered in smoke).

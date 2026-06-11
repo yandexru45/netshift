@@ -1052,3 +1052,55 @@ save+`sing-box check` -> cron jobs -> start sing-box -> dnsmasq_configure ->
   ["component_action_async","subscription","clear_cache"] in built main.js match;
   smoke all 166/0 (11 new cc-case all green); 472 vitest; no yarn pollution. All
   UNCOMMITTED, stacked with tasks 027..038 — operator commits manually.
+
+## DIAGNOSED: self-update silently no-ops on opkg/ipk routers with a v-prefixed installed build (2026-06-11)
+
+- USER (main router ssh root@192.168.1.1, OWRT 24.10.5 mediatek/filogic aarch64,
+  OPKG/ipk, Xiaomi AX3000T): NetShift self-update from the web UI reports
+  "updated to 0.8.7" but the installed version stays v0.8.6. Logs show the whole
+  self_update worker succeeding ("installing netshift-0.8.7-r1-all.ipk" ...
+  "NetShift updated to 0.8.7").
+- ROOT CAUSE (empirically proven on the router): the installed build is the OLD
+  ipk that carried a leading `v` (constants `NETSHIFT_VERSION="v0.8.6"`, opkg
+  pkg version `v0.8.6-r1`). The new release is `0.8.7-r1` (no v, post task-028).
+  `opkg install <file.ipk>` REFUSES to "downgrade": it prints
+  `Not downgrading package ... from v0.8.6-r1 to 0.8.7-r1.` and RETURNS rc=0
+  (NOT an error for opkg). So updates_pkg_install_file (updater.sh:1410,
+  `opkg install "$f" >/dev/null 2>&1`) sees rc=0 -> the worker logs success and
+  emits {"success":true,...} while NOTHING was installed.
+- WHY opkg thinks it's a downgrade: `opkg compare-versions "v0.8.6-r1" ">>"
+  "0.8.7-r1"` => rc=0 (TRUE). The leading `v` sorts ABOVE the digit, so
+  v0.8.6 > 0.8.7 in opkg's dpkg-style compare. Without the v,
+  `0.8.6-r1 << 0.8.7-r1` => true (correct). This is the packaging.md §3 / task-028
+  fragility realized: routers still running a pre-028 v-build can never self-update
+  to a no-v release.
+- TWO distinct bugs to fix in updater.sh:
+  1. PRIMARY (silent success): `updates_pkg_install_file` swallows opkg's
+     "Not downgrading" no-op as rc=0. The install path never VERIFIES the
+     post-install version actually changed. FIX directions:
+     (a) opkg path add `--force-downgrade` (and/or `--force-reinstall`) so a
+         v->no-v transition actually installs; AND/OR
+     (b) post-install VERIFY: after install, re-read the installed pkg version
+         and compare to the target; if unchanged, treat as failure (honest JSON
+         {"success":false}) instead of reporting success. Verify-after-install is
+         the robust belt — opkg "already installed"/"not downgrading"/"up to date"
+         all return rc=0, so rc alone is NOT a reliable success signal on opkg.
+  2. CONTRIBUTING: the v-prefix legacy build. The compare in
+     _updates_self_update_netshift_core ALREADY v-strips both sides
+     (`${installed#v}` = `${latest#v}`, :1679) so it correctly decides "need
+     update"; the failure is purely at the opkg install step.
+- MANUAL FIX applied on the router (recovery, verified): downloaded all 3 ipks
+  from the latest release and `opkg install --force-downgrade <file>` each ->
+  netshift + luci-app-netshift now 0.8.7-r1, constants NETSHIFT_VERSION="0.8.7"
+  (no v), get_system_info netshift_version 0.8.7. Future 0.8.7->0.8.8 upgrades
+  will work normally (both sides no-v). Note: install drops
+  /etc/config/netshift-opkg conffile-diff artifact (harmless; rm'd).
+- apk SIDE NOTE (not the user's box but same helper): apk uses `-r` for release,
+  treats a dashed UPSTREAM version specially (task-034 landmine #A: equal-version
+  no-overwrite). The same verify-after-install belt would harden apk too. Whatever
+  fix is chosen must be tested on BOTH opkg and apk paths (packaging gate).
+- LANDMINE for the fix: `updates_pkg_install_file` redirects stdout+stderr to
+  /dev/null, so the "Not downgrading" message is invisible — never rely on opkg
+  text; rely on rc PLUS an explicit post-install version re-check. opkg
+  compare-versions is available on-device for a robust numeric compare if needed
+  (but the installer should not need the leading v at all once verify is added).

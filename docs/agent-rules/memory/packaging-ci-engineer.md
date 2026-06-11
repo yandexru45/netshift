@@ -105,3 +105,12 @@ artifacts out of the container -> **ipk underscore->dash rename**
   unsupported; needs >=15 MB on `/overlay`; NO uninstall path (removal lives in
   package `prerm`). GitHub API rate-limit is a known fragility (wget path has no
   guard).
+- `pkg_install` opkg branch uses `opkg install --force-downgrade
+  --force-reinstall "$pkg_file"` (task-042). Plain `opkg install` silently
+  no-op'd (rc=0) when re-run on a router with an older build: the legacy
+  v-prefixed version (`v0.8.6-r1`) sorts ABOVE the no-v release (`0.8.7-r1`) so
+  opkg "won't downgrade", and equal versions report "up to date". Both force
+  flags make opkg remove+reinstall (proven on OWRT 24.10.5 aarch64). apk branch
+  unchanged — `apk add --allow-untrusted` overwrites by default. This is the
+  install.sh twin of the task-041 `updates_pkg_install_file` updater.sh fix;
+  keep both upgrade paths (README script + in-app self-update) aligned.

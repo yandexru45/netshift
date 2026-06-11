@@ -1407,7 +1407,15 @@ updates_pkg_install_file() {
     if updates_pkg_is_apk; then
         apk add --allow-untrusted "$pkg_file" </dev/null >/dev/null 2>&1
     else
-        opkg install "$pkg_file" </dev/null >/dev/null 2>&1
+        # --force-downgrade: a legacy v-prefixed build (e.g. v0.8.6) sorts ABOVE
+        # the no-v target (0.8.7) in opkg's dpkg-style compare, so a plain
+        # `opkg install` returns rc=0 and refuses ("Not downgrading ..."). The
+        # flag forces the v->no-v transition to actually land.
+        # --force-reinstall: covers the "already installed at this exact version"
+        # no-op. opkg rc is NOT a reliable success signal either way — the
+        # verify-after-install belt in _updates_self_update_netshift_core is the
+        # authoritative check.
+        opkg install --force-downgrade --force-reinstall "$pkg_file" </dev/null >/dev/null 2>&1
     fi
 }
 
@@ -1442,6 +1450,32 @@ updates_pkg_candidate_version() {
     else
         # opkg list prints "<name> - <version>"; take the field after " - ".
         version="$(opkg list "$pkg_name" 2>/dev/null | grep "^${pkg_name} " | head -n1 | awk -F' - ' '{print $2}')"
+    fi
+
+    printf '%s' "$version"
+}
+
+# Echoes the INSTALLED version of a package (what is on the system right now),
+# or nothing if the package is not installed. Distinct from
+# updates_pkg_candidate_version (that reads the FEED candidate). Parsed with
+# grep/awk only — NEVER Oniguruma jq. Mirrors updates_pkg_is_installed.
+#   opkg list-installed -> "<name> - <version>"   (field after " - ")
+#   apk  list --installed <pkg> -> "<name>-<version> <arch> {...} ..."  (strip "<name>-")
+updates_pkg_installed_version() {
+    local pkg_name="$1"
+    local line version=""
+
+    if updates_pkg_is_apk; then
+        # First installed-list token is "<name>-<version>"; strip the leading
+        # "<pkg>-" so only the version (e.g. "0.8.7-r1") remains.
+        line="$(apk list --installed "$pkg_name" 2>/dev/null | awk '{print $1}' | head -n1)"
+        case "$line" in
+        "$pkg_name"-*) version="${line#"$pkg_name"-}" ;;
+        esac
+    else
+        # opkg list-installed prints "<name> - <version>"; take the field after
+        # " - " for the exact package name.
+        version="$(opkg list-installed 2>/dev/null | grep "^${pkg_name} " | head -n1 | awk -F' - ' '{print $2}')"
     fi
 
     printf '%s' "$version"
@@ -1663,6 +1697,7 @@ _updates_self_update_download_assets() {
 # failure so the wrapper still runs the restore epilogue).
 _updates_self_update_netshift_core() {
     local installed latest pkg file_path candidate_file
+    local core_installed core_installed_semver latest_semver
     local backup_made=0
 
     installed="$NETSHIFT_VERSION"
@@ -1740,6 +1775,31 @@ _updates_self_update_netshift_core() {
             updates_log "Self-update: failed to install $pkg (non-critical; continuing)" "warn"
         fi
     done
+
+    # Verify-after-install for the CORE package (authoritative success signal).
+    # opkg returns rc=0 for "already installed"/"up to date"/"Not downgrading",
+    # so the install rc above is NOT trustworthy. RE-READ the installed version
+    # and confirm it actually became the target before declaring success. apk's
+    # equal-version no-overwrite quirk is caught by this same belt.
+    core_installed="$(updates_pkg_installed_version "$UPDATES_NETSHIFT_PKG_CORE")"
+    # Normalize with the SAME rules the version-decision uses: drop a leading "v"
+    # and any "-rN"/"-suffix" so we compare semver-to-semver.
+    core_installed_semver="${core_installed#v}"
+    core_installed_semver="${core_installed_semver%%-*}"
+    latest_semver="${latest#v}"
+    latest_semver="${latest_semver%%-*}"
+
+    # The install took iff the installed semver equals the target, OR the
+    # installed semver is now >= the target (is_min_package_version current
+    # required → 0 when current >= required).
+    if [ "$core_installed_semver" != "$latest_semver" ] \
+        && ! is_min_package_version "$core_installed_semver" "$latest_semver"; then
+        _updates_self_update_restore_config "$backup_made"
+        rm -rf "$UPDATES_NETSHIFT_DOWNLOAD_DIR" 2>/dev/null
+        updates_log "Self-update: core package version did not change after install (package manager reported success but no upgrade occurred)" "error"
+        echo '{"success":false,"message":"NetShift core package did not upgrade (package manager refused or no-op); configuration preserved"}'
+        return 1
+    fi
 
     # Defensive: if the config got clobbered/emptied, restore from the backup.
     _updates_self_update_restore_config "$backup_made"

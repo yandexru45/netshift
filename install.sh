@@ -57,7 +57,7 @@ pkg_install() {
         # If you're installing a non-standard (self-built) package, use the --allow-untrusted option:
         apk add --allow-untrusted "$pkg_file"
     else
-        opkg install "$pkg_file"
+        opkg install --force-downgrade --force-reinstall "$pkg_file"
     fi
 }
 

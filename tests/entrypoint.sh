@@ -5142,6 +5142,14 @@ DIGEOF
 exit 1
 CURLEOF
     # Fake opkg: `install <file>` succeeds per marker and records the install.
+    # `list-installed` cats $SU_INSTALLED_LIST (the AUTHORITATIVE installed set).
+    # On a REAL (non-no-op) install the install arm rewrites the netshift line in
+    # that list to the target version (SU_TARGET_INSTALLED_VER), so the
+    # verify-after-install belt sees the upgrade. When $SU_NOOP is set the install
+    # arm returns rc=0 but does NOT touch the list (simulates opkg "Not
+    # downgrading"/"already installed"), so list-installed keeps reporting the OLD
+    # version. opkg ignores the extra --force-* flags the production code now
+    # passes (they come before the file path).
     cat > "$work/bin/opkg" << 'OPKGEOF'
 #!/bin/sh
 case "$1" in
@@ -5149,9 +5157,33 @@ update) exit 0 ;;
 list-installed) cat "$SU_INSTALLED_LIST" 2>/dev/null; exit 0 ;;
 install)
     shift
+    # Skip the leading --force-* flags so $1 is the package file path.
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        --*) shift ;;
+        *) break ;;
+        esac
+    done
     printf '%s\n' "$1" >> "$SU_INSTALL_LOG"
-    [ -f "$SU_PKG_OK" ] && exit 0
-    exit 1
+    [ -f "$SU_PKG_OK" ] || exit 1
+    # A real success updates the installed list to the target version for the
+    # core package, UNLESS we are simulating a no-op ($SU_NOOP set).
+    if [ -z "$SU_NOOP" ]; then
+        case "$1" in
+        *netshift-* | *netshift_*)
+            # Only the core "netshift" file, not luci-app-/luci-i18n- ones.
+            case "$1" in
+            *luci-* ) : ;;
+            *)
+                grep -v '^netshift ' "$SU_INSTALLED_LIST" 2>/dev/null > "$SU_INSTALLED_LIST.tmp"
+                printf 'netshift - %s\n' "$SU_TARGET_INSTALLED_VER" >> "$SU_INSTALLED_LIST.tmp"
+                mv "$SU_INSTALLED_LIST.tmp" "$SU_INSTALLED_LIST"
+                ;;
+            esac
+            ;;
+        esac
+    fi
+    exit 0
     ;;
 esac
 exit 0
@@ -5248,6 +5280,9 @@ DRVEOF
     export SU_INSTALL_LOG="$work/install.log"
     export SU_INSTALLED_LIST="$work/installed.list"
     export SU_LATEST_TAG="0.8.1"
+    # Version the fake opkg writes for "netshift" after a REAL (non-no-op)
+    # install, so the verify-after-install belt (task-041) sees the upgrade.
+    export SU_TARGET_INSTALLED_VER="0.8.1-r1"
 
     local out="$work/out.json"
     run_scenario() {
@@ -5255,8 +5290,9 @@ DRVEOF
         PATH="$work/bin:/usr/bin:/bin" ash "$drv" > "$out" 2>/dev/null || true
     }
 
-    # RU i18n NOT installed (so it is never downloaded/installed).
-    : > "$work/installed.list"
+    # RU i18n NOT installed (so it is never downloaded/installed). The installed
+    # list starts with the OLD core version; a real install rewrites it.
+    printf 'netshift - 0.8.0-r1\n' > "$work/installed.list"
 
     # ── Scenario 1: connectivity fails → abort BEFORE any change ──────────────
     rm -f "$SU_DNS_OK" "$SU_HTTP_OK" "$SU_GH_OK" "$SU_DL_OK" "$SU_PKG_OK"
@@ -5306,9 +5342,12 @@ DRVEOF
     fi
 
     # ── Scenario 3: happy path → success:true with version, restore ran ───────
+    # The fake opkg rewrites the installed list to the target after a real
+    # install, so the task-041 verify-after-install belt confirms the upgrade.
     : > "$SU_DNS_OK"; : > "$SU_HTTP_OK"; : > "$SU_GH_OK"; : > "$SU_DL_OK"; : > "$SU_PKG_OK"
     printf 'CONFIG-ORIG\n' > "$work/etc-config-netshift"
     printf 'original-resolver\n' > "$work/resolv.conf"
+    printf 'netshift - 0.8.0-r1\n' > "$work/installed.list"
     run_scenario
     if jq -e '.success == true and .version == "0.8.1"' "$out" > /dev/null 2>&1; then
         pass "selfupdate-happy-successtrue-version:OK"
@@ -5355,15 +5394,56 @@ DRVEOF
     # ── Scenario 5: RU i18n IS installed → it is upgraded too (3 installs) ─────
     : > "$SU_DNS_OK"; : > "$SU_HTTP_OK"; : > "$SU_GH_OK"; : > "$SU_DL_OK"; : > "$SU_PKG_OK"
     printf 'CONFIG-ORIG\n' > "$work/etc-config-netshift"
-    printf 'luci-i18n-netshift-ru - 0.8.0\n' > "$work/installed.list"
+    printf 'netshift - 0.8.0-r1\nluci-i18n-netshift-ru - 0.8.0\n' > "$work/installed.list"
     run_scenario
-    : > "$work/installed.list"
     if [ -f "$work/install.log" ] && [ "$(grep -c . "$work/install.log" 2>/dev/null)" = "3" ] \
             && grep -q 'i18n' "$work/install.log" 2>/dev/null; then
         pass "selfupdate-ru-installed-upgraded:OK"
     else
         fail "selfupdate-ru-installed-upgraded:FAIL" "install.log=$(cat "$work/install.log" 2>/dev/null)"
     fi
+
+    # ── Scenario 6: opkg silent no-op (task-041) → success:false, config intact
+    # All connectivity/GitHub/download/PKG markers "ok" AND the install returns
+    # rc=0, but $SU_NOOP makes the fake opkg NOT change what list-installed
+    # reports (the core stays at the OLD version) — simulating opkg "Not
+    # downgrading"/"already installed". The verify-after-install belt must catch
+    # this and report success:false WITHOUT touching the config.
+    : > "$SU_DNS_OK"; : > "$SU_HTTP_OK"; : > "$SU_GH_OK"; : > "$SU_DL_OK"; : > "$SU_PKG_OK"
+    export SU_NOOP=1
+    printf 'CONFIG-ORIG\n' > "$work/etc-config-netshift"
+    printf 'original-resolver\n' > "$work/resolv.conf"
+    printf 'netshift - 0.8.0-r1\n' > "$work/installed.list"
+    run_scenario
+    unset SU_NOOP
+    # The worker MUST report success:false (the silent no-op is detected), NOT
+    # the false "updated" success it used to emit on rc=0.
+    if jq -e '.success == false' "$out" > /dev/null 2>&1; then
+        pass "selfupdate-noop-detected-successfalse:OK"
+    else
+        fail "selfupdate-noop-detected-successfalse:FAIL" "$(cat "$out" 2>/dev/null)"
+    fi
+    # The install was ATTEMPTED (rc=0) but the version never changed.
+    if [ -f "$work/install.log" ] && grep -q . "$work/install.log" 2>/dev/null; then
+        pass "selfupdate-noop-install-attempted:OK"
+    else
+        fail "selfupdate-noop-install-attempted:FAIL" "install.log=$(cat "$work/install.log" 2>/dev/null)"
+    fi
+    # Configuration preserved (verify-fail runs the defensive restore; nothing
+    # clobbered the live file).
+    if [ "$(cat "$work/etc-config-netshift" 2>/dev/null)" = "CONFIG-ORIG" ]; then
+        pass "selfupdate-noop-config-intact:OK"
+    else
+        fail "selfupdate-noop-config-intact:FAIL" "$(cat "$work/etc-config-netshift" 2>/dev/null)"
+    fi
+    # Download dir cleaned even on the no-op failure path.
+    if [ ! -d "$work/dl" ]; then
+        pass "selfupdate-noop-download-dir-cleaned:OK"
+    else
+        fail "selfupdate-noop-download-dir-cleaned:FAIL" "dl dir remains"
+    fi
+
+    : > "$work/installed.list"
 
     # ── Restore the real init script (if any) and clean up. ──────────────────
     if [ -n "$init_saved" ] && [ -e "$init_saved" ]; then
@@ -5372,7 +5452,7 @@ DRVEOF
         rm -f "$init_target" 2>/dev/null || true
     fi
     unset SU_DNS_OK SU_HTTP_OK SU_GH_OK SU_DL_OK SU_PKG_OK SU_INIT_LOG \
-        SU_INSTALL_LOG SU_INSTALLED_LIST SU_LATEST_TAG
+        SU_INSTALL_LOG SU_INSTALLED_LIST SU_LATEST_TAG SU_TARGET_INSTALLED_VER SU_NOOP
     rm -rf "$work"
 }
 
