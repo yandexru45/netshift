@@ -5529,6 +5529,9 @@ updates_log() { :; }
 . "DRV_UPDATER"
 NETSHIFT_RELEASE_API_URL="https://api.test/latest"
 NETSHIFT_VERSION="$STUBLT_INSTALLED"
+# Force the API-fallback path this test targets: the redirect resolver returns
+# empty so updates_netshift_latest_tag falls back to the stubbed API body.
+updates_github_resolve_redirect() { printf ''; }
 updates_http_get_once() { printf '%s' "$STUBLT_BODY"; }
 "$STUBLT_FN"
 DRVEOF
@@ -5600,6 +5603,138 @@ DRVEOF
     fi
 
     unset STUBLT_FN STUBLT_BODY STUBLT_INSTALLED
+    rm -rf "$work"
+}
+
+# ─────────────────────────────────────────────────────────────────
+# Test: GitHub redirect-based latest-tag + deterministic asset URLs (task-049)
+# ─────────────────────────────────────────────────────────────────
+# Sidestepping the api.github.com 60/hour/IP rate limit: the version-check + the
+# self-update asset download now resolve github.com/<repo>/releases/latest via a
+# redirect (curl -w '%{redirect_url}') → /releases/tag/<tag>, with the API + jq
+# path kept only as a graceful fallback. The network boundary is STUBBED here
+# (override updates_github_resolve_redirect / updates_http_get_once), so no curl
+# shell-out and no real network in CI. Synthetic data only.
+test_github_redirect_tag() {
+    header "GitHub redirect latest-tag + asset URLs (task-049)"
+
+    if ! command -v jq > /dev/null 2>&1; then
+        skip "jq not available"
+        return
+    fi
+
+    local updater="${NETSHIFT_LIB_DIR}/updater.sh"
+    if [ ! -r "$updater" ]; then
+        skip "updater.sh not found in ${NETSHIFT_LIB_DIR}"
+        return
+    fi
+
+    local work="/tmp/netshift-ghredirect-$$"
+    rm -rf "$work"
+    mkdir -p "$work"
+
+    # Driver: source helpers.sh + updater.sh, silence logging, pin the redirect
+    # + API constants, OVERRIDE the redirect resolver ($STUBGR_REDIRECT) and the
+    # API boundary ($STUBGR_BODY), then run the function/expr named in $STUBGR_FN.
+    local drv="$work/driver.sh"
+    cat > "$drv" << 'DRVEOF'
+log() { :; }
+echolog() { :; }
+nolog() { :; }
+updates_log() { :; }
+. "DRV_HELPERS"
+. "DRV_UPDATER"
+NETSHIFT_REPO_RELEASES_LATEST_URL="https://github.com/yandexru45/netshift/releases/latest"
+NETSHIFT_REPO_RELEASES_DOWNLOAD_BASE="https://github.com/yandexru45/netshift/releases/download"
+NETSHIFT_RELEASE_API_URL="https://api.test/latest"
+UPDATES_NETSHIFT_PKG_CORE="netshift"
+UPDATES_NETSHIFT_PKG_LUCI="luci-app-netshift"
+UPDATES_NETSHIFT_PKG_I18N_RU="luci-i18n-netshift-ru"
+updates_github_resolve_redirect() { printf '%s' "$STUBGR_REDIRECT"; }
+updates_http_get_once() { printf '%s' "$STUBGR_BODY"; }
+eval "$STUBGR_FN"
+DRVEOF
+    sed -i "s|DRV_UPDATER|$updater|g;s|DRV_HELPERS|${NETSHIFT_LIB_DIR}/helpers.sh|g" "$drv"
+
+    local out="$work/out.txt"
+    local rc_file="$work/rc.txt"
+    run_gr() {
+        ash "$drv" > "$out" 2>/dev/null && printf '0' > "$rc_file" || printf '%s' "$?" > "$rc_file"
+    }
+
+    export STUBGR_FN="updates_netshift_latest_tag"
+    export STUBGR_REDIRECT=""
+    export STUBGR_BODY=""
+
+    # ── Case 1: clean redirect → tag 0.8.9 (primary path, no API) ────────────
+    export STUBGR_REDIRECT="https://github.com/yandexru45/netshift/releases/tag/0.8.9"
+    export STUBGR_BODY=""
+    run_gr
+    if [ "$(cat "$out" 2>/dev/null)" = "0.8.9" ] && [ "$(cat "$rc_file" 2>/dev/null)" = "0" ]; then
+        pass "ghredirect:tag-from-redirect:OK"
+    else
+        fail "ghredirect:tag-from-redirect:FAIL" "got=[$(cat "$out" 2>/dev/null)] rc=$(cat "$rc_file" 2>/dev/null)"
+    fi
+
+    # ── Case 2: trailing-slash redirect → parse rejects (slash) → falls back ──
+    # A trailing slash makes the stripped tag contain "/", which the guard
+    # rejects; with NO API body it then yields empty + non-zero.
+    export STUBGR_REDIRECT="https://github.com/yandexru45/netshift/releases/tag/0.8.9/"
+    export STUBGR_BODY=""
+    run_gr
+    if [ -z "$(cat "$out" 2>/dev/null)" ] && [ "$(cat "$rc_file" 2>/dev/null)" != "0" ]; then
+        pass "ghredirect:tag-trailing-slash-rejected:OK"
+    else
+        fail "ghredirect:tag-trailing-slash-rejected:FAIL" "got=[$(cat "$out" 2>/dev/null)] rc=$(cat "$rc_file" 2>/dev/null)"
+    fi
+
+    # ── Case 3: non-matching redirect (login page) → primary empty → API
+    # FALLBACK returns the release object → still yields the tag. ─────────────
+    export STUBGR_REDIRECT="https://github.com/login?return_to=%2Fyandexru45%2Fnetshift"
+    export STUBGR_BODY='{"url":"https://api.github.com/repos/yandexru45/netshift/releases/1","tag_name":"0.8.9"}'
+    run_gr
+    if [ "$(cat "$out" 2>/dev/null)" = "0.8.9" ] && [ "$(cat "$rc_file" 2>/dev/null)" = "0" ]; then
+        pass "ghredirect:nonmatch-falls-back:OK"
+    else
+        fail "ghredirect:nonmatch-falls-back:FAIL" "got=[$(cat "$out" 2>/dev/null)] rc=$(cat "$rc_file" 2>/dev/null)"
+    fi
+
+    # ── Case 4: curl-absent (resolver empty) + API rate-limit object → empty +
+    # non-zero (honest failure, no false tag). ───────────────────────────────
+    export STUBGR_REDIRECT=""
+    export STUBGR_BODY='{"message":"API rate limit exceeded for 1.2.3.4"}'
+    run_gr
+    if [ -z "$(cat "$out" 2>/dev/null)" ] && [ "$(cat "$rc_file" 2>/dev/null)" != "0" ]; then
+        pass "ghredirect:ratelimit-empty:OK"
+    else
+        fail "ghredirect:ratelimit-empty:FAIL" "got=[$(cat "$out" 2>/dev/null)] rc=$(cat "$rc_file" 2>/dev/null)"
+    fi
+
+    # ── Case 5: asset-URL builder, ipk → deterministic names ─────────────────
+    export STUBGR_REDIRECT=""
+    export STUBGR_BODY=""
+    export STUBGR_FN='c="$(updates_netshift_asset_filename netshift 0.8.9 ipk)"; l="$(updates_netshift_asset_filename luci-app-netshift 0.8.9 ipk)"; i="$(updates_netshift_asset_filename luci-i18n-netshift-ru 0.8.9 ipk)"; printf "%s\n%s\n%s\n" "$c" "$l" "$i"'
+    run_gr
+    if [ "$(sed -n 1p "$out" 2>/dev/null)" = "netshift-0.8.9-r1-all.ipk" ] &&
+        [ "$(sed -n 2p "$out" 2>/dev/null)" = "luci-app-netshift-0.8.9-r1-all.ipk" ] &&
+        [ "$(sed -n 3p "$out" 2>/dev/null)" = "luci-i18n-netshift-ru-0.8.9.ipk" ]; then
+        pass "ghredirect:asset-ipk:OK"
+    else
+        fail "ghredirect:asset-ipk:FAIL" "got=[$(cat "$out" 2>/dev/null)]"
+    fi
+
+    # ── Case 6: asset-URL builder, apk → deterministic names ─────────────────
+    export STUBGR_FN='c="$(updates_netshift_asset_filename netshift 0.8.9 apk)"; l="$(updates_netshift_asset_filename luci-app-netshift 0.8.9 apk)"; i="$(updates_netshift_asset_filename luci-i18n-netshift-ru 0.8.9 apk)"; printf "%s\n%s\n%s\n" "$c" "$l" "$i"'
+    run_gr
+    if [ "$(sed -n 1p "$out" 2>/dev/null)" = "netshift-0.8.9-r1.apk" ] &&
+        [ "$(sed -n 2p "$out" 2>/dev/null)" = "luci-app-netshift-0.8.9-r1.apk" ] &&
+        [ "$(sed -n 3p "$out" 2>/dev/null)" = "luci-i18n-netshift-ru-0.8.9.apk" ]; then
+        pass "ghredirect:asset-apk:OK"
+    else
+        fail "ghredirect:asset-apk:FAIL" "got=[$(cat "$out" 2>/dev/null)]"
+    fi
+
+    unset STUBGR_FN STUBGR_REDIRECT STUBGR_BODY
     rm -rf "$work"
 }
 
@@ -6151,6 +6286,7 @@ main() {
             test_check_update_extended
             test_check_update_netshift
             test_netshift_latest_tag
+            test_github_redirect_tag
             test_self_update_netshift
             test_backup_integrity
             ;;
@@ -6177,6 +6313,7 @@ main() {
         extcheck)    test_check_update_extended ;;
         netshiftcheck) test_check_update_netshift ;;
         latesttag)   test_netshift_latest_tag ;;
+        ghredirect)  test_github_redirect_tag ;;
         selfupdate)  test_self_update_netshift ;;
         backupguard) test_backup_integrity ;;
         jq)          test_jq_helpers ;;
@@ -6184,7 +6321,7 @@ main() {
         sb)          test_sing_box_config ;;
         *)
             echo "Unknown test: $target"
-            echo "Available: all deps syntax config helpers jq cm sb nft nftv6 selmark isolation monfd unsupported diagnostics subscription insecure rejected jobstate selfheal dnsdetour suburlopt globalproxy stablecheck extcheck netshiftcheck latesttag selfupdate backupguard"
+            echo "Available: all deps syntax config helpers jq cm sb nft nftv6 selmark isolation monfd unsupported diagnostics subscription insecure rejected jobstate selfheal dnsdetour suburlopt globalproxy stablecheck extcheck netshiftcheck latesttag ghredirect selfupdate backupguard"
             exit 1
             ;;
     esac

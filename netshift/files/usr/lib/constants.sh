@@ -92,6 +92,15 @@ UPDATES_LIBCRONET_LIB="/usr/lib/libcronet.so"
 # API for NetShift itself (same endpoint install.sh and get_system_info use);
 # the self-update worker downloads the release .ipk/.apk assets from it.
 NETSHIFT_RELEASE_API_URL="https://api.github.com/repos/yandexru45/netshift/releases/latest"
+# GitHub FRONTEND (github.com, NOT the rate-limited api.github.com) redirect path
+# for the NetShift repo. /releases/latest 302-redirects to /releases/tag/<tag>
+# (resolve with curl -w '%{redirect_url}' — no API hit, not subject to the
+# 60/hour/IP anonymous API limit); /releases/download/<tag>/<asset> 302s to the
+# CDN for direct asset download. Primary path for version-check + self-update;
+# NETSHIFT_RELEASE_API_URL stays as the graceful fallback. Repo slug lives here
+# only — do not hardcode it elsewhere.
+NETSHIFT_REPO_RELEASES_LATEST_URL="https://github.com/yandexru45/netshift/releases/latest"
+NETSHIFT_REPO_RELEASES_DOWNLOAD_BASE="https://github.com/yandexru45/netshift/releases/download"
 # tmpfs scratch dir for the self-update download (release packages) — RAM, never
 # the tiny overlay; reaped on success and on reboot.
 UPDATES_NETSHIFT_DOWNLOAD_DIR="/tmp/netshift/selfupdate"

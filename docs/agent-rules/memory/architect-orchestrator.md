@@ -1325,3 +1325,57 @@ save+`sing-box check` -> cron jobs -> start sing-box -> dnsmasq_configure ->
   gating suburlopt tokens incl. 4 =-URL guards); whole-chain verified (option
   config -> has_outbound_section TRUE -> gen -> sing-box check). Runtime contract
   intact (UCI schema = back-compat repr normalization only).
+
+## GitHub API rate-limit — research + task-049 (2026-06-12)
+
+- HOW IT WORKS (official docs, verified): anonymous api.github.com = 60 req/HOUR
+  per IP (authed=5000). On 403/429 the body is {"message":"API rate limit
+  exceeded for <IP>..."} and headers x-ratelimit-remaining:0 + x-ratelimit-reset
+  (UTC epoch). GET /rate_limit shows budget and does NOT cost primary quota.
+- WHY users hit it a lot: limit is PER IP. Routers behind CGNAT / shared ISP
+  IPs / shared-VPN egress share ONE IP's 60/hour with many strangers -> the
+  budget is often already drained by others. Not the user's fault; we're
+  anonymous so we can't raise it without a token.
+- KEY LEVER (PROVEN on hardware, curl): github.com/<repo>/releases/latest is
+  served by the github.com FRONTEND, NOT the rate-limited API. It 302-redirects
+  to /releases/tag/<tag>. `curl -sI -o /dev/null -w '%{redirect_url}'` returns
+  `.../releases/tag/0.8.9` -> tag extracted WITHOUT touching api.github.com.
+  And github.com/<repo>/releases/download/<tag>/<asset> 302s to the CDN
+  (release-assets.githubusercontent.com) -> direct asset download, no API.
+  (We already use this redirect path for SRS_MAIN_URL = releases/latest/download.)
+- BUSYBOX wget on-device is STRIPPED: no -S, no --max-redirect, can't read
+  Location/headers. So tag extraction MUST use curl (a hard DEPENDS: +curl),
+  via %{redirect_url} (or -w %{url_effective} with -L). updates_http_get_once
+  already prefers curl.
+- ASSET NAMING is deterministic from the tag: ipk = netshift-<ver>-r1-all.ipk,
+  luci-app-netshift-<ver>-r1-all.ipk, luci-i18n-netshift-ru-<ver>.ipk; apk =
+  netshift-<ver>-r1.apk, luci-app-netshift-<ver>-r1.apk,
+  luci-i18n-netshift-ru-<ver>.apk. (<ver> = tag.) All 302 on the direct path.
+- SCOPE DECISION (task-049): migrate the 3 NETSHIFT-repo touchpoints off
+  api.github.com -> redirect path: version check (updater.sh:1638
+  updates_netshift_latest_tag), self-update asset download
+  (updater.sh:1657 _updates_self_update_download_assets), and install.sh:259.
+  KEEP the sing-box-EXTENDED path (updater.sh:553 releases?per_page=30) on the
+  API + proxy-fallback: it genuinely needs the releases LIST (draft/prerelease
+  flags + per-arch asset selection) which a redirect can't give; it's also a
+  rarer, on-demand action. Proxy-fallback stays as the safety net there.
+- ALSO: honor x-ratelimit-reset / show honest "GitHub limit, retry after HH:MM"
+  instead of generic error; optionally TTL-cache the latest tag. (Secondary.)
+- itdoginfo's podkop historically had the SAME complaint class; this redirect
+  approach is the standard fix.
+
+## task-049 CLOSED — APPROVED (2026-06-12)
+- Implemented: redirect-first tag fetch (updates_github_resolve_redirect +
+  updates_netshift_latest_tag), deterministic asset-URL download
+  (updates_netshift_asset_filename + _updates_self_update_download_assets), and
+  install.sh redirect path (+ shared download_release_asset helper). API path
+  kept as graceful fallback everywhere; sing-box-extended path untouched.
+- Gates: shellcheck -S error clean; smoke 190->196/0 (+6 ghredirect, gating);
+  self-proved. Tag is rejected if empty/`/`-containing (injection/traversal
+  guard) and only used quoted in URL strings (no eval) — reviewed safe.
+- Review: 1 round, APPROVED. Only finding [M1] = a comment typo
+  (updates_http_get_once -> updates_download_to_file); fixed during review,
+  shellcheck re-clean, ghredirect re-run 6/0.
+- Net result for the user complaint: the normal version-check/self-update/install
+  path no longer touches the 60/hr-per-IP api.github.com, so CGNAT/shared-IP
+  rate-limit errors should largely disappear; API remains the fallback.

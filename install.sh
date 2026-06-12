@@ -2,6 +2,12 @@
 # shellcheck shell=dash
 
 REPO="https://api.github.com/repos/yandexru45/netshift/releases/latest"
+# github.com FRONTEND redirect path (NOT the rate-limited api.github.com).
+# /releases/latest 302s to /releases/tag/<tag>; /releases/download/<tag>/<asset>
+# 302s to the CDN. Primary install path so CGNAT / shared-IP routers avoid the
+# 60/hour/IP API limit; REPO stays as the fallback.
+RELEASES_LATEST_REDIRECT="https://github.com/yandexru45/netshift/releases/latest"
+RELEASES_DOWNLOAD_BASE="https://github.com/yandexru45/netshift/releases/download"
 DOWNLOAD_DIR="/tmp/netshift"
 COUNT=3
 
@@ -241,6 +247,30 @@ migrate_from_podkop() {
     msg "Your old config is preserved at /etc/config/podkop.bak.pre-netshift"
 }
 
+# Download one release asset URL into $DOWNLOAD_DIR with retry. POSIX sh.
+download_release_asset() {
+    url="$1"
+    filename="$2"
+    filepath="$DOWNLOAD_DIR/$filename"
+
+    attempt=0
+    while [ $attempt -lt $COUNT ]; do
+        msg "Download $filename (count $((attempt + 1)))..."
+        if wget -q -O "$filepath" "$url"; then
+            if [ -s "$filepath" ]; then
+                msg "$filename successfully downloaded"
+                return 0
+            fi
+        fi
+        msg "Download error for $filename. Retrying..."
+        rm -f "$filepath"
+        attempt=$((attempt + 1))
+    done
+
+    msg "Failed to download $filename after $COUNT attempts"
+    return 1
+}
+
 main() {
     check_system
     sing_box
@@ -255,44 +285,63 @@ main() {
         msg "Installing NetShift..."
     fi
 
-    if command -v curl >/dev/null 2>&1; then
-        check_response=$(curl -s "https://api.github.com/repos/yandexru45/netshift/releases/latest")
-
-        if echo "$check_response" | grep -q 'API rate limit '; then
-            msg "You've reached the GitHub rate limit. Repeat in five minutes."
-            exit 1
-        fi
-    fi
-
-    local grep_url_pattern
+    local ext release_tag redirect_url
     if [ "$PKG_IS_APK" -eq 1 ]; then
-        grep_url_pattern='https://[^"[:space:]]*\.apk'
+        ext="apk"
     else
-        grep_url_pattern='https://[^"[:space:]]*\.ipk'
+        ext="ipk"
     fi
 
-    wget -qO- "$REPO" | grep -o "$grep_url_pattern" | while read -r url; do
-        filename=$(basename "$url")
-        filepath="$DOWNLOAD_DIR/$filename"
+    # PRIMARY: resolve the latest tag via the github.com frontend redirect (no
+    # api.github.com hit → not subject to the 60/hour/IP rate limit), then build
+    # the deterministic releases/download/<tag>/<asset> URLs and download them.
+    release_tag=""
+    if command -v curl >/dev/null 2>&1; then
+        redirect_url=$(curl -sI -o /dev/null -w '%{redirect_url}' \
+            --connect-timeout 5 -m 15 -A 'netshift-installer' \
+            "$RELEASES_LATEST_REDIRECT" 2>/dev/null)
+        case "$redirect_url" in
+        */releases/tag/*)
+            release_tag="${redirect_url##*/releases/tag/}"
+            case "$release_tag" in '' | */*) release_tag="" ;; esac
+            ;;
+        esac
+    fi
 
-        attempt=0
-        while [ $attempt -lt $COUNT ]; do
-            msg "Download $filename (count $((attempt+1)))..."
-            if wget -q -O "$filepath" "$url"; then
-                if [ -s "$filepath" ]; then
-                    msg "$filename successfully downloaded"
-                    break
-                fi
+    if [ -n "$release_tag" ]; then
+        msg "Latest NetShift release: $release_tag (direct download, no GitHub API)"
+        for pkg in netshift luci-app-netshift; do
+            if [ "$ext" = "ipk" ]; then
+                filename="${pkg}-${release_tag}-r1-all.${ext}"
+            else
+                filename="${pkg}-${release_tag}-r1.${ext}"
             fi
-            msg "Download error for $filename. Retrying..."
-            rm -f "$filepath"
-            attempt=$((attempt+1))
+            download_release_asset "$RELEASES_DOWNLOAD_BASE/$release_tag/$filename" "$filename"
         done
-
-        if [ $attempt -eq $COUNT ]; then
-            msg "Failed to download $filename after $COUNT attempts"
+        # RU i18n only if already installed (mirrors the install flow below).
+        if pkg_is_installed luci-i18n-netshift-ru; then
+            filename="luci-i18n-netshift-ru-${release_tag}.${ext}"
+            download_release_asset "$RELEASES_DOWNLOAD_BASE/$release_tag/$filename" "$filename"
         fi
-    done
+    else
+        # FALLBACK: scrape the api.github.com release JSON for .ipk/.apk URLs.
+        if command -v curl >/dev/null 2>&1; then
+            check_response=$(curl -s "$REPO")
+
+            if echo "$check_response" | grep -q 'API rate limit '; then
+                msg "You've reached the GitHub rate limit. Repeat in five minutes."
+                exit 1
+            fi
+        fi
+
+        local grep_url_pattern
+        grep_url_pattern="https://[^\"[:space:]]*\.${ext}"
+
+        wget -qO- "$REPO" | grep -o "$grep_url_pattern" | while read -r url; do
+            filename=$(basename "$url")
+            download_release_asset "$url" "$filename"
+        done
+    fi
 
     # Check if any files were downloaded
     if ! ls "$DOWNLOAD_DIR"/*netshift* >/dev/null 2>&1; then

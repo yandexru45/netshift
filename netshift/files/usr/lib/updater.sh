@@ -1626,15 +1626,45 @@ updates_self_update_netshift() {
     return "$rc"
 }
 
-# Echoes the GitHub latest-release tag for NetShift (e.g. "0.8.8"), or nothing.
-# Reuses the same API endpoint as get_system_info / install.sh. Parsed with jq
-# (NOT grep/cut): GitHub may return the release object pretty-printed OR minified
-# (single line); a field-positional grep|cut grabs the first key's value (the
-# release "url") on minified JSON, which caused a false "outdated" + a self-update
-# that downloaded a garbage "version". jq is format-independent.
-updates_netshift_latest_tag() {
-    local response tag
+# Resolve a URL's HTTP redirect target via curl WITHOUT hitting the rate-limited
+# API or downloading the body. Echoes the redirect URL (empty if curl absent or
+# no redirect). Stubbable in tests.
+updates_github_resolve_redirect() {
+    local url="$1"
+    command -v curl >/dev/null 2>&1 || return 1
+    curl -sI -o /dev/null -w '%{redirect_url}' --connect-timeout 5 -m 15 -A 'netshift-updater' "$url" 2>/dev/null
+}
 
+# Echoes the GitHub latest-release tag for NetShift (e.g. "0.8.8"), or nothing.
+# PRIMARY: resolve the github.com frontend redirect of /releases/latest — it
+# 302s to /releases/tag/<tag>. That frontend is NOT the 60/hour-per-IP
+# api.github.com, so it sidesteps the anonymous rate limit entirely (the common
+# failure on CGNAT / shared-IP / shared-VPN-egress routers). FALLBACK: the
+# api.github.com release object parsed with jq (task-047) so a curl-less box or a
+# changed-redirect github still degrades gracefully instead of hard-failing.
+# jq is format-independent (minified or pretty); a field-positional grep|cut
+# grabbed the wrong key on minified JSON, causing a false "outdated".
+# Bare tag on success / non-zero otherwise (contract consumed by
+# updates_check_netshift and the self-update worker).
+updates_netshift_latest_tag() {
+    local response tag redirect
+
+    # PRIMARY: github.com/<repo>/releases/latest 302-redirects to
+    # /releases/tag/<tag>. Parse with case/param-expansion (no Oniguruma).
+    redirect="$(updates_github_resolve_redirect "$NETSHIFT_REPO_RELEASES_LATEST_URL")"
+    case "$redirect" in
+    */releases/tag/*)
+        tag="${redirect##*/releases/tag/}"
+        case "$tag" in '' | */*) tag="" ;; esac
+        ;;
+    *) tag="" ;;
+    esac
+    if [ -n "$tag" ]; then
+        printf '%s' "$tag"
+        return 0
+    fi
+
+    # FALLBACK: api.github.com (rate-limited) parsed with jq.
     response="$(updates_http_get_once "$NETSHIFT_RELEASE_API_URL" "")"
     if [ -z "$response" ]; then
         return 1
@@ -1645,24 +1675,74 @@ updates_netshift_latest_tag() {
     printf '%s' "$tag"
 }
 
-# Downloads the NetShift release assets matching the package-name prefixes for
-# the active package manager into $dir. Echoes nothing; returns 0 if at least
-# the core "netshift" package was downloaded, non-zero otherwise. The asset URL
-# list comes from the same latest-release JSON, filtered to .ipk or .apk by the
-# package manager (busybox grep -o, no jq array walk required).
+# Echo the deterministic release asset filename for a package + tag + ext.
+# ipk core/luci carry "-r1-all"; apk core/luci carry "-r1"; the i18n package
+# carries neither suffix (just "<pkg>-<tag>.<ext>"). Single source of the asset
+# naming pattern so it lives in one place, not scattered.
+updates_netshift_asset_filename() {
+    local pkg="$1" tag="$2" ext="$3"
+    case "$pkg" in
+    "$UPDATES_NETSHIFT_PKG_I18N_RU") printf '%s-%s.%s' "$pkg" "$tag" "$ext" ;;
+    *)
+        if [ "$ext" = "ipk" ]; then
+            printf '%s-%s-r1-all.%s' "$pkg" "$tag" "$ext"
+        else
+            printf '%s-%s-r1.%s' "$pkg" "$tag" "$ext"
+        fi
+        ;;
+    esac
+}
+
+# Downloads the NetShift release assets for the active package manager into $dir.
+# Echoes nothing; returns 0 if at least the core "netshift" package was
+# downloaded, non-zero otherwise.
+# PRIMARY: resolve the latest tag (redirect-based, rate-limit-free) and build the
+# deterministic github.com/<repo>/releases/download/<tag>/<asset> URLs — the
+# CDN 302 is followed by updates_download_to_file (curl -L / wget both follow it).
+# FALLBACK: if the tag can't be resolved, scrape the api.github.com release JSON
+# for .ipk/.apk URLs (busybox grep -o) as before, so a curl-less box still works.
 _updates_self_update_download_assets() {
     local dir="$1"
     local response ext pattern url filename dest attempt got_core=0
-
-    response="$(updates_http_get_once "$NETSHIFT_RELEASE_API_URL" "")"
-    if [ -z "$response" ]; then
-        return 1
-    fi
+    local tag pkg
 
     if updates_pkg_is_apk; then
         ext="apk"
     else
         ext="ipk"
+    fi
+
+    tag="$(updates_netshift_latest_tag)"
+    if [ -n "$tag" ]; then
+        # Direct deterministic asset URLs (no API). Core + luci always; the RU
+        # i18n package only if already installed.
+        for pkg in "$UPDATES_NETSHIFT_PKG_CORE" "$UPDATES_NETSHIFT_PKG_LUCI" "$UPDATES_NETSHIFT_PKG_I18N_RU"; do
+            if [ "$pkg" = "$UPDATES_NETSHIFT_PKG_I18N_RU" ]; then
+                updates_pkg_is_installed "$UPDATES_NETSHIFT_PKG_I18N_RU" || continue
+            fi
+            filename="$(updates_netshift_asset_filename "$pkg" "$tag" "$ext")"
+            url="$NETSHIFT_REPO_RELEASES_DOWNLOAD_BASE/$tag/$filename"
+            dest="$dir/$filename"
+            attempt=0
+            while [ "$attempt" -lt 3 ]; do
+                if updates_download_to_file "$url" "$dest"; then
+                    break
+                fi
+                rm -f "$dest" 2>/dev/null
+                attempt=$((attempt + 1))
+            done
+            if [ "$pkg" = "$UPDATES_NETSHIFT_PKG_CORE" ] && [ -s "$dest" ]; then
+                got_core=1
+            fi
+        done
+        [ "$got_core" -eq 1 ]
+        return $?
+    fi
+
+    # FALLBACK: scrape the API release JSON for direct asset URLs.
+    response="$(updates_http_get_once "$NETSHIFT_RELEASE_API_URL" "")"
+    if [ -z "$response" ]; then
+        return 1
     fi
     pattern="https://[^\"[:space:]]*\.${ext}"
 

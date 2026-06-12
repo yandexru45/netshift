@@ -1567,3 +1567,55 @@ findings; keep under ~200 lines.
   existing key's representation (option→list, back-compat).
 - code-review round 2: APPROVED WITH CONDITIONS — [B1]/[S1]/[M1] all resolved;
   the only condition was fixing THIS stale memory note (done).
+
+## task-049: avoid api.github.com rate-limit via github.com redirect (curl)
+
+- Anonymous api.github.com = 60 req/HOUR/IP; CGNAT/shared-IP/shared-VPN routers
+  share that budget → frequent "API rate limit exceeded". LEVER (proven on HW):
+  github.com/<repo>/releases/latest is the github.com FRONTEND (NOT the API) and
+  302-redirects to /releases/tag/<tag>; releases/download/<tag>/<asset> 302s to
+  the CDN. Neither hits the rate-limited API.
+- New constants (constants.sh, repo slug ONLY here): NETSHIFT_REPO_RELEASES_LATEST_URL
+  (.../releases/latest), NETSHIFT_REPO_RELEASES_DOWNLOAD_BASE (.../releases/download).
+  Kept NETSHIFT_RELEASE_API_URL as the fallback.
+- New STUBBABLE resolver `updates_github_resolve_redirect <url>` (updater.sh):
+  `command -v curl || return 1; curl -sI -o /dev/null -w '%{redirect_url}'
+  --connect-timeout 5 -m 15 -A 'netshift-updater' "$url"`. busybox wget is
+  STRIPPED (no -S/header read) so tag extraction MUST be curl; curl is a hard dep.
+- `updates_netshift_latest_tag` rewrite: PRIMARY resolve redirect, parse with
+  `case "$redirect" in */releases/tag/*) tag="${redirect##*/releases/tag/}";
+  case "$tag" in ''|*/*) tag="" ;; esac ;; *) tag="" ;; esac` (NO Oniguruma) —
+  a trailing-slash redirect leaves a `/` in tag → rejected → empty → fallback.
+  FALLBACK = the task-047 api.github.com + `jq -r '.tag_name // empty'` path,
+  kept intact. Bare-tag/non-zero contract preserved (feeds updates_check_netshift
+  + self-update worker).
+- `updates_netshift_asset_filename <pkg> <tag> <ext>` single-source naming helper:
+  i18n = `<pkg>-<tag>.<ext>` (no -r1); core/luci ipk = `<pkg>-<tag>-r1-all.ipk`,
+  apk = `<pkg>-<tag>-r1.apk`. `_updates_self_update_download_assets` now resolves
+  the tag and builds deterministic `$DOWNLOAD_BASE/<tag>/<filename>` URLs (core+luci
+  always, i18n only if updates_pkg_is_installed), downloads via updates_http_get_once
+  (follows the 302 to CDN), got_core=1 when core `-s "$dest"`. OLD api-JSON grep -o
+  loop KEPT verbatim as the else branch when tag unresolved.
+- install.sh: added RELEASES_LATEST_REDIRECT + RELEASES_DOWNLOAD_BASE literals
+  (install.sh has its own REPO, not constants.sh). PRIMARY: curl -sI redirect →
+  case/param-expansion tag → deterministic releases/download/<tag>/<asset> URLs
+  (core+luci, RU i18n if pkg_is_installed). FALLBACK: existing API scrape + the
+  "API rate limit" message kept intact. Factored the retry-download into a new
+  `download_release_asset url filename` helper reused by both paths. name-prefix
+  install loop semantics unchanged.
+- GOTCHA: the EXISTING test_netshift_latest_tag driver had to ALSO stub
+  `updates_github_resolve_redirect() { printf ''; }` — else the new primary would
+  shell out to real curl in CI (network) and bypass the API path that test targets.
+- EXTENDED PATH UNTOUCHED: updates_fetch_sing_box_extended_releases
+  (releases?per_page=30) + updates_extended_release_* — they need the releases LIST
+  (draft/prerelease/per-arch) a redirect can't give. Left on API + proxy-fallback.
+- New smoke test `test_github_redirect_tag` (alias `ghredirect`, 6 tokens): stubs
+  the resolver + updates_http_get_once, parses driver output in the CURRENT shell
+  (gates). tag-from-redirect, tag-trailing-slash-rejected (→fallback empty),
+  nonmatch-falls-back (login URL→API stub→tag), ratelimit-empty (curl-absent +
+  rate-limit object→empty+nonzero), asset-ipk, asset-apk. Registered all 5 points.
+- SELF-PROVEN: `if false && [ -n "$tag" ]` on the primary return made
+  ghredirect:tag-from-redirect FAIL (5/1), restored→6/0.
+- Gates: shellcheck -S error clean (bin+libs+install.sh); `smoke-tests all`
+  190→196 passed / 0 failed (+6 ghredirect). NO sacred constant/port/mark/path/
+  schema/frontend change.
