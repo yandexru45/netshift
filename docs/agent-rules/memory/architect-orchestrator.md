@@ -1191,3 +1191,41 @@ save+`sing-box check` -> cron jobs -> start sing-box -> dnsmasq_configure ->
   session (frontend stopped before section.js; reviewer stopped mid-analysis) —
   ALWAYS verify on-disk state + run/inspect gates yourself rather than trusting
   a truncated "done".
+
+## task-046 gzip subscription bodies — issue #13 (2026-06-12)
+
+- ISSUE #13: a subscription panel sometimes returns a gzip-compressed body;
+  NetShift parsed the binary as text -> all nodes skipped -> "No subscription
+  User-Agent candidate produced valid outbounds". Reporter's workaround
+  gzip-decompressed only inside normalize_subscription_to_singbox — INSUFFICIENT
+  because validate_subscription_file runs BEFORE normalize and also chokes on a
+  gzipped sing-box JSON. Correct seam = DOWNLOAD path (decompress once, both
+  consumers see text).
+- DEVICE FACTS (verified, OWRT 24.10 + 25.12): gzip/gunzip/zcat present
+  (busybox); zstd/unzstd ABSENT (would need a new DEPENDS pkg). wget sends NO
+  Accept-Encoding and does NOT transparently decompress, so gzip = server
+  unconditionally compressing. gzip magic 1f 8b; `gzip -dc` on non-gzip rc=1.
+  NO od/hexdump/xxd on device.
+- OPERATOR DECISIONS: gzip ONLY (not zstd/deflate — separate future task if
+  panels actually send them); detect at download time; + NUL-byte guard (reject
+  still-binary body to next UA). Full backend+smoke.
+- FIX (task-046, APPROVED W/ CONDITIONS, smoke 174/0): two helpers.sh helpers
+  (modeled on convert_crlf_to_lf, mktemp+mv, all local, best-effort return 0):
+  * maybe_gunzip_subscription_file <f>: ATTEMPT-DECOMPRESS detector (NO od) —
+    `gzip -dc f > tmp` accept ONLY if rc=0 AND non-empty AND NUL-free, else leave
+    original byte-identical (plain text makes gzip -dc rc!=0 -> untouched, can
+    never corrupt text). This doubles as the gzip detector, avoids byte-fiddling.
+  * subscription_body_is_binary <f>: NUL detector via `wc -c < f` vs
+    `tr -d '\000' < f | wc -c` (counts differ -> NUL). Portable, no special grep
+    flag, no od.
+  Wired into download_subscription_into_cache per-UA while-read loop AFTER
+  download_subscription, BEFORE validate (netshift:585-594): gunzip then if
+  binary -> warn + continue to next UA (same control flow as a validation fail).
+  file_size/debug log MOVED to after decompress so size reflects decompressed
+  body. NO wget/Accept-Encoding change, NO Makefile DEPENDS change.
+- REUSABLE PATTERNS: file-transform helper = mktemp+transform+mv-on-success/
+  rm-on-fail (convert_crlf_to_lf is the template). NUL/binary detect without od =
+  wc-vs-tr-d-NUL byte-count. attempt-decompress is a clean od-free magic detector.
+- CONDITION (M1) is commit-hygiene only: keep the pre-existing unrelated
+  .opencode/agent/*.md churn (model rename + `bash "*": ask`->`allow`) OUT of the
+  commit; the permission loosening is a separate human decision.

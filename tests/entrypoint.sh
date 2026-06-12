@@ -3123,6 +3123,77 @@ else
 fi
 rm -f "$caseO_in" "$caseO_out"
 
+# ── CASE P: gzip subscription body handling (task-046, issue #13) ───
+# All synthetic fixtures (no real node/panel data). The smoke container
+# installs gzip (tests/Dockerfile), so we can build a real gzip body in-test.
+if command -v gzip > /dev/null 2>&1; then
+    # (P1) gzip -> text: gzip a tiny known-good plain body, run the helper,
+    # assert the result is the original plain text (byte-equal).
+    caseP_plain="/tmp/netshift-fb-caseP-plain-$$.txt"
+    caseP_gz="/tmp/netshift-fb-caseP-gz-$$.bin"
+    printf 'vless://33333333-3333-3333-3333-333333333333@example.com:443#P\n' > "$caseP_plain"
+    gzip -c "$caseP_plain" > "$caseP_gz"
+    maybe_gunzip_subscription_file "$caseP_gz"
+    if cmp -s "$caseP_gz" "$caseP_plain"; then
+        echo 'fb-caseP-gzip-to-text:OK'
+    else
+        echo 'fb-caseP-gzip-to-text:FAIL'
+    fi
+    rm -f "$caseP_gz"
+
+    # (P2) non-gzip passthrough: a plain-text body is UNCHANGED (no spurious
+    # gunzip, no corruption).
+    caseP_pt="/tmp/netshift-fb-caseP-pt-$$.txt"
+    caseP_pt_ref="/tmp/netshift-fb-caseP-pt-ref-$$.txt"
+    printf 'just plain text, definitely not gzip\nsecond line\n' > "$caseP_pt"
+    cp "$caseP_pt" "$caseP_pt_ref"
+    maybe_gunzip_subscription_file "$caseP_pt"
+    if cmp -s "$caseP_pt" "$caseP_pt_ref"; then
+        echo 'fb-caseP-text-passthrough:OK'
+    else
+        echo 'fb-caseP-text-passthrough:FAIL'
+    fi
+    rm -f "$caseP_pt" "$caseP_pt_ref" "$caseP_plain"
+
+    # (P3) whole-chain: gzip a small synthetic VALID sing-box JSON, run the
+    # helper, then validate_subscription_file -> must now VALIDATE.
+    caseP_json="/tmp/netshift-fb-caseP-json-$$.json"
+    caseP_jgz="/tmp/netshift-fb-caseP-jgz-$$.bin"
+    cat > "$caseP_json" << 'PJSON'
+{"outbounds":[{"type":"shadowsocks","tag":"P-node","server":"example.com","server_port":443,"method":"aes-256-gcm","password":"p"}]}
+PJSON
+    gzip -c "$caseP_json" > "$caseP_jgz"
+    maybe_gunzip_subscription_file "$caseP_jgz"
+    if validate_subscription_file "$caseP_jgz"; then
+        echo 'fb-caseP-gzip-then-validate:OK'
+    else
+        echo 'fb-caseP-gzip-then-validate:FAIL'
+    fi
+    rm -f "$caseP_json" "$caseP_jgz"
+else
+    echo 'fb-caseP-gzip-to-text:SKIP'
+    echo 'fb-caseP-text-passthrough:SKIP'
+    echo 'fb-caseP-gzip-then-validate:SKIP'
+fi
+
+# ── CASE Q: NUL-byte binary detector (task-046) ─────────────────────
+# A body with an embedded NUL is binary (true); plain text is not (false).
+caseQ_nul="/tmp/netshift-fb-caseQ-nul-$$.bin"
+caseQ_txt="/tmp/netshift-fb-caseQ-txt-$$.txt"
+printf 'abc\000def' > "$caseQ_nul"
+printf 'abcdef\nplain text\n' > "$caseQ_txt"
+if subscription_body_is_binary "$caseQ_nul"; then
+    echo 'fb-caseQ-nul-is-binary:OK'
+else
+    echo 'fb-caseQ-nul-is-binary:FAIL'
+fi
+if subscription_body_is_binary "$caseQ_txt"; then
+    echo 'fb-caseQ-text-not-binary:FAIL'
+else
+    echo 'fb-caseQ-text-not-binary:OK'
+fi
+rm -f "$caseQ_nul" "$caseQ_txt"
+
 echo 'DONE'
 FBEOF
 

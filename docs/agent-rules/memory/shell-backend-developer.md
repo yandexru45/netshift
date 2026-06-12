@@ -1423,3 +1423,40 @@ findings; keep under ~200 lines.
   harness counting quirk, not a regression; all four `fb-caseI-xraypref-*` lines
   print :OK in both runs). No ports/marks/paths/schema touched; runtime contract
   intact.
+
+## task-046 — gzip subscription body decompress + NUL guard (issue #13)
+
+- Some panels return a gzip-compressed HTTP body unconditionally; busybox wget
+  does NOT transparently decompress and NetShift sends no Accept-Encoding, so the
+  raw bytes are binary and validate/normalize choke ("No subscription User-Agent
+  candidate produced valid outbounds").
+- Added two best-effort helpers to `helpers.sh` (next to `convert_crlf_to_lf`):
+  - `maybe_gunzip_subscription_file <f>`: attempt-based detection (no
+    od/hexdump/xxd — none on device). `gzip -dc` (busybox built-in) into a
+    mktemp; accept ONLY if rc=0 AND result non-empty AND NUL-free, then `mv` into
+    place (else `rm`). `gzip -dc` on plain text returns rc!=0 cleanly, so plain
+    text is left byte-for-byte untouched — never corrupts text. Always returns 0.
+  - `subscription_body_is_binary <f>`: returns 0 (true) if file has a NUL byte.
+    Busybox-safe, no od: compare `wc -c < f` to `tr -d '\000' < f | wc -c` (differ
+    ⇒ had NUL). All vars local.
+- Wired in `bin/netshift` `download_subscription_into_cache` right after a
+  successful `download_subscription` (now ~:590-591), BEFORE
+  `validate_subscription_file`: call `maybe_gunzip_subscription_file`, then if
+  `subscription_body_is_binary` log a warn and `continue` (inside the per-UA
+  `while read` loop → falls to next UA, same flow as a validation failure). The
+  file_size/debug log stays AFTER so the logged size reflects the decompressed
+  body. mv/cache-persist below unchanged.
+- NO Accept-Encoding/wget change, NO Makefile DEPENDS change (gzip/gunzip/zcat
+  are busybox built-ins), NO schema/ports/marks/frontend. zstd/unzstd are NOT on
+  device — gzip-only by design; deflate/zstd are a future task if panels send
+  them.
+- Smoke: extended the `test_subscription` fb harness (sources helpers via the
+  facade) with synthetic-only fixtures: caseP gzip→text (cmp byte-equal),
+  text-passthrough (cmp unchanged), gzip→validate (validate_subscription_file
+  passes); caseQ `printf 'abc\000def'`→binary true, plain text→false. The smoke
+  container has gzip (tests/Dockerfile apk add gzip). No new test_* fn — folded
+  into existing test_subscription, so no main()/case/usage registration needed.
+- Gates: shellcheck -S error clean on bin + all libs + install.sh; `smoke-tests
+  all` 174 passed / 0 failed (aggregate counter folds the 5 new tokens into the
+  test_subscription header group — count unchanged, the 5 fb-caseP/Q :OK lines
+  print explicitly in the `subscription` run).

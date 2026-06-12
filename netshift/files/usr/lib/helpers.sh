@@ -572,6 +572,58 @@ convert_crlf_to_lf() {
     fi
 }
 
+# Best-effort, in-place gzip decompression of a downloaded subscription body.
+#
+# Some panels unconditionally return a gzip-compressed HTTP body (busybox wget
+# does NOT transparently decompress and we send no Accept-Encoding), so the raw
+# bytes are binary and every downstream consumer (validate/normalize) chokes.
+# This decompresses once at download time so all consumers see text.
+#
+# Detection is attempt-based (no od/hexdump/xxd, none of which exist on device):
+# we try `gzip -dc` (busybox built-in) into a temp file and accept the result
+# ONLY if (a) gzip returned 0, (b) the result is non-empty, and (c) the result
+# is NUL-free. gzip -dc on plain-text input returns rc!=0 cleanly, so a
+# plain-text body is left byte-for-byte untouched; this can never corrupt text.
+# Modeled on convert_crlf_to_lf: mktemp -> transform -> mv on success / rm on
+# failure. Best-effort: always returns 0 (never aborts the caller).
+maybe_gunzip_subscription_file() {
+    local filepath="$1"
+    local tmpfile
+
+    [ -s "$filepath" ] || return 0
+
+    tmpfile=$(mktemp)
+    if gzip -dc "$filepath" > "$tmpfile" 2>/dev/null &&
+        [ -s "$tmpfile" ] &&
+        ! subscription_body_is_binary "$tmpfile"; then
+        log "Decompressed gzip subscription body for '$filepath'" "debug"
+        mv "$tmpfile" "$filepath"
+    else
+        rm -f "$tmpfile"
+    fi
+
+    return 0
+}
+
+# Returns 0 (true) if the file contains at least one NUL byte (i.e. it is
+# binary / undecodable, not text). Busybox-safe, no od/hexdump/xxd: `tr -d`
+# strips NUL bytes and we compare the resulting byte count to the original; a
+# difference means a NUL was present. All vars local.
+subscription_body_is_binary() {
+    local filepath="$1"
+    local raw_count stripped_count
+
+    [ -s "$filepath" ] || return 1
+
+    raw_count="$(wc -c < "$filepath" 2>/dev/null | tr -d ' ')"
+    stripped_count="$(tr -d '\000' < "$filepath" 2>/dev/null | wc -c 2>/dev/null | tr -d ' ')"
+
+    [ -n "$raw_count" ] || raw_count=0
+    [ -n "$stripped_count" ] || stripped_count=0
+
+    [ "$raw_count" != "$stripped_count" ]
+}
+
 #######################################
 # Parses a whitespace-separated string, validates items as either domains
 # or IPv4 addresses/subnets, and returns a comma-separated string of valid items.

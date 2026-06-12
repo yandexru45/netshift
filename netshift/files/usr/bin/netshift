@@ -583,6 +583,16 @@ download_subscription_into_cache() {
             continue
         fi
 
+        # Some panels return a gzip-compressed body unconditionally (we send no
+        # Accept-Encoding and busybox wget does not transparently decompress).
+        # Decompress in place before validate/normalize so every consumer sees
+        # text. Best-effort: a plain-text body is left untouched.
+        maybe_gunzip_subscription_file "$tmpfile"
+        if subscription_body_is_binary "$tmpfile"; then
+            log "Subscription body for section '$section' is binary/undecodable after gzip handling (not text, not gzip) with User-Agent '$effective_user_agent'; trying next candidate" "warn"
+            continue
+        fi
+
         file_size="$(wc -c < "$tmpfile" 2>/dev/null | tr -d ' ')"
         log "Downloaded subscription body for section '$section': bytes=${file_size:-unknown}, User-Agent='$effective_user_agent'" "debug"
 
