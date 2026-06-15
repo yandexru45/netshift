@@ -27,9 +27,6 @@ export const styles = `
 }
 
 .pdk_dashboard-page__widgets-section__item {
-    border: 2px var(--background-color-low, lightgray) solid;
-    border-radius: 4px;
-    padding: 10px;
 }
 
 .pdk_dashboard-page__widgets-section__item__title {}
@@ -50,9 +47,6 @@ export const styles = `
 
 .pdk_dashboard-page__outbound-section {
     margin-top: 10px;
-    border: 2px var(--background-color-low, lightgray) solid;
-    border-radius: 4px;
-    padding: 10px;
 }
 
 .pdk_dashboard-page__outbound-section__title-section {
@@ -74,9 +68,6 @@ export const styles = `
 }
 
 .pdk_dashboard-page__outbound-grid__item {
-    border: 2px var(--background-color-low, lightgray) solid;
-    border-radius: 4px;
-    padding: 10px;
     transition: border 0.2s ease;
 }
 

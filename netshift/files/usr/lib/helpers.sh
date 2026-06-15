@@ -13,30 +13,6 @@ is_ipv4_cidr() {
     echo "$ip" | grep -Eq "$regex"
 }
 
-is_ipv6() {
-    local ip="$1"
-    local regex='^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$'
-    echo "$ip" | grep -Eq "$regex"
-}
-
-is_ipv6_cidr() {
-    local ip="$1"
-    local addr mask
-    addr="${ip%/*}"
-    mask="${ip#*/}"
-
-    case "$ip" in
-    */*) ;;
-    *) return 1 ;;
-    esac
-
-    is_ipv6 "$addr" && [ "$mask" -ge 0 ] 2>/dev/null && [ "$mask" -le 128 ] 2>/dev/null
-}
-
-is_ip() {
-    is_ipv4 "$1" || is_ipv6 "$1"
-}
-
 is_ipv4_ip_or_ipv4_cidr() {
     is_ipv4 "$1" || is_ipv4_cidr "$1"
 }
@@ -596,6 +572,58 @@ convert_crlf_to_lf() {
     fi
 }
 
+# Best-effort, in-place gzip decompression of a downloaded subscription body.
+#
+# Some panels unconditionally return a gzip-compressed HTTP body (busybox wget
+# does NOT transparently decompress and we send no Accept-Encoding), so the raw
+# bytes are binary and every downstream consumer (validate/normalize) chokes.
+# This decompresses once at download time so all consumers see text.
+#
+# Detection is attempt-based (no od/hexdump/xxd, none of which exist on device):
+# we try `gzip -dc` (busybox built-in) into a temp file and accept the result
+# ONLY if (a) gzip returned 0, (b) the result is non-empty, and (c) the result
+# is NUL-free. gzip -dc on plain-text input returns rc!=0 cleanly, so a
+# plain-text body is left byte-for-byte untouched; this can never corrupt text.
+# Modeled on convert_crlf_to_lf: mktemp -> transform -> mv on success / rm on
+# failure. Best-effort: always returns 0 (never aborts the caller).
+maybe_gunzip_subscription_file() {
+    local filepath="$1"
+    local tmpfile
+
+    [ -s "$filepath" ] || return 0
+
+    tmpfile=$(mktemp)
+    if gzip -dc "$filepath" > "$tmpfile" 2>/dev/null &&
+        [ -s "$tmpfile" ] &&
+        ! subscription_body_is_binary "$tmpfile"; then
+        log "Decompressed gzip subscription body for '$filepath'" "debug"
+        mv "$tmpfile" "$filepath"
+    else
+        rm -f "$tmpfile"
+    fi
+
+    return 0
+}
+
+# Returns 0 (true) if the file contains at least one NUL byte (i.e. it is
+# binary / undecodable, not text). Busybox-safe, no od/hexdump/xxd: `tr -d`
+# strips NUL bytes and we compare the resulting byte count to the original; a
+# difference means a NUL was present. All vars local.
+subscription_body_is_binary() {
+    local filepath="$1"
+    local raw_count stripped_count
+
+    [ -s "$filepath" ] || return 1
+
+    raw_count="$(wc -c < "$filepath" 2>/dev/null | tr -d ' ')"
+    stripped_count="$(tr -d '\000' < "$filepath" 2>/dev/null | wc -c 2>/dev/null | tr -d ' ')"
+
+    [ -n "$raw_count" ] || raw_count=0
+    [ -n "$stripped_count" ] || stripped_count=0
+
+    [ "$raw_count" != "$stripped_count" ]
+}
+
 #######################################
 # Parses a whitespace-separated string, validates items as either domains
 # or IPv4 addresses/subnets, and returns a comma-separated string of valid items.
@@ -753,13 +781,24 @@ get_subscription_user_agent() {
 # Arguments:
 #   $1 - configured User-Agent (empty for auto mode)
 #   $2 - preferred User-Agent (e.g. the previously cached winner; tried early)
+#   $3 - format preference: "auto" (default) | "xray" | "singbox". Reorders the
+#        auto-mode candidates so the preferred FORMAT's UA is probed first; the
+#        probe loop still keeps the first body that yields valid outbounds.
 # Behavior:
-#   - configured non-empty: emit ONLY that value (respect the user's choice).
-#   - auto: emit "singbox/<ver>", then the preferred one, then the whitelist
-#     from constants (SUBSCRIPTION_USER_AGENT_CANDIDATES), skipping duplicates.
+#   - configured non-empty: emit ONLY that value (respect the user's choice;
+#     an explicit UA always outranks the format preference).
+#   - auto/empty/unrecognised: emit "singbox/<ver>", then the preferred one,
+#     then the whitelist (SUBSCRIPTION_USER_AGENT_CANDIDATES) — today's order.
+#   - xray: emit the Xray-JSON UAs (SUBSCRIPTION_USER_AGENT_XRAY_CANDIDATES)
+#     FIRST (outranking the cached winner + default), then "singbox/<ver>",
+#     then the preferred one, then the rest of the whitelist.
+#   - singbox: same as auto (singbox/<ver> first); the explicit name for the
+#     current default ordering.
+#   All orderings are de-duplicated with the newline "seen" set below.
 build_subscription_user_agent_candidates() {
     local configured_user_agent="${1:-}"
     local preferred_user_agent="${2:-}"
+    local format_preference="${3:-}"
     local default_user_agent candidate seen
 
     if [ -n "$configured_user_agent" ]; then
@@ -769,8 +808,21 @@ build_subscription_user_agent_candidates() {
 
     default_user_agent="$(get_subscription_user_agent)"
     seen=""
-    # shellcheck disable=SC2086 # word-splitting of the candidate list is intentional
-    for candidate in "$default_user_agent" "$preferred_user_agent" $SUBSCRIPTION_USER_AGENT_CANDIDATES; do
+
+    # Order the auto-mode candidate stream by the requested format preference.
+    # "xray" front-loads the Xray-JSON-yielding UAs (so they outrank the cached
+    # winner and the default); "singbox"/"auto"/empty/unknown keep today's order
+    # (default UA -> cached winner -> whitelist). Any unknown value falls through
+    # to the default ordering (forward-compatible).
+    if [ "$format_preference" = "xray" ]; then
+        # shellcheck disable=SC2086 # word-splitting of the candidate lists is intentional
+        set -- $SUBSCRIPTION_USER_AGENT_XRAY_CANDIDATES "$default_user_agent" "$preferred_user_agent" $SUBSCRIPTION_USER_AGENT_CANDIDATES
+    else
+        # shellcheck disable=SC2086 # word-splitting of the candidate list is intentional
+        set -- "$default_user_agent" "$preferred_user_agent" $SUBSCRIPTION_USER_AGENT_CANDIDATES
+    fi
+
+    for candidate in "$@"; do
         [ -n "$candidate" ] || continue
         # Skip a candidate already emitted. Wrap stored names in newlines so the
         # substring test matches whole entries only.
@@ -786,6 +838,43 @@ $candidate
     done
 }
 
+# Runs a single wget subscription request with the shared client-mimicking
+# headers and an optional --no-check-certificate flag, so all branches of
+# download_subscription stay byte-identical.
+# Arguments:
+#   $1       - cert flag ("" or "--no-check-certificate")
+#   $2       - User-Agent header value
+#   $3       - X-HWID header value
+#   $4       - X-Device-Model header value
+#   $5       - X-Ver-OS header value
+#   $6       - output file path (passed to wget -O)
+#   $7       - error file path (wget stderr is redirected here)
+#   $8       - subscription URL
+#   $9..     - leading wget flags (e.g. -4, -T, <timeout>)
+# Caller is responsible for exporting http_proxy/https_proxy when needed.
+_wget_subscription_request() {
+    local cert_flag="$1"
+    local req_user_agent="$2"
+    local req_hwid="$3"
+    local req_device_model="$4"
+    local req_kernel_version="$5"
+    local req_outfile="$6"
+    local req_errfile="$7"
+    local req_url="$8"
+    shift 8
+
+    # shellcheck disable=SC2086
+    wget $cert_flag "$@" -O "$req_outfile" \
+        --header "User-Agent: $req_user_agent" \
+        --header "X-HWID: $req_hwid" \
+        --header "X-Device-OS: OpenWrt Linux" \
+        --header "X-Device-Model: $req_device_model" \
+        --header "X-Ver-OS: $req_kernel_version" \
+        --header "Accept-Language: ru-RU,en,*" \
+        --header "X-Device-Locale: EN" \
+        "$req_url" 2>"$req_errfile"
+}
+
 # Downloads a subscription body from the given URL with client-mimicking headers
 # Arguments:
 #   $1 - subscription URL
@@ -795,6 +884,7 @@ $candidate
 #   $5 - wait between retries (optional, default 2)
 #   $6 - timeout seconds (optional, default 10)
 #   $7 - User-Agent (optional; default "singbox/<version>")
+#   $8 - insecure (optional, default 0; when 1 adds --no-check-certificate)
 download_subscription() {
     local url="$1"
     local filepath="$2"
@@ -803,6 +893,7 @@ download_subscription() {
     local wait="${5:-2}"
     local timeout="${6:-10}"
     local user_agent="${7:-}"
+    local insecure="${8:-0}"
 
     local sb_version device_model kernel_version hwid
     sb_version="$(get_sing_box_version)"
@@ -810,6 +901,14 @@ download_subscription() {
     kernel_version="$(get_kernel_version)"
     hwid="$(generate_hwid)"
     [ -n "$user_agent" ] || user_agent="$(get_subscription_user_agent)"
+
+    # Optional TLS-verification bypass for IP-host panels with broken certs.
+    # Empty string keeps the secure default; word-splitting it into the wget
+    # argv (via _wget_subscription_request) yields zero extra args when off.
+    local cert_flag=""
+    if [ "$insecure" = "1" ]; then
+        cert_flag="--no-check-certificate"
+    fi
 
     local tmpfile errfile rc family
     tmpfile="${filepath}.part.$$"
@@ -822,48 +921,24 @@ download_subscription() {
             family="ipv4"
             if [ -n "$http_proxy_address" ]; then
                 http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
-                    wget -4 -T "$timeout" -O "$tmpfile" \
-                        --header "User-Agent: $user_agent" \
-                        --header "X-HWID: $hwid" \
-                        --header "X-Device-OS: OpenWrt Linux" \
-                        --header "X-Device-Model: $device_model" \
-                        --header "X-Ver-OS: $kernel_version" \
-                        --header "Accept-Language: ru-RU,en,*" \
-                        --header "X-Device-Locale: EN" \
-                        "$url" 2>"$errfile"
+                    _wget_subscription_request "$cert_flag" "$user_agent" "$hwid" \
+                        "$device_model" "$kernel_version" "$tmpfile" "$errfile" "$url" \
+                        -4 -T "$timeout"
             else
-                wget -4 -T "$timeout" -O "$tmpfile" \
-                    --header "User-Agent: $user_agent" \
-                    --header "X-HWID: $hwid" \
-                    --header "X-Device-OS: OpenWrt Linux" \
-                    --header "X-Device-Model: $device_model" \
-                    --header "X-Ver-OS: $kernel_version" \
-                    --header "Accept-Language: ru-RU,en,*" \
-                    --header "X-Device-Locale: EN" \
-                    "$url" 2>"$errfile"
+                _wget_subscription_request "$cert_flag" "$user_agent" "$hwid" \
+                    "$device_model" "$kernel_version" "$tmpfile" "$errfile" "$url" \
+                    -4 -T "$timeout"
             fi
         else
             if [ -n "$http_proxy_address" ]; then
                 http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
-                    wget -T "$timeout" -O "$tmpfile" \
-                        --header "User-Agent: $user_agent" \
-                        --header "X-HWID: $hwid" \
-                        --header "X-Device-OS: OpenWrt Linux" \
-                        --header "X-Device-Model: $device_model" \
-                        --header "X-Ver-OS: $kernel_version" \
-                        --header "Accept-Language: ru-RU,en,*" \
-                        --header "X-Device-Locale: EN" \
-                        "$url" 2>"$errfile"
+                    _wget_subscription_request "$cert_flag" "$user_agent" "$hwid" \
+                        "$device_model" "$kernel_version" "$tmpfile" "$errfile" "$url" \
+                        -T "$timeout"
             else
-                wget -T "$timeout" -O "$tmpfile" \
-                    --header "User-Agent: $user_agent" \
-                    --header "X-HWID: $hwid" \
-                    --header "X-Device-OS: OpenWrt Linux" \
-                    --header "X-Device-Model: $device_model" \
-                    --header "X-Ver-OS: $kernel_version" \
-                    --header "Accept-Language: ru-RU,en,*" \
-                    --header "X-Device-Locale: EN" \
-                    "$url" 2>"$errfile"
+                _wget_subscription_request "$cert_flag" "$user_agent" "$hwid" \
+                    "$device_model" "$kernel_version" "$tmpfile" "$errfile" "$url" \
+                    -T "$timeout"
             fi
         fi
 
@@ -890,25 +965,13 @@ download_subscription() {
             log "Retrying subscription download over IPv4-only" "warn"
             if [ -n "$http_proxy_address" ]; then
                 http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
-                    wget -4 -T "$timeout" -O "$tmpfile" \
-                        --header "User-Agent: $user_agent" \
-                        --header "X-HWID: $hwid" \
-                        --header "X-Device-OS: OpenWrt Linux" \
-                        --header "X-Device-Model: $device_model" \
-                        --header "X-Ver-OS: $kernel_version" \
-                        --header "Accept-Language: ru-RU,en,*" \
-                        --header "X-Device-Locale: EN" \
-                        "$url" 2>"$errfile"
+                    _wget_subscription_request "$cert_flag" "$user_agent" "$hwid" \
+                        "$device_model" "$kernel_version" "$tmpfile" "$errfile" "$url" \
+                        -4 -T "$timeout"
             else
-                wget -4 -T "$timeout" -O "$tmpfile" \
-                    --header "User-Agent: $user_agent" \
-                    --header "X-HWID: $hwid" \
-                    --header "X-Device-OS: OpenWrt Linux" \
-                    --header "X-Device-Model: $device_model" \
-                    --header "X-Ver-OS: $kernel_version" \
-                    --header "Accept-Language: ru-RU,en,*" \
-                    --header "X-Device-Locale: EN" \
-                    "$url" 2>"$errfile"
+                _wget_subscription_request "$cert_flag" "$user_agent" "$hwid" \
+                    "$device_model" "$kernel_version" "$tmpfile" "$errfile" "$url" \
+                    -4 -T "$timeout"
             fi
             rc=$?
             if [ "$rc" -eq 0 ] && [ -s "$tmpfile" ]; then
@@ -1173,17 +1236,34 @@ xray_json_to_uri_lines() {
           | (.outbounds // [])[]
           | select(type == "object")
           | select(.protocol == "vless" or .protocol == "trojan"
-                   or .protocol == "shadowsocks")
+                   or .protocol == "shadowsocks"
+                   or .protocol == "hysteria")
           # Skip chained / multi-hop outbounds: not representable as one URI.
           | select((.streamSettings.sockopt.dialerProxy // "") == "")
+          # Hysteria here is always Hysteria2 (hysteriaSettings.version == 2);
+          # the facade has no Hysteria v1 parser, so skip v1/missing-version
+          # silently (no fatal). vless/trojan/shadowsocks are unaffected.
+          | select(.protocol != "hysteria"
+                   or ((.streamSettings.hysteriaSettings.version // 0) == 2))
           | . as $ob
           | (.streamSettings // {}) as $ss
-          | ($ss.network // "tcp") as $net
+          # splithttp is the pre-rename name of the xhttp transport (sing-box
+          # renamed it). Normalize it to xhttp so the emitted URI uses the modern
+          # name and the facade xhttp branch handles it. No regex.
+          | ($ss.network // "tcp") as $net_raw
+          | (if $net_raw == "splithttp" then "xhttp" else $net_raw end) as $net
+          # xhttp transport settings live under xhttpSettings, or the pre-rename
+          # splithttpSettings alias.
+          | ($ss.xhttpSettings // $ss.splithttpSettings // {}) as $xs
           | ($ss.security // "") as $sec
           | ($ss.realitySettings // {}) as $reality
           | ($ss.tlsSettings // $ss.realitySettings // {}) as $tls
-          # vnext (vless/vmess) vs servers (trojan/shadowsocks) addressing.
-          | ($ob.settings.vnext[0] // $ob.settings.servers[0] // {}) as $peer
+          # Addressing: vnext (vless/vmess) vs servers (trojan/shadowsocks);
+          # hysteria carries the peer directly in settings.address/settings.port
+          # (no vnext/servers), so branch the peer derivation on protocol.
+          | (if $ob.protocol == "hysteria"
+             then {address: $ob.settings.address, port: $ob.settings.port}
+             else ($ob.settings.vnext[0] // $ob.settings.servers[0] // {}) end) as $peer
           | ($peer.users[0] // {}) as $user
           | ($peer.address // "") as $host
           | ($peer.port // "") as $port
@@ -1209,6 +1289,18 @@ xray_json_to_uri_lines() {
                   (if $sec != "" then ("security=" + ($sec)) else "security=tls" end),
                   kv("sni"; ($tls.serverName // "")),
                   kv("fp"; ($tls.fingerprint // "")) ]
+              elif $ob.protocol == "hysteria" then
+                # Hysteria2: no stream transport, so DO NOT emit type=. The
+                # facade defaults security to tls for hysteria2 and reads
+                # sni/insecure (via _add_outbound_security), obfs/obfs-password.
+                ($ss.hysteriaSettings // {}) as $hy
+                | [ kv("sni"; ($tls.serverName // "")),
+                    (if (($tls.allowInsecure // $tls.insecure // false) == true)
+                     then "insecure=1" else empty end) ]
+                  + (if ($hy.obfs // "") != "" then
+                       [ "obfs=salamander",
+                         kv("obfs-password"; ($hy.obfsPassword // $hy.obfs_password // "")) ]
+                     else [] end)
               else
                 [ ("type=" + $net) ]
               end
@@ -1219,9 +1311,12 @@ xray_json_to_uri_lines() {
                 [ kv("path"; ($ss.wsSettings.path // "")),
                   kv("host"; ($ss.wsSettings.headers.Host // "")) ]
               elif $net == "xhttp" then
-                [ kv("path"; ($ss.xhttpSettings.path // "")),
-                  kv("host"; ($ss.xhttpSettings.host // "")),
-                  kv("mode"; ($ss.xhttpSettings.mode // "")) ]
+                # Accept both the modern xhttpSettings and the pre-rename
+                # splithttpSettings key (network was normalized to xhttp above).
+                # $xs binds to whichever settings object is present.
+                [ kv("path"; ($xs.path // "")),
+                  kv("host"; ($xs.host // "")),
+                  kv("mode"; ($xs.mode // "")) ]
               elif $net == "grpc" then
                 [ kv("serviceName"; ($ss.grpcSettings.serviceName // "")) ]
               else [] end
@@ -1231,12 +1326,17 @@ xray_json_to_uri_lines() {
           | ($base + $transport
              + (if $alpn_str != "" then [ kv("alpn"; $alpn_str) ] else [] end)
              | map(select(. != null and . != ""))) as $query
-          # Credential: uuid for vless, password for trojan/shadowsocks.
+          # Credential: uuid for vless, hysteriaSettings.auth for hysteria,
+          # password for trojan/shadowsocks.
           | (if $ob.protocol == "vless" then ($user.id // "")
+             elif $ob.protocol == "hysteria" then
+               ($ss.hysteriaSettings.auth // "")
              else ($peer.password // $ob.settings.password // "") end) as $cred
           | select($cred != "")
           | ($ob.protocol
-             | if . == "shadowsocks" then "ss" else . end) as $scheme
+             | if . == "shadowsocks" then "ss"
+               elif . == "hysteria" then "hysteria2"
+               else . end) as $scheme
           # The connection part (no #fragment) is the dedup key: providers that
           # ship one server set across many "profiles" repeat identical nodes
           # with only the display name differing, which would otherwise inflate

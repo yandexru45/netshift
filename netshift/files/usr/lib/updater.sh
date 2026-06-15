@@ -27,6 +27,42 @@ updates_log() {
     log "Updater: $message" "$level"
 }
 
+# Verify that a backup copy is byte-complete, guarding the core-swap rollback
+# against a TRUNCATED backup written under tmpfs ENOSPC (busybox `cp` does not
+# reliably return non-zero on a partial write). Returns 0 iff $dst exists and
+# its byte size equals $src's size. A size match is sufficient here: this is a
+# same-machine copy of the same file and we are guarding truncation, not bit-rot
+# — do NOT md5/sha a ~40 MB binary on a slow armv7 router. If $src is absent
+# there is nothing to back up, so verification trivially succeeds (0).
+updates_verify_copy() {
+    local src="$1"
+    local dst="$2"
+    local ssz dsz
+
+    [ -f "$src" ] || return 0
+    [ -f "$dst" ] || return 1
+    ssz="$(wc -c < "$src" 2>/dev/null)" || return 1
+    dsz="$(wc -c < "$dst" 2>/dev/null)" || return 1
+    [ -n "$ssz" ] && [ "$ssz" = "$dsz" ]
+}
+
+# Verify that a stashed backup is still byte-complete BEFORE a rollback restores
+# it over the live path. Compares the backup's current byte size against the
+# expected source size recorded at backup time. Returns 0 iff $backup exists and
+# its size equals $expected_size. Refusing to restore a truncated backup is
+# safer than installing a segfaulting core as the "safe" fallback.
+updates_backup_is_complete() {
+    local backup="$1"
+    local expected_size="$2"
+    local bsz
+
+    [ -n "$backup" ] || return 1
+    [ -f "$backup" ] || return 1
+    [ -n "$expected_size" ] || return 1
+    bsz="$(wc -c < "$backup" 2>/dev/null)" || return 1
+    [ -n "$bsz" ] && [ "$bsz" = "$expected_size" ]
+}
+
 # ── Async component-action job state (jq, atomic) ───────────────────
 #
 # The UI starts long-running component actions (e.g. switching the sing-box
@@ -918,6 +954,7 @@ _updates_install_sing_box_extended_core() {
     local tmp_dir archive releases tag rel asset_url
     local binary_path cronet_path
     local backup_binary="" backup_cronet="" new_version
+    local backup_binary_size="" backup_cronet_size=""
 
     # Interruption-tolerant heal: a run killed mid-flight (e.g. the old rpcd 30s
     # timeout) could leave a non-executable /usr/bin/sing-box behind. Such a
@@ -996,21 +1033,29 @@ _updates_install_sing_box_extended_core() {
     # no room for a second copy of the binary.
     if [ -e /usr/bin/sing-box ]; then
         backup_binary="$tmp_dir/sing-box.backup"
-        if ! cp -p /usr/bin/sing-box "$backup_binary" 2>/dev/null; then
+        # Gate on a byte-complete backup, not just cp's exit code: a partial
+        # write under tmpfs ENOSPC could otherwise pass and later be restored as
+        # a truncated, segfaulting "safe" fallback. Abort here — the live binary
+        # has NOT been touched yet, so the working core is left intact.
+        if ! cp -p /usr/bin/sing-box "$backup_binary" 2>/dev/null ||
+            ! updates_verify_copy /usr/bin/sing-box "$backup_binary"; then
             rm -rf "$tmp_dir"
             updates_log "Failed to backup current sing-box binary" "error"
             echo "{\"success\":false,\"message\":\"Failed to backup current sing-box binary\"}"
             return 1
         fi
+        backup_binary_size="$(wc -c < "$backup_binary" 2>/dev/null)"
     fi
     if [ -n "$cronet_path" ] && [ -e /usr/lib/libcronet.so ]; then
         backup_cronet="$tmp_dir/libcronet.so.backup"
-        if ! cp -p /usr/lib/libcronet.so "$backup_cronet" 2>/dev/null; then
+        if ! cp -p /usr/lib/libcronet.so "$backup_cronet" 2>/dev/null ||
+            ! updates_verify_copy /usr/lib/libcronet.so "$backup_cronet"; then
             rm -rf "$tmp_dir"
             updates_log "Failed to backup current libcronet.so" "error"
             echo "{\"success\":false,\"message\":\"Failed to backup current libcronet.so\"}"
             return 1
         fi
+        backup_cronet_size="$(wc -c < "$backup_cronet" 2>/dev/null)"
     fi
 
     # Free overlay space by removing the live binary BEFORE extracting, then
@@ -1019,7 +1064,16 @@ _updates_install_sing_box_extended_core() {
     rm -f /usr/bin/sing-box
     if ! tar -xzf "$archive" -O "$binary_path" > /usr/bin/sing-box 2>/dev/null || [ ! -s /usr/bin/sing-box ]; then
         rm -f /usr/bin/sing-box
-        [ -n "$backup_binary" ] && mv -f "$backup_binary" /usr/bin/sing-box
+        # Only restore from a backup that is still byte-complete — restoring a
+        # truncated backup would install a segfaulting core as the "safe"
+        # fallback (worse than leaving the path absent).
+        if [ -n "$backup_binary" ]; then
+            if updates_backup_is_complete "$backup_binary" "$backup_binary_size"; then
+                mv -f "$backup_binary" /usr/bin/sing-box
+            else
+                updates_log "Rollback: sing-box backup is corrupt/incomplete; NOT restoring to avoid installing a broken core" "error"
+            fi
+        fi
         rm -rf "$tmp_dir"
         updates_log "Failed to extract sing-box-extended binary (out of space on overlay?)" "error"
         echo "{\"success\":false,\"message\":\"Failed to extract sing-box-extended binary (not enough free space on the router?)\"}"
@@ -1031,8 +1085,20 @@ _updates_install_sing_box_extended_core() {
         rm -f /usr/lib/libcronet.so
         if ! tar -xzf "$archive" -O "$cronet_path" > /usr/lib/libcronet.so 2>/dev/null || [ ! -s /usr/lib/libcronet.so ]; then
             rm -f /usr/bin/sing-box /usr/lib/libcronet.so
-            [ -n "$backup_binary" ] && mv -f "$backup_binary" /usr/bin/sing-box
-            [ -n "$backup_cronet" ] && mv -f "$backup_cronet" /usr/lib/libcronet.so
+            if [ -n "$backup_binary" ]; then
+                if updates_backup_is_complete "$backup_binary" "$backup_binary_size"; then
+                    mv -f "$backup_binary" /usr/bin/sing-box
+                else
+                    updates_log "Rollback: sing-box backup is corrupt/incomplete; NOT restoring to avoid installing a broken core" "error"
+                fi
+            fi
+            if [ -n "$backup_cronet" ]; then
+                if updates_backup_is_complete "$backup_cronet" "$backup_cronet_size"; then
+                    mv -f "$backup_cronet" /usr/lib/libcronet.so
+                else
+                    updates_log "Rollback: libcronet.so backup is corrupt/incomplete; NOT restoring" "error"
+                fi
+            fi
             rm -rf "$tmp_dir"
             updates_log "Failed to extract libcronet.so" "error"
             echo "{\"success\":false,\"message\":\"Failed to extract libcronet.so\"}"
@@ -1049,9 +1115,21 @@ _updates_install_sing_box_extended_core() {
     *extended*) ;;
     *)
         rm -f /usr/bin/sing-box
-        [ -n "$backup_binary" ] && mv -f "$backup_binary" /usr/bin/sing-box
+        if [ -n "$backup_binary" ]; then
+            if updates_backup_is_complete "$backup_binary" "$backup_binary_size"; then
+                mv -f "$backup_binary" /usr/bin/sing-box
+            else
+                updates_log "Rollback: sing-box backup is corrupt/incomplete; NOT restoring to avoid installing a broken core" "error"
+            fi
+        fi
         [ -n "$cronet_path" ] && rm -f /usr/lib/libcronet.so
-        [ -n "$backup_cronet" ] && mv -f "$backup_cronet" /usr/lib/libcronet.so
+        if [ -n "$backup_cronet" ]; then
+            if updates_backup_is_complete "$backup_cronet" "$backup_cronet_size"; then
+                mv -f "$backup_cronet" /usr/lib/libcronet.so
+            else
+                updates_log "Rollback: libcronet.so backup is corrupt/incomplete; NOT restoring" "error"
+            fi
+        fi
         rm -rf "$tmp_dir"
         updates_log "Installed sing-box failed extended validation; previous binary restored" "error"
         echo "{\"success\":false,\"message\":\"Installed sing-box failed extended validation; previous binary restored\"}"
@@ -1122,6 +1200,7 @@ updates_install_sing_box_stable() {
 _updates_install_sing_box_stable_core() {
     local new_version installed=1
     local tmp_dir backup_binary="" backup_cronet=""
+    local backup_binary_size="" backup_cronet_size=""
 
     # Remove stale temp dirs from an interrupted earlier run (tmpfs is small).
     rm -rf /tmp/netshift-sbstable.* 2>/dev/null
@@ -1137,21 +1216,29 @@ _updates_install_sing_box_stable_core() {
     # touches anything, so a failed install can be rolled back to a working core.
     if [ -e "$UPDATES_SING_BOX_BIN" ]; then
         backup_binary="$tmp_dir/sing-box.backup"
-        if ! cp -p "$UPDATES_SING_BOX_BIN" "$backup_binary" 2>/dev/null; then
+        # Gate on a byte-complete backup, not just cp's exit code (busybox cp can
+        # truncate under tmpfs ENOSPC and still return 0). Abort here — the
+        # package manager has not touched the binary yet, so the working core
+        # stays intact.
+        if ! cp -p "$UPDATES_SING_BOX_BIN" "$backup_binary" 2>/dev/null ||
+            ! updates_verify_copy "$UPDATES_SING_BOX_BIN" "$backup_binary"; then
             rm -rf "$tmp_dir"
             updates_log "Failed to backup current sing-box binary" "error"
             echo "{\"success\":false,\"message\":\"Failed to backup current sing-box binary\"}"
             return 1
         fi
+        backup_binary_size="$(wc -c < "$backup_binary" 2>/dev/null)"
     fi
     if [ -e "$UPDATES_LIBCRONET_LIB" ]; then
         backup_cronet="$tmp_dir/libcronet.so.backup"
-        if ! cp -p "$UPDATES_LIBCRONET_LIB" "$backup_cronet" 2>/dev/null; then
+        if ! cp -p "$UPDATES_LIBCRONET_LIB" "$backup_cronet" 2>/dev/null ||
+            ! updates_verify_copy "$UPDATES_LIBCRONET_LIB" "$backup_cronet"; then
             rm -rf "$tmp_dir"
             updates_log "Failed to backup current libcronet.so" "error"
             echo "{\"success\":false,\"message\":\"Failed to backup current libcronet.so\"}"
             return 1
         fi
+        backup_cronet_size="$(wc -c < "$backup_cronet" 2>/dev/null)"
     fi
 
     if command -v apk >/dev/null 2>&1; then
@@ -1179,7 +1266,7 @@ _updates_install_sing_box_stable_core() {
     if [ "$installed" -eq 0 ]; then
         # Package install failed (it may have already removed/half-replaced the
         # binary). Restore the tmpfs backup so a working core remains.
-        updates_stable_rollback "$backup_binary" "$backup_cronet"
+        updates_stable_rollback "$backup_binary" "$backup_cronet" "$backup_binary_size" "$backup_cronet_size"
         rm -rf "$tmp_dir"
         updates_log "Failed to install stable sing-box via package manager; previous binary restored" "error"
         echo "{\"success\":false,\"message\":\"Failed to install stable sing-box (package manager error); previous binary restored\"}"
@@ -1193,7 +1280,7 @@ _updates_install_sing_box_stable_core() {
     # longer be an "extended" build. If it still is, the install did not land —
     # restore the backup so the router keeps a known-good core.
     if is_sing_box_extended "$new_version"; then
-        updates_stable_rollback "$backup_binary" "$backup_cronet"
+        updates_stable_rollback "$backup_binary" "$backup_cronet" "$backup_binary_size" "$backup_cronet_size"
         rm -rf "$tmp_dir"
         updates_log "Stable install reported success but sing-box is still extended ($new_version); previous binary restored" "error"
         echo "{\"success\":false,\"message\":\"sing-box is still the extended build after install; rollback did not take effect (previous binary restored)\"}"
@@ -1217,25 +1304,42 @@ _updates_install_sing_box_stable_core() {
 # Restores the tmpfs backup of /usr/bin/sing-box (and libcronet.so) into place.
 # Used by the stable path when the package install or validation fails so the
 # router never ends core-less. Best-effort; logs the outcome.
+#
+# Args 3/4 are the byte sizes recorded at backup time. The restore is performed
+# ONLY if the backup is still byte-complete (size match) — a truncated backup
+# (tmpfs ENOSPC) is refused rather than restored as a segfaulting core.
 updates_stable_rollback() {
     local backup_binary="$1"
     local backup_cronet="$2"
+    local backup_binary_size="$3"
+    local backup_cronet_size="$4"
 
-    if [ -n "$backup_binary" ] && [ -e "$backup_binary" ]; then
-        rm -f "$UPDATES_SING_BOX_BIN" 2>/dev/null
-        if mv -f "$backup_binary" "$UPDATES_SING_BOX_BIN" 2>/dev/null; then
-            chmod 0755 "$UPDATES_SING_BOX_BIN" 2>/dev/null || true
-            updates_log "Rollback: restored previous sing-box binary from tmpfs backup"
+    if [ -n "$backup_binary" ]; then
+        # Only restore a byte-complete backup: a truncated backup (tmpfs ENOSPC)
+        # would otherwise be installed as a segfaulting "safe" core, which is
+        # worse than not restoring. Surface a loud error and leave the live path.
+        if updates_backup_is_complete "$backup_binary" "$backup_binary_size"; then
+            rm -f "$UPDATES_SING_BOX_BIN" 2>/dev/null
+            if mv -f "$backup_binary" "$UPDATES_SING_BOX_BIN" 2>/dev/null; then
+                chmod 0755 "$UPDATES_SING_BOX_BIN" 2>/dev/null || true
+                updates_log "Rollback: restored previous sing-box binary from tmpfs backup"
+            else
+                updates_log "Rollback: FAILED to restore sing-box binary from backup" "error"
+            fi
         else
-            updates_log "Rollback: FAILED to restore sing-box binary from backup" "error"
+            updates_log "Rollback: sing-box backup is corrupt/incomplete; NOT restoring to avoid installing a broken core" "error"
         fi
     fi
 
-    if [ -n "$backup_cronet" ] && [ -e "$backup_cronet" ]; then
-        rm -f "$UPDATES_LIBCRONET_LIB" 2>/dev/null
-        if mv -f "$backup_cronet" "$UPDATES_LIBCRONET_LIB" 2>/dev/null; then
-            chmod 0644 "$UPDATES_LIBCRONET_LIB" 2>/dev/null || true
-            updates_log "Rollback: restored previous libcronet.so from tmpfs backup"
+    if [ -n "$backup_cronet" ]; then
+        if updates_backup_is_complete "$backup_cronet" "$backup_cronet_size"; then
+            rm -f "$UPDATES_LIBCRONET_LIB" 2>/dev/null
+            if mv -f "$backup_cronet" "$UPDATES_LIBCRONET_LIB" 2>/dev/null; then
+                chmod 0644 "$UPDATES_LIBCRONET_LIB" 2>/dev/null || true
+                updates_log "Rollback: restored previous libcronet.so from tmpfs backup"
+            fi
+        else
+            updates_log "Rollback: libcronet.so backup is corrupt/incomplete; NOT restoring" "error"
         fi
     fi
 }
@@ -1243,7 +1347,7 @@ updates_stable_rollback() {
 # Checks whether a newer sing-box-extended release is available.
 # Echoes a JSON status (latest|outdated) on stdout.
 updates_check_sing_box_extended() {
-    local current_version releases tag status
+    local current_version releases tag status cur_norm tag_norm
 
     current_version="$(get_sing_box_version)"
 
@@ -1259,13 +1363,558 @@ updates_check_sing_box_extended() {
         return 1
     fi
 
+    # Normalize a single leading "v" off BOTH sides before comparing/emitting.
+    # get_sing_box_version yields "1.13.12-extended-2.3.2" (no v) while the
+    # GitHub .tag_name is "v1.13.12-extended-2.3.2" (with v), so the old
+    # substring match never fired and reported a false "outdated". ${x#v} strips
+    # exactly one leading "v" if present and leaves the string otherwise — safe
+    # for both forms. NB: `tag` itself (with v) is untouched and is NOT used by
+    # the install/asset path here; the installer re-derives its own tag.
+    cur_norm="${current_version#v}"
+    tag_norm="${tag#v}"
+
+    # EXACT equality after the v-strip: the extended version string is the full
+    # token (e.g. "1.13.12-extended-2.3.2"), so an exact match is correct and
+    # avoids the accidental partial matches the old `case *"$tag"*` form allowed.
     status="outdated"
+    if [ "$cur_norm" = "$tag_norm" ]; then
+        status="latest"
+    fi
+
+    # Emit BOTH versions v-stripped so the UI shows a consistent string.
+    echo "{\"success\":true,\"current_version\":\"$cur_norm\",\"latest_version\":\"$tag_norm\",\"status\":\"$status\"}"
+    return 0
+}
+
+# ── Package-manager abstraction (Component Manager, task-017) ───────
+#
+# updater.sh does NOT source install.sh, so these are the tiny `updates_`-prefixed
+# equivalents of install.sh's pkg_is_apk / pkg_install / pkg_is_installed. On a
+# real device exactly ONE of apk/opkg exists. Package output is parsed with
+# cut/awk/grep only — NEVER Oniguruma jq.
+
+# Returns 0 if the device uses apk (the apk binary is present), non-zero for opkg.
+updates_pkg_is_apk() {
+    command -v apk >/dev/null 2>&1
+}
+
+# Installs a package FILE (downloaded .ipk/.apk) non-interactively. Returns the
+# package manager's exit status. apk needs --allow-untrusted for self-built
+# packages; opkg install handles the local file path directly.
+updates_pkg_install_file() {
+    local pkg_file="$1"
+
+    if updates_pkg_is_apk; then
+        apk add --allow-untrusted "$pkg_file" </dev/null >/dev/null 2>&1
+    else
+        # --force-downgrade: a legacy v-prefixed build (e.g. v0.8.6) sorts ABOVE
+        # the no-v target (0.8.7) in opkg's dpkg-style compare, so a plain
+        # `opkg install` returns rc=0 and refuses ("Not downgrading ..."). The
+        # flag forces the v->no-v transition to actually land.
+        # --force-reinstall: covers the "already installed at this exact version"
+        # no-op. opkg rc is NOT a reliable success signal either way — the
+        # verify-after-install belt in _updates_self_update_netshift_core is the
+        # authoritative check.
+        opkg install --force-downgrade --force-reinstall "$pkg_file" </dev/null >/dev/null 2>&1
+    fi
+}
+
+# Returns 0 if a package NAME is currently installed. Mirrors install.sh's
+# pkg_is_installed grep-based detection (busybox-safe; no regex needed).
+updates_pkg_is_installed() {
+    local pkg_name="$1"
+
+    if updates_pkg_is_apk; then
+        apk list --installed 2>/dev/null | grep -q "$pkg_name"
+    else
+        opkg list-installed 2>/dev/null | grep -q "$pkg_name"
+    fi
+}
+
+# Echoes the FEED/candidate version of a package (the version the package
+# manager would install), or nothing if unavailable. Parsed with cut/awk only.
+#   opkg list <pkg> -> "<name> - <version>"   (field after " - ")
+#   apk  list <pkg> -> "<name>-<version> <arch> {...} ..."  (strip "<name>-")
+updates_pkg_candidate_version() {
+    local pkg_name="$1"
+    local line version=""
+
+    if updates_pkg_is_apk; then
+        # First matching list line; the token is "<name>-<version>". Strip the
+        # leading "<pkg>-" so only the version (e.g. "1.12.22-r1") remains.
+        line="$(apk list "$pkg_name" 2>/dev/null | grep -v '\[installed\]' | awk '{print $1}' | head -n1)"
+        [ -n "$line" ] || line="$(apk list "$pkg_name" 2>/dev/null | awk '{print $1}' | head -n1)"
+        case "$line" in
+        "$pkg_name"-*) version="${line#"$pkg_name"-}" ;;
+        esac
+    else
+        # opkg list prints "<name> - <version>"; take the field after " - ".
+        version="$(opkg list "$pkg_name" 2>/dev/null | grep "^${pkg_name} " | head -n1 | awk -F' - ' '{print $2}')"
+    fi
+
+    printf '%s' "$version"
+}
+
+# Echoes the INSTALLED version of a package (what is on the system right now),
+# or nothing if the package is not installed. Distinct from
+# updates_pkg_candidate_version (that reads the FEED candidate). Parsed with
+# grep/awk only — NEVER Oniguruma jq. Mirrors updates_pkg_is_installed.
+#   opkg list-installed -> "<name> - <version>"   (field after " - ")
+#   apk  list --installed <pkg> -> "<name>-<version> <arch> {...} ..."  (strip "<name>-")
+updates_pkg_installed_version() {
+    local pkg_name="$1"
+    local line version=""
+
+    if updates_pkg_is_apk; then
+        # First installed-list token is "<name>-<version>"; strip the leading
+        # "<pkg>-" so only the version (e.g. "0.8.7-r1") remains.
+        line="$(apk list --installed "$pkg_name" 2>/dev/null | awk '{print $1}' | head -n1)"
+        case "$line" in
+        "$pkg_name"-*) version="${line#"$pkg_name"-}" ;;
+        esac
+    else
+        # opkg list-installed prints "<name> - <version>"; take the field after
+        # " - " for the exact package name.
+        version="$(opkg list-installed 2>/dev/null | grep "^${pkg_name} " | head -n1 | awk -F' - ' '{print $2}')"
+    fi
+
+    printf '%s' "$version"
+}
+
+# Checks whether a newer STOCK (stable) sing-box is available via the system
+# package manager. SYNC (quick call → stays on the synchronous component_action
+# path). Graceful on an unreachable feed / parse failure: echoes
+# {"success":false,"message":"..."} and returns non-zero. NEVER exits.
+#
+# Output (STABLE, mirrors updates_check_sing_box_extended):
+#   {"success":true,"current_version":"...","latest_version":"...",
+#    "status":"latest"|"outdated"|"not_installed"}
+updates_check_sing_box_stable() {
+    local current_version candidate cur_semver cand_semver status
+
+    # Refresh the package index so the candidate version reflects the feed.
+    # Best-effort: a failure here just means we compare against whatever index
+    # is cached; the candidate-empty branch below reports the unreachable feed.
+    if updates_pkg_is_apk; then
+        apk update </dev/null >/dev/null 2>&1 || true
+    else
+        opkg update </dev/null >/dev/null 2>&1 || true
+    fi
+
+    candidate="$(updates_pkg_candidate_version "sing-box")"
+    if [ -z "$candidate" ]; then
+        echo "{\"success\":false,\"message\":\"Could not determine the stock sing-box version from the package feed (feed unreachable or package not found)\"}"
+        return 1
+    fi
+
+    # sing-box absent → not_installed (no running binary to compare).
+    if ! command -v sing-box >/dev/null 2>&1; then
+        echo "{\"success\":true,\"current_version\":\"not installed\",\"latest_version\":\"$candidate\",\"status\":\"not_installed\"}"
+        return 0
+    fi
+
+    current_version="$(get_sing_box_version)"
+
+    # Compare on the leading semver only (drop any "-r1"/"-extended-..." suffix)
+    # so the sort -V based >= test in is_min_package_version is well-defined.
+    cur_semver="${current_version%%-*}"
+    cand_semver="${candidate%%-*}"
+
+    if is_min_package_version "$cur_semver" "$cand_semver"; then
+        status="latest"
+    else
+        status="outdated"
+    fi
+
+    echo "{\"success\":true,\"current_version\":\"$current_version\",\"latest_version\":\"$candidate\",\"status\":\"$status\"}"
+    return 0
+}
+
+# Checks whether a newer NetShift release is available on GitHub. ON-DEMAND
+# (the "Check for updates" button) — mirrors the sing-box cores so get_system_info
+# never touches the network. SYNC (quick call → component_action path). Graceful
+# on an unreachable/rate-limited API: echoes {"success":false,"message":"..."}
+# and returns non-zero. NEVER exits (runs via component_action → JSON + rc).
+#
+# Output (mirrors updates_check_sing_box_stable):
+#   {"success":true,"current_version":"...","latest_version":"...",
+#    "status":"latest"|"outdated"}
+#
+# v-normalization: a single leading "v" is stripped from BOTH the installed
+# version and the GitHub tag before comparing (task-028 dropped the v from the
+# build, but a v-tagged release would still break a raw compare). The compare is
+# on the leading semver (drop any "-..." suffix) via the same sort -V based
+# is_min_package_version the cores use.
+updates_check_netshift() {
+    local current_version latest cur_norm latest_norm cur_semver latest_semver status
+
+    current_version="$NETSHIFT_VERSION"
+
+    # Dev/unstamped build: the placeholder __COMPILED_VERSION_VARIABLE__ contains
+    # "COMPILED" and is not a real semver. Report it honestly as "latest" (a dev
+    # build is never "outdated"; the UI also guards dev separately) and still fetch
+    # the real latest tag for display.
     case "$current_version" in
-    *"$tag"*) status="latest" ;;
+    *COMPILED*)
+        latest="$(updates_netshift_latest_tag)"
+        if [ -z "$latest" ]; then
+            echo "{\"success\":false,\"message\":\"Could not determine the latest NetShift release (GitHub API unreachable or rate-limited)\"}"
+            return 1
+        fi
+        echo "{\"success\":true,\"current_version\":\"$current_version\",\"latest_version\":\"$latest\",\"status\":\"latest\"}"
+        return 0
+        ;;
     esac
 
-    echo "{\"success\":true,\"current_version\":\"$current_version\",\"latest_version\":\"$tag\",\"status\":\"$status\"}"
+    latest="$(updates_netshift_latest_tag)"
+    if [ -z "$latest" ]; then
+        echo "{\"success\":false,\"message\":\"Could not determine the latest NetShift release (GitHub API unreachable or rate-limited)\"}"
+        return 1
+    fi
+
+    # Strip a single leading "v" from both sides (no-op if absent), then compare
+    # on the leading semver only.
+    cur_norm="${current_version#v}"
+    latest_norm="${latest#v}"
+    cur_semver="${cur_norm%%-*}"
+    latest_semver="${latest_norm%%-*}"
+
+    if is_min_package_version "$cur_semver" "$latest_semver"; then
+        status="latest"
+    else
+        status="outdated"
+    fi
+
+    echo "{\"success\":true,\"current_version\":\"$current_version\",\"latest_version\":\"$latest\",\"status\":\"$status\"}"
     return 0
+}
+
+# ── NetShift self-update (Component Manager, task-017) ──────────────
+#
+# Variant A: a targeted package upgrade (download the release .ipk/.apk from
+# GitHub and pkg_install them) — NOT install.sh (interactive). Runs as the async
+# worker `component_action netshift self_update`.
+#
+# Public wrapper — EXACTLY mirrors the updates_install_sing_box_extended epilogue
+# (single cleanup path): reset heal flags → ensure GitHub connectivity (preflight
+# + self-heal) → run the private core capturing JSON to a tmpfs file + rc →
+# ALWAYS updates_restore_after_swap → re-emit the JSON → return rc. No early
+# return skips the restore; no trap needed.
+updates_self_update_netshift() {
+    local rc out json
+
+    UPDATES_HEAL_RESOLV_REPLACED=0
+    UPDATES_HEAL_REDIRECT_DOWN=0
+
+    if ! updates_ensure_connectivity "extended"; then
+        # Heal failed BEFORE anything was touched: NetShift is left fully intact.
+        updates_restore_after_swap
+        updates_log "Aborting NetShift self-update: GitHub unreachable and self-heal failed (NetShift left intact)" "error"
+        echo '{"success":false,"message":"GitHub unreachable and self-heal failed; self-update aborted (NetShift left intact)"}'
+        return 1
+    fi
+
+    out="/tmp/netshift-selfupdate-result.$$"
+    _updates_self_update_netshift_core >"$out" 2>/dev/null
+    rc=$?
+    json="$(cat "$out" 2>/dev/null)"
+    rm -f "$out" 2>/dev/null
+
+    updates_restore_after_swap
+
+    [ -n "$json" ] && printf '%s\n' "$json"
+    return "$rc"
+}
+
+# Resolve a URL's HTTP redirect target via curl WITHOUT hitting the rate-limited
+# API or downloading the body. Echoes the redirect URL (empty if curl absent or
+# no redirect). Stubbable in tests.
+updates_github_resolve_redirect() {
+    local url="$1"
+    command -v curl >/dev/null 2>&1 || return 1
+    curl -sI -o /dev/null -w '%{redirect_url}' --connect-timeout 5 -m 15 -A 'netshift-updater' "$url" 2>/dev/null
+}
+
+# Echoes the GitHub latest-release tag for NetShift (e.g. "0.8.8"), or nothing.
+# PRIMARY: resolve the github.com frontend redirect of /releases/latest — it
+# 302s to /releases/tag/<tag>. That frontend is NOT the 60/hour-per-IP
+# api.github.com, so it sidesteps the anonymous rate limit entirely (the common
+# failure on CGNAT / shared-IP / shared-VPN-egress routers). FALLBACK: the
+# api.github.com release object parsed with jq (task-047) so a curl-less box or a
+# changed-redirect github still degrades gracefully instead of hard-failing.
+# jq is format-independent (minified or pretty); a field-positional grep|cut
+# grabbed the wrong key on minified JSON, causing a false "outdated".
+# Bare tag on success / non-zero otherwise (contract consumed by
+# updates_check_netshift and the self-update worker).
+updates_netshift_latest_tag() {
+    local response tag redirect
+
+    # PRIMARY: github.com/<repo>/releases/latest 302-redirects to
+    # /releases/tag/<tag>. Parse with case/param-expansion (no Oniguruma).
+    redirect="$(updates_github_resolve_redirect "$NETSHIFT_REPO_RELEASES_LATEST_URL")"
+    case "$redirect" in
+    */releases/tag/*)
+        tag="${redirect##*/releases/tag/}"
+        case "$tag" in '' | */*) tag="" ;; esac
+        ;;
+    *) tag="" ;;
+    esac
+    if [ -n "$tag" ]; then
+        printf '%s' "$tag"
+        return 0
+    fi
+
+    # FALLBACK: api.github.com (rate-limited) parsed with jq.
+    response="$(updates_http_get_once "$NETSHIFT_RELEASE_API_URL" "")"
+    if [ -z "$response" ]; then
+        return 1
+    fi
+
+    tag="$(printf '%s' "$response" | jq -r '.tag_name // empty' 2>/dev/null)"
+    [ -n "$tag" ] || return 1
+    printf '%s' "$tag"
+}
+
+# Echo the deterministic release asset filename for a package + tag + ext.
+# ipk core/luci carry "-r1-all"; apk core/luci carry "-r1"; the i18n package
+# carries neither suffix (just "<pkg>-<tag>.<ext>"). Single source of the asset
+# naming pattern so it lives in one place, not scattered.
+updates_netshift_asset_filename() {
+    local pkg="$1" tag="$2" ext="$3"
+    case "$pkg" in
+    "$UPDATES_NETSHIFT_PKG_I18N_RU") printf '%s-%s.%s' "$pkg" "$tag" "$ext" ;;
+    *)
+        if [ "$ext" = "ipk" ]; then
+            printf '%s-%s-r1-all.%s' "$pkg" "$tag" "$ext"
+        else
+            printf '%s-%s-r1.%s' "$pkg" "$tag" "$ext"
+        fi
+        ;;
+    esac
+}
+
+# Downloads the NetShift release assets for the active package manager into $dir.
+# Echoes nothing; returns 0 if at least the core "netshift" package was
+# downloaded, non-zero otherwise.
+# PRIMARY: resolve the latest tag (redirect-based, rate-limit-free) and build the
+# deterministic github.com/<repo>/releases/download/<tag>/<asset> URLs — the
+# CDN 302 is followed by updates_download_to_file (curl -L / wget both follow it).
+# FALLBACK: if the tag can't be resolved, scrape the api.github.com release JSON
+# for .ipk/.apk URLs (busybox grep -o) as before, so a curl-less box still works.
+_updates_self_update_download_assets() {
+    local dir="$1"
+    local response ext pattern url filename dest attempt got_core=0
+    local tag pkg
+
+    if updates_pkg_is_apk; then
+        ext="apk"
+    else
+        ext="ipk"
+    fi
+
+    tag="$(updates_netshift_latest_tag)"
+    if [ -n "$tag" ]; then
+        # Direct deterministic asset URLs (no API). Core + luci always; the RU
+        # i18n package only if already installed.
+        for pkg in "$UPDATES_NETSHIFT_PKG_CORE" "$UPDATES_NETSHIFT_PKG_LUCI" "$UPDATES_NETSHIFT_PKG_I18N_RU"; do
+            if [ "$pkg" = "$UPDATES_NETSHIFT_PKG_I18N_RU" ]; then
+                updates_pkg_is_installed "$UPDATES_NETSHIFT_PKG_I18N_RU" || continue
+            fi
+            filename="$(updates_netshift_asset_filename "$pkg" "$tag" "$ext")"
+            url="$NETSHIFT_REPO_RELEASES_DOWNLOAD_BASE/$tag/$filename"
+            dest="$dir/$filename"
+            attempt=0
+            while [ "$attempt" -lt 3 ]; do
+                if updates_download_to_file "$url" "$dest"; then
+                    break
+                fi
+                rm -f "$dest" 2>/dev/null
+                attempt=$((attempt + 1))
+            done
+            if [ "$pkg" = "$UPDATES_NETSHIFT_PKG_CORE" ] && [ -s "$dest" ]; then
+                got_core=1
+            fi
+        done
+        [ "$got_core" -eq 1 ]
+        return $?
+    fi
+
+    # FALLBACK: scrape the API release JSON for direct asset URLs.
+    response="$(updates_http_get_once "$NETSHIFT_RELEASE_API_URL" "")"
+    if [ -z "$response" ]; then
+        return 1
+    fi
+    pattern="https://[^\"[:space:]]*\.${ext}"
+
+    # Iterate the matching browser_download_url values. Only keep assets whose
+    # filename starts with one of the NetShift package-name prefixes; the RU
+    # i18n package is kept ONLY if already installed.
+    printf '%s' "$response" | grep -o "$pattern" | while read -r url; do
+        filename="$(basename "$url")"
+        case "$filename" in
+        "$UPDATES_NETSHIFT_PKG_CORE"* | "$UPDATES_NETSHIFT_PKG_LUCI"*) ;;
+        "$UPDATES_NETSHIFT_PKG_I18N_RU"*)
+            updates_pkg_is_installed "$UPDATES_NETSHIFT_PKG_I18N_RU" || continue
+            ;;
+        *) continue ;;
+        esac
+
+        dest="$dir/$filename"
+        attempt=0
+        while [ "$attempt" -lt 3 ]; do
+            if updates_download_to_file "$url" "$dest"; then
+                break
+            fi
+            rm -f "$dest" 2>/dev/null
+            attempt=$((attempt + 1))
+        done
+    done
+
+    # Verify the core package landed (the subshell-piped loop can't set a parent
+    # var, so re-check the directory contents here).
+    if ls "$dir/$UPDATES_NETSHIFT_PKG_CORE"* >/dev/null 2>&1; then
+        got_core=1
+    fi
+    [ "$got_core" -eq 1 ]
+}
+
+# Private core of the self-update. Runs NON-interactively; every variable local.
+# Echoes a single JSON object; NEVER exits (returns non-zero on recoverable
+# failure so the wrapper still runs the restore epilogue).
+_updates_self_update_netshift_core() {
+    local installed latest pkg file_path candidate_file
+    local core_installed core_installed_semver latest_semver
+    local backup_made=0
+
+    installed="$NETSHIFT_VERSION"
+
+    latest="$(updates_netshift_latest_tag)"
+    if [ -z "$latest" ]; then
+        updates_log "Self-update: could not determine the latest NetShift release tag" "error"
+        echo '{"success":false,"message":"Could not determine the latest NetShift release (GitHub API unreachable or rate-limited)"}'
+        return 1
+    fi
+
+    # Idempotent defense: compare ignoring a leading "v" so "v0.8.1" vs "0.8.1"
+    # still match (the UI also gates on the "outdated" status).
+    if [ "${installed#v}" = "${latest#v}" ]; then
+        updates_log "Self-update: NetShift already at the latest version ($installed)"
+        echo "{\"success\":true,\"message\":\"Already up to date\",\"version\":\"$installed\"}"
+        return 0
+    fi
+
+    # Minimal backup: /etc/config/netshift to tmpfs (conffiles normally preserve
+    # it; this is the defensive belt).
+    rm -rf "$UPDATES_NETSHIFT_DOWNLOAD_DIR" 2>/dev/null
+    if ! mkdir -p "$UPDATES_NETSHIFT_DOWNLOAD_DIR"; then
+        updates_log "Self-update: failed to create download directory" "error"
+        echo '{"success":false,"message":"Failed to create the self-update download directory"}'
+        return 1
+    fi
+    mkdir -p "$(dirname "$UPDATES_NETSHIFT_CONFIG_BACKUP")" 2>/dev/null || true
+    if [ -f "$NETSHIFT_CONFIG" ]; then
+        if cp -p "$NETSHIFT_CONFIG" "$UPDATES_NETSHIFT_CONFIG_BACKUP" 2>/dev/null; then
+            backup_made=1
+        else
+            updates_log "Self-update: failed to back up $NETSHIFT_CONFIG (continuing; conffiles preserve it)" "warn"
+        fi
+    fi
+
+    # Download the release assets (.ipk/.apk) for this package manager.
+    updates_log "Self-update: downloading NetShift $latest release packages"
+    if ! _updates_self_update_download_assets "$UPDATES_NETSHIFT_DOWNLOAD_DIR"; then
+        rm -rf "$UPDATES_NETSHIFT_DOWNLOAD_DIR" 2>/dev/null
+        updates_log "Self-update: failed to download the NetShift release packages" "error"
+        echo '{"success":false,"message":"Failed to download the NetShift release packages (GitHub unreachable or no matching assets)"}'
+        return 1
+    fi
+
+    # Install core, then LuCI app, then RU i18n if applicable (already filtered
+    # to "installed-only" at download time). NON-interactive. The netshift
+    # package replaces /usr/bin/netshift (this very script) — busybox ash has
+    # already read the whole script into memory, so the in-flight worker and the
+    # subsequent updates_write_finished_job_state complete from memory. We MUST
+    # NOT re-exec /usr/bin/netshift after this install (no updates_restart that
+    # re-runs the CLI; only /etc/init.d/netshift restart, which spawns a fresh
+    # process that may safely load the new binary).
+    for pkg in "$UPDATES_NETSHIFT_PKG_CORE" "$UPDATES_NETSHIFT_PKG_LUCI" "$UPDATES_NETSHIFT_PKG_I18N_RU"; do
+        file_path=""
+        for candidate_file in "$UPDATES_NETSHIFT_DOWNLOAD_DIR/$pkg"*; do
+            if [ -f "$candidate_file" ]; then
+                file_path="$candidate_file"
+                break
+            fi
+        done
+        [ -n "$file_path" ] || continue
+
+        updates_log "Self-update: installing $(basename "$file_path")"
+        if ! updates_pkg_install_file "$file_path"; then
+            # The core is the critical package; if it fails, surface the failure.
+            # conffiles preserve /etc/config/netshift; restore defensively below.
+            if [ "$pkg" = "$UPDATES_NETSHIFT_PKG_CORE" ]; then
+                _updates_self_update_restore_config "$backup_made"
+                rm -rf "$UPDATES_NETSHIFT_DOWNLOAD_DIR" 2>/dev/null
+                updates_log "Self-update: failed to install the NetShift core package" "error"
+                echo '{"success":false,"message":"Failed to install the NetShift core package; configuration preserved"}'
+                return 1
+            fi
+            updates_log "Self-update: failed to install $pkg (non-critical; continuing)" "warn"
+        fi
+    done
+
+    # Verify-after-install for the CORE package (authoritative success signal).
+    # opkg returns rc=0 for "already installed"/"up to date"/"Not downgrading",
+    # so the install rc above is NOT trustworthy. RE-READ the installed version
+    # and confirm it actually became the target before declaring success. apk's
+    # equal-version no-overwrite quirk is caught by this same belt.
+    core_installed="$(updates_pkg_installed_version "$UPDATES_NETSHIFT_PKG_CORE")"
+    # Normalize with the SAME rules the version-decision uses: drop a leading "v"
+    # and any "-rN"/"-suffix" so we compare semver-to-semver.
+    core_installed_semver="${core_installed#v}"
+    core_installed_semver="${core_installed_semver%%-*}"
+    latest_semver="${latest#v}"
+    latest_semver="${latest_semver%%-*}"
+
+    # The install took iff the installed semver equals the target, OR the
+    # installed semver is now >= the target (is_min_package_version current
+    # required → 0 when current >= required).
+    if [ "$core_installed_semver" != "$latest_semver" ] \
+        && ! is_min_package_version "$core_installed_semver" "$latest_semver"; then
+        _updates_self_update_restore_config "$backup_made"
+        rm -rf "$UPDATES_NETSHIFT_DOWNLOAD_DIR" 2>/dev/null
+        updates_log "Self-update: core package version did not change after install (package manager reported success but no upgrade occurred)" "error"
+        echo '{"success":false,"message":"NetShift core package did not upgrade (package manager refused or no-op); configuration preserved"}'
+        return 1
+    fi
+
+    # Defensive: if the config got clobbered/emptied, restore from the backup.
+    _updates_self_update_restore_config "$backup_made"
+
+    # Success cleanup: drop the download dir and the config backup.
+    rm -rf "$UPDATES_NETSHIFT_DOWNLOAD_DIR" 2>/dev/null
+    [ "$backup_made" -eq 1 ] && rm -f "$UPDATES_NETSHIFT_CONFIG_BACKUP" 2>/dev/null
+
+    updates_log "Self-update: NetShift updated to $latest"
+    echo "{\"success\":true,\"version\":\"$latest\",\"message\":\"NetShift updated to $latest\"}"
+    return 0
+}
+
+# Restores /etc/config/netshift from the tmpfs backup IF the live file is missing
+# or empty (conffiles normally keep it; this is the defensive belt). $1 = 1 when
+# a backup was taken.
+_updates_self_update_restore_config() {
+    local backup_made="$1"
+
+    [ "$backup_made" -eq 1 ] || return 0
+    [ -f "$UPDATES_NETSHIFT_CONFIG_BACKUP" ] || return 0
+
+    if [ ! -s "$NETSHIFT_CONFIG" ]; then
+        if cp -p "$UPDATES_NETSHIFT_CONFIG_BACKUP" "$NETSHIFT_CONFIG" 2>/dev/null; then
+            updates_log "Self-update: restored $NETSHIFT_CONFIG from backup (live file was missing/empty)" "warn"
+        else
+            updates_log "Self-update: FAILED to restore $NETSHIFT_CONFIG from backup" "error"
+        fi
+    fi
 }
 
 # Dispatcher for component-related actions.
@@ -1282,6 +1931,24 @@ component_action() {
         ;;
     sing_box:check_update)
         updates_check_sing_box_extended
+        ;;
+    sing_box:check_update_stable)
+        updates_check_sing_box_stable
+        ;;
+    netshift:check_update)
+        updates_check_netshift
+        ;;
+    netshift:self_update)
+        updates_self_update_netshift
+        ;;
+    subscription:clear_cache)
+        # Worker lives in bin/netshift (where subscription_update + the cache-path
+        # builders + SUBSCRIPTION_CACHE_FOLDER are in scope). updater.sh is sourced
+        # by bin/netshift, and the async fork re-execs "$0" component_action ...,
+        # so the function is always defined when this arm dispatches. Reachable via
+        # BOTH the sync `component_action subscription clear_cache` and the async
+        # component_action_async/component_action_status paths.
+        subscription_clear_cache_and_redownload
         ;;
     *)
         echo '{"success":false,"message":"Unknown component action"}'

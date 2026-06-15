@@ -174,7 +174,17 @@ sing_box_cf_add_proxy_outbound() {
         # Generation is gated behind sing-box-extended. On a stock sing-box build
         # we log a clear message and return the config UNCHANGED (no exit 1, no
         # outbound added) so generation degrades safely and keeps the last-good
-        # config. tuic/hysteria1/anytls/shadowtls reuse this exact block.
+        # config.
+        #
+        # Schemes this dispatcher PARSES: socks4/socks4a/socks5, vless, ss,
+        # trojan, hysteria2/hy2, and vmess (vmess is extended-gated above). Any
+        # OTHER scheme (tuic, hysteria v1, anytls, shadowtls, wireguard, http,
+        # or a typo) is NOT parsed here: it hits the default `*)` arm below,
+        # which logs a WARNING and returns the config UNCHANGED (rc 1, skip) so a
+        # single bad link in a url/selector/urltest input never aborts the whole
+        # config. Such schemes are reachable only via a raw `outbound_json`
+        # connection (proxy_config_type=outbound) or a native sing-box-JSON
+        # subscription, which bypass this URL dispatcher entirely.
         if ! is_sing_box_extended; then
             log "VMess requires sing-box-extended. Install sing-box-extended and retry." "error"
             echo "$config"
@@ -221,8 +231,17 @@ sing_box_cf_add_proxy_outbound() {
             "$vm_tls" "$vm_sni" "$vm_alpn" "$vm_fp" "$vm_server")
         ;;
     *)
-        log "Unsupported proxy $scheme type. Aborted." "fatal"
-        exit 1
+        # Unsupported scheme: downgrade from fatal to a WARNING + skip. This
+        # dispatcher is shared by the single-URL, selector-loop and urltest-loop
+        # callers, so a single unsupported/typo'd link must NOT abort generation
+        # of the whole config. Echo the input config UNCHANGED (never empty — an
+        # empty echo would wipe the caller's `config=$(...)`) and return non-zero
+        # so the caller knows no outbound was added and can skip this node and
+        # continue with the remaining links. The subscription normalize caller
+        # already understands this non-zero "skip" contract.
+        log "Unsupported proxy scheme '$scheme'; skipping this link (supported: socks/vless/ss/trojan/hysteria2/vmess)" "warn"
+        echo "$config"
+        return 1
         ;;
     esac
 
@@ -255,8 +274,9 @@ _add_outbound_security() {
         short_id=$(url_get_query_param "$url" "sid")
 
         # XHTTP transport defaults its ALPN to h2/http/1.1 when none is provided.
+        # `splithttp` is the pre-rename alias of `xhttp` (see _add_outbound_transport).
         transport_type=$(url_get_query_param "$url" "type")
-        if [ "$transport_type" = "xhttp" ] && [ "$alpn" = "[]" ]; then
+        if { [ "$transport_type" = "xhttp" ] || [ "$transport_type" = "splithttp" ]; } && [ "$alpn" = "[]" ]; then
             alpn='["h2","http/1.1"]'
         fi
 
@@ -325,7 +345,11 @@ _add_outbound_transport() {
             sing_box_cm_set_grpc_transport_for_outbound "$config" "$outbound_tag" "$grpc_service_name"
         )
         ;;
-    xhttp)
+    xhttp | splithttp)
+        # `splithttp` is the pre-rename name of the `xhttp` transport (sing-box
+        # renamed it). Accept it as an alias and normalize to xhttp downstream:
+        # sing_box_cm_set_xhttp_transport_for_outbound emits the modern `xhttp`
+        # key, so the config sing-box sees always uses the current name.
         if ! is_sing_box_extended; then
             log "XHTTP transport requires sing-box-extended. Install sing-box-extended and retry." "error"
             echo "$config"

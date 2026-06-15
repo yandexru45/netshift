@@ -68,18 +68,34 @@ best-effort). It uses the same `PKG_VERSION` expression and
   updated, `luci-base` installed, feed dirs created; the apk one also runs
   `./setup.sh`).
 
-### KNOWN INCONSISTENCY — respect it, do not "fix" blindly
+### Version passing — symmetric, both RAW (no `v` prefix)
 
-The two release Dockerfiles pass the version differently:
+Both release Dockerfiles now pass the version **raw**, with no `v` prefix:
 
-- `Dockerfile-ipk`: `RUN export NETSHIFT_VERSION="v${NETSHIFT_VERSION}" && ...`
-  — it **prepends `v`**.
+- `Dockerfile-ipk`: `ENV NETSHIFT_VERSION=${NETSHIFT_VERSION}` — **raw, no
+  `v`**.
 - `Dockerfile-apk`: `ENV NETSHIFT_VERSION=${NETSHIFT_VERSION}` — **raw, no
   `v`**.
 
-This asymmetry is intentional/load-bearing for the current artifact names. Do
-not normalize one to match the other without verifying the whole release flow
-(§4) and `install.sh` matching (§6).
+> Historical note (task-028): `Dockerfile-ipk` used to **prepend `v`**
+> (`RUN export NETSHIFT_VERSION="v${NETSHIFT_VERSION}" && ...`) while the apk
+> file passed it raw. That asymmetry stamped a leading `v` into the ipk
+> package/control version and the runtime `constants.sh` `NETSHIFT_VERSION`,
+> so on OWRT24/ipk the installed version (`v0.8.6`) never matched the no-`v`
+> GitHub tag (`0.8.6`) and the LuCI UI falsely reported "outdated". The `v`
+> prepend was removed (ipk normalized to the apk shape) after verifying the
+> whole release flow (§4) and `install.sh` matching (§6): the `_`→`-` rename,
+> the 3-package filter, the i18n `-${VERSION}` naming, and the release tag all
+> derive from the git tag, and `install.sh` matches assets by **name prefix**
+> (the `v` lived in the version segment, not the name prefix) — so dropping it
+> does not affect either. Keep both Dockerfiles passing the version raw.
+>
+> Residual fragility (out of scope, on record): the UI version-equality check
+> in `fe-app-netshift` does **not** normalize a leading `v`. If a future
+> release is tagged **with** a `v` (e.g. `v0.8.7`), `netshift_latest_version`
+> would carry `v` while the installed (no-`v`) version would not, re-triggering
+> the false-"outdated" mismatch. **Tag releases WITHOUT a `v`** to keep
+> ipk / apk / tag all consistent.
 
 ---
 

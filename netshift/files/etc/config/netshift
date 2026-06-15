@@ -47,8 +47,35 @@ config section 'main'
 #config section 'subscription_example'
 #        option connection_type 'proxy'
 #        option proxy_config_type 'subscription'
+#        # subscription_url may be a single option (legacy, still supported) or a
+#        # UCI list of one or more feed URLs. With multiple URLs every feed is
+#        # downloaded/validated independently and all nodes are MERGED into one
+#        # selector/urltest group (same-named nodes auto-deduped). A dead feed
+#        # never breaks the others; the section is blocked only if ALL feeds fail.
 #        option subscription_url 'https://example.com/api/sub'
+#        #list subscription_url 'https://example.com/api/sub'
+#        #list subscription_url 'https://another-panel.example/api/sub'
+#        # Allow insecure TLS for the subscription fetch (default 0). Set to 1 to
+#        # add wget --no-check-certificate for IP-host panels whose HTTPS cert is
+#        # invalid/self-signed/missing-SAN. Disables certificate verification.
+#        #option subscription_insecure '0'
+#        # Force a specific client User-Agent for the fetch. When set, ONLY this
+#        # UA is used (no probing). Leave unset to auto-probe well-known clients.
+#        #option subscription_user_agent 'Happ'
+#        # Preferred body FORMAT to probe first (auto|xray|singbox, default auto).
+#        # Panels often serve a different config per User-Agent. 'xray' tries the
+#        # Xray-JSON UAs (Happ/v2rayN) FIRST to recover xhttp nodes a panel only
+#        # exposes in its Xray JSON; 'singbox' keeps the singbox/<ver> UA first;
+#        # 'auto' preserves the default order. Ignored when subscription_user_agent
+#        # is set (an explicit UA always wins).
+#        #option subscription_format_preference 'auto'
 #        option subscription_update_interval '1h'
+#        # Node grouping: off | country | prefix. 'country' clusters by leading
+#        # flag emoji; 'prefix' clusters by the first N codepoints of each node
+#        # name (N = subscription_group_prefix_len). subscription_group_mode
+#        # outranks the legacy subscription_group_by_countries boolean below.
+#        #option subscription_group_mode 'off'
+#        #option subscription_group_prefix_len '2'
 #        #option subscription_group_by_countries '0'
 #        #option urltest_check_interval '3m'
 #        #option urltest_tolerance '50'
@@ -59,5 +86,28 @@ config section 'main'
 #        #list subscription_filter_include_keywords 'grpc'
 #        # Keyword blacklist: drop any node whose display name contains any of
 #        # these (OR). Empty/absent = no exclusion.
-#        #list subscription_filter_exclude_keywords 'expired'
-#        list community_lists 'russia_inside'
+ #        #list subscription_filter_exclude_keywords 'expired'
+ #        list community_lists 'russia_inside'
+
+# Text-list Selector / URLTest: paste proxy links into a single multi-line
+# textarea option (one link per line) instead of one DynamicList item each. The
+# supported links (vless/vmess/ss/trojan/hysteria2/socks) are built into a
+# Selector ('selector_text') or a URLTest + selector ('urltest_text'); blank
+# lines and unsupported schemes are skipped. The value is a scalar newline-
+# delimited blob — NOT a UCI list.
+#config section 'selector_text_example'
+#        option connection_type 'proxy'
+#        option proxy_config_type 'selector_text'
+#        # one link per line in a single multi-line option value
+#        option selector_proxy_links_text 'vless://example-node-1
+#vless://example-node-2'
+
+#config section 'urltest_text_example'
+#        option connection_type 'proxy'
+#        option proxy_config_type 'urltest_text'
+#        # one link per line in a single multi-line option value
+#        option urltest_proxy_links_text 'vless://example-node-1
+#vless://example-node-2'
+#        #option urltest_check_interval '3m'
+#        #option urltest_tolerance '50'
+#        #option urltest_testing_url 'https://www.gstatic.com/generate_204'

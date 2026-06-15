@@ -40,7 +40,6 @@ export async function runNftCheck() {
     Boolean(data.rules_mangle_exist) &&
     Boolean(data.rules_mangle_counters) &&
     Boolean(data.rules_mangle_output_exist) &&
-    Boolean(data.rules_mangle_output_counters) &&
     Boolean(data.rules_proxy_exist) &&
     Boolean(data.rules_proxy_counters) &&
     !data.rules_other_mark_exist;
@@ -50,7 +49,6 @@ export async function runNftCheck() {
     Boolean(data.rules_mangle_exist) ||
     Boolean(data.rules_mangle_counters) ||
     Boolean(data.rules_mangle_output_exist) ||
-    Boolean(data.rules_mangle_output_counters) ||
     Boolean(data.rules_proxy_exist) ||
     Boolean(data.rules_proxy_counters) ||
     !data.rules_other_mark_exist;
@@ -82,11 +80,6 @@ export async function runNftCheck() {
       {
         state: data.rules_mangle_output_exist ? 'success' : 'error',
         key: _('Rules mangle output exist'),
-        value: '',
-      },
-      {
-        state: data.rules_mangle_output_counters ? 'success' : 'error',
-        key: _('Rules mangle output counters'),
         value: '',
       },
       {

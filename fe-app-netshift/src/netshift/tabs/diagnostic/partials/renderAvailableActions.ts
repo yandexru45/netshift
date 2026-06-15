@@ -27,8 +27,7 @@ interface IRenderAvailableActionsProps {
   globalCheck: ActionProps;
   viewLogs: ActionProps;
   showSingBoxConfig: ActionProps;
-  singBoxInstall: ActionProps;
-  singBoxExtended: 0 | 1;
+  clearSubscriptionCache: ActionProps;
 }
 
 export function renderAvailableActions({
@@ -40,10 +39,9 @@ export function renderAvailableActions({
   globalCheck,
   viewLogs,
   showSingBoxConfig,
-  singBoxInstall,
-  singBoxExtended,
+  clearSubscriptionCache,
 }: IRenderAvailableActionsProps) {
-  return E('div', { class: 'pdk_diagnostic-page__right-bar__actions' }, [
+  return E('div', { class: 'card pdk_diagnostic-page__right-bar__actions' }, [
     E('b', {}, _('Available actions')),
     ...insertIf(restart.visible, [
       renderButton({
@@ -122,13 +120,13 @@ export function renderAvailableActions({
         disabled: showSingBoxConfig.disabled,
       }),
     ]),
-    ...insertIf(singBoxInstall.visible, [
+    ...insertIf(clearSubscriptionCache.visible, [
       renderButton({
-        onClick: singBoxInstall.onClick,
+        onClick: clearSubscriptionCache.onClick,
         icon: renderRotateCcwIcon24,
-        text: singBoxExtended ? _('Install stable') : _('Install extended'),
-        loading: singBoxInstall.loading,
-        disabled: singBoxInstall.disabled,
+        text: _('Clear subscription cache'),
+        loading: clearSubscriptionCache.loading,
+        disabled: clearSubscriptionCache.disabled,
       }),
     ]),
   ]);

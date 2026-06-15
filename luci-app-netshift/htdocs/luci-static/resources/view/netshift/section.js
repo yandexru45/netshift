@@ -6,7 +6,34 @@
 "require view.netshift.main as main";
 
 function createSectionContent(section) {
-  let o = section.option(
+  // Group the 36 connection options into 4 native CBI option-group tabs.
+  // HARD RULE: once a section has tab(), every option MUST be added via
+  // taboption() — any leftover section.option(...) renders nothing.
+  // depends() works across tabs; a tab whose options are all depends-hidden
+  // auto-hides from the strip (desired, e.g. Subscription for proxy/url).
+  section.tab(
+    "connection",
+    _("Connection"),
+    _("Connection type, transport and DNS resolver for this section"),
+  );
+  section.tab(
+    "subscription",
+    _("Subscription"),
+    _("Subscription feeds, server filters and URLTest tuning"),
+  );
+  section.tab(
+    "routing",
+    _("Routing"),
+    _("Domain and subnet lists that decide which traffic uses this section"),
+  );
+  section.tab(
+    "advanced",
+    _("Advanced"),
+    _("Mixed proxy and DNS resolution tuning"),
+  );
+
+  let o = section.taboption(
+    "connection",
     form.ListValue,
     "connection_type",
     _("Connection Type"),
@@ -17,7 +44,8 @@ function createSectionContent(section) {
   o.value("block", "Block");
   o.value("exclusion", "Exclusion");
 
-  o = section.option(
+  o = section.taboption(
+    "connection",
     form.ListValue,
     "proxy_config_type",
     _("Configuration Type"),
@@ -26,12 +54,15 @@ function createSectionContent(section) {
   o.value("url", _("Connection URL"));
   o.value("selector", _("Selector"));
   o.value("urltest", _("URLTest"));
+  o.value("selector_text", _("Selector (text list)"));
+  o.value("urltest_text", _("URLTest (text list)"));
   o.value("subscription", _("Subscription"));
   o.value("outbound", _("Outbound Config"));
   o.default = "url";
   o.depends("connection_type", "proxy");
 
-  o = section.option(
+  o = section.taboption(
+    "connection",
     form.TextValue,
     "proxy_string",
     _("Proxy Configuration URL"),
@@ -62,7 +93,8 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = section.taboption(
+    "connection",
     form.TextValue,
     "outbound_json",
     _("Outbound Configuration"),
@@ -85,17 +117,18 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
-    form.Value,
+  o = section.taboption(
+    "subscription",
+    form.DynamicList,
     "subscription_url",
-    _("Subscription URL"),
+    _("Subscription URLs"),
     _(
-      "Enter the subscription URL to fetch proxy configurations from your provider",
+      "Add one or more subscription URLs to fetch proxy configurations from. All feeds are downloaded and merged.",
     ),
   );
   o.depends({ connection_type: "proxy", proxy_config_type: "subscription" });
   o.placeholder = "https://example.com/api/sub";
-  o.rmempty = false;
+  o.rmempty = true;
   o.validate = function (section_id, value) {
     if (!value || value.length === 0) {
       return true;
@@ -110,7 +143,38 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = section.taboption(
+    "subscription",
+    form.ListValue,
+    "subscription_format_preference",
+    _("Subscription format"),
+    _(
+      "Which subscription format (client) to fetch first. Auto uses the default order. Choose Xray JSON (Happ) when your panel only exposes some nodes (e.g. xhttp) under a Happ-like client, or Sing-box to prefer the sing-box format.",
+    ),
+  );
+  o.value("auto", _("Auto"));
+  o.value("xray", _("Xray JSON (Happ)"));
+  o.value("singbox", _("Sing-box"));
+  o.default = "auto";
+  o.depends({ connection_type: "proxy", proxy_config_type: "subscription" });
+
+  o = section.taboption(
+    "subscription",
+    form.Flag,
+    "subscription_insecure",
+    _("Allow insecure TLS for subscription fetch"),
+    _("Disables TLS certificate verification when downloading the subscription.") +
+      " " +
+      _("Use only for IP-host panels that serve an invalid or self-signed certificate.") +
+      " " +
+      _("This is a security trade-off: an attacker could intercept the fetch."),
+  );
+  o.default = "0";
+  o.rmempty = false;
+  o.depends({ connection_type: "proxy", proxy_config_type: "subscription" });
+
+  o = section.taboption(
+    "subscription",
     form.ListValue,
     "subscription_update_interval",
     _("Subscription Update Interval"),
@@ -125,19 +189,40 @@ function createSectionContent(section) {
   o.default = "1h";
   o.depends({ connection_type: "proxy", proxy_config_type: "subscription" });
 
-  o = section.option(
-    form.Flag,
-    "subscription_group_by_countries",
-    _("Группировать по странам"),
+  o = section.taboption(
+    "subscription",
+    form.ListValue,
+    "subscription_group_mode",
+    _("Subscription grouping"),
     _(
-      "Группирует прокси подписки по флагу страны в начале тега в отдельные URLTest-группы",
+      "Group subscription proxies into URLTest groups. 'By country flag' uses the flag emoji at the start of each name; 'By name prefix' groups by the first N characters.",
     ),
   );
-  o.default = "0";
+  o.value("off", _("Off"));
+  o.value("country", _("By country flag"));
+  o.value("prefix", _("By name prefix"));
+  o.default = "off";
   o.rmempty = false;
   o.depends({ connection_type: "proxy", proxy_config_type: "subscription" });
 
-  o = section.option(
+  o = section.taboption(
+    "subscription",
+    form.Value,
+    "subscription_group_prefix_len",
+    _("Prefix length"),
+    _("Number of leading characters of each proxy name to group by."),
+  );
+  o.default = "2";
+  o.datatype = "and(uinteger,min(1))";
+  o.rmempty = false;
+  o.depends({
+    connection_type: "proxy",
+    proxy_config_type: "subscription",
+    subscription_group_mode: "prefix",
+  });
+
+  o = section.taboption(
+    "subscription",
     form.DynamicList,
     "subscription_filter_include_keywords",
     _("Include servers by keyword"),
@@ -148,7 +233,8 @@ function createSectionContent(section) {
   o.depends({ connection_type: "proxy", proxy_config_type: "subscription" });
   o.rmempty = true;
 
-  o = section.option(
+  o = section.taboption(
+    "subscription",
     form.DynamicList,
     "subscription_filter_exclude_keywords",
     _("Exclude servers by keyword"),
@@ -159,7 +245,8 @@ function createSectionContent(section) {
   o.depends({ connection_type: "proxy", proxy_config_type: "subscription" });
   o.rmempty = true;
 
-  o = section.option(
+  o = section.taboption(
+    "connection",
     form.DynamicList,
     "selector_proxy_links",
     _("Selector Proxy Links"),
@@ -184,7 +271,37 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = section.taboption(
+    "connection",
+    form.TextValue,
+    "selector_proxy_links_text",
+    _("Selector Proxy Links (one per line)"),
+    _(
+      "vless://, vmess://, ss://, trojan://, socks4/5://, hy2/hysteria2:// links — one per line",
+    ),
+  );
+  o.depends({ connection_type: "proxy", proxy_config_type: "selector_text" });
+  o.rows = 5;
+  o.wrap = "soft";
+  o.textarea = true;
+  o.rmempty = false;
+  o.validate = function (section_id, value) {
+    // Optional
+    if (!value || value.length === 0) {
+      return true;
+    }
+
+    const validation = main.validateProxyUrlList(value);
+
+    if (validation.valid) {
+      return true;
+    }
+
+    return validation.message;
+  };
+
+  o = section.taboption(
+    "subscription",
     form.DynamicList,
     "urltest_proxy_links",
     _("URLTest Proxy Links"),
@@ -209,7 +326,37 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = section.taboption(
+    "subscription",
+    form.TextValue,
+    "urltest_proxy_links_text",
+    _("URLTest Proxy Links (one per line)"),
+    _(
+      "vless://, vmess://, ss://, trojan://, socks4/5://, hy2/hysteria2:// links — one per line",
+    ),
+  );
+  o.depends({ connection_type: "proxy", proxy_config_type: "urltest_text" });
+  o.rows = 5;
+  o.wrap = "soft";
+  o.textarea = true;
+  o.rmempty = false;
+  o.validate = function (section_id, value) {
+    // Optional
+    if (!value || value.length === 0) {
+      return true;
+    }
+
+    const validation = main.validateProxyUrlList(value);
+
+    if (validation.valid) {
+      return true;
+    }
+
+    return validation.message;
+  };
+
+  o = section.taboption(
+    "subscription",
     form.ListValue,
     "urltest_check_interval",
     _("URLTest Check Interval"),
@@ -221,9 +368,11 @@ function createSectionContent(section) {
   o.value("5m", _("Every 5 minutes"));
   o.default = "3m";
   o.depends({ connection_type: "proxy", proxy_config_type: "urltest" });
+  o.depends({ connection_type: "proxy", proxy_config_type: "urltest_text" });
   o.depends({ connection_type: "proxy", proxy_config_type: "subscription" });
 
-  o = section.option(
+  o = section.taboption(
+    "subscription",
     form.Value,
     "urltest_tolerance",
     _("URLTest Tolerance"),
@@ -234,6 +383,7 @@ function createSectionContent(section) {
   o.default = "50";
   o.rmempty = false;
   o.depends({ connection_type: "proxy", proxy_config_type: "urltest" });
+  o.depends({ connection_type: "proxy", proxy_config_type: "urltest_text" });
   o.depends({ connection_type: "proxy", proxy_config_type: "subscription" });
   o.validate = function (section_id, value) {
     if (!value || value.length === 0) {
@@ -255,7 +405,8 @@ function createSectionContent(section) {
     return _("Must be a number in the range of 50 - 1000");
   };
 
-  o = section.option(
+  o = section.taboption(
+    "subscription",
     form.Value,
     "urltest_testing_url",
     _("URLTest Testing URL"),
@@ -277,6 +428,7 @@ function createSectionContent(section) {
   o.default = "https://www.gstatic.com/generate_204";
   o.rmempty = false;
   o.depends({ connection_type: "proxy", proxy_config_type: "urltest" });
+  o.depends({ connection_type: "proxy", proxy_config_type: "urltest_text" });
   o.depends({ connection_type: "proxy", proxy_config_type: "subscription" });
 
   o.validate = function (section_id, value) {
@@ -293,7 +445,8 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = section.taboption(
+    "connection",
     form.Flag,
     "enable_udp_over_tcp",
     _("UDP over TCP"),
@@ -303,21 +456,26 @@ function createSectionContent(section) {
   o.depends("connection_type", "proxy");
   o.rmempty = false;
 
-  o = section.option(
+  o = section.taboption(
+    "connection",
     form.Flag,
     "global_proxy",
     _("Global Proxy"),
-    _(
-      "Route all unmatched traffic through this section's outbound. " +
-        "When enabled, traffic not matching any other section's lists will go through this proxy. " +
-        "Use with Exclusion sections to route specific domains directly. " +
-        "Only one section can be global at a time.",
-    ),
+    _("Route all unmatched traffic through this section's outbound.") +
+      " " +
+      _(
+        "When enabled, traffic not matching any other section's lists will go through this proxy.",
+      ) +
+      " " +
+      _("Use with Exclusion sections to route specific domains directly.") +
+      " " +
+      _("Only one section can be global at a time."),
   );
   o.default = "0";
   o.rmempty = false;
 
-  o = section.option(
+  o = section.taboption(
+    "connection",
     widgets.DeviceSelect,
     "interface",
     _("Network Interface"),
@@ -363,7 +521,8 @@ function createSectionContent(section) {
     return !isWireless;
   };
 
-  o = section.option(
+  o = section.taboption(
+    "connection",
     form.Flag,
     "domain_resolver_enabled",
     _("Domain Resolver"),
@@ -373,7 +532,8 @@ function createSectionContent(section) {
   o.rmempty = false;
   o.depends("connection_type", "vpn");
 
-  o = section.option(
+  o = section.taboption(
+    "connection",
     form.ListValue,
     "domain_resolver_dns_type",
     _("DNS Protocol Type"),
@@ -386,7 +546,8 @@ function createSectionContent(section) {
   o.rmempty = false;
   o.depends("domain_resolver_enabled", "1");
 
-  o = section.option(
+  o = section.taboption(
+    "connection",
     form.Value,
     "domain_resolver_dns_server",
     _("DNS Server"),
@@ -408,7 +569,8 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = section.taboption(
+    "routing",
     form.DynamicList,
     "community_lists",
     _("Community Lists"),
@@ -496,11 +658,18 @@ function createSectionContent(section) {
     }
   };
 
-  o = section.option(
+  // --- Custom domains group (mode selector + the matching input below) ---
+  // Three UCI keys kept (user_domain_list_type, user_domains,
+  // user_domains_text); depends() shows only the input for the chosen mode,
+  // so the trio reads as one "list-or-text" control.
+  o = section.taboption(
+    "routing",
     form.ListValue,
     "user_domain_list_type",
-    _("User Domain List Type"),
-    _("Select the list type for adding custom domains"),
+    _("Custom domains"),
+    _(
+      "Add your own domains: choose Dynamic List (one per row) or Text List (free-form), or Disabled to skip",
+    ),
   );
   o.value("disabled", _("Disabled"));
   o.value("dynamic", _("Dynamic List"));
@@ -508,7 +677,8 @@ function createSectionContent(section) {
   o.default = "disabled";
   o.rmempty = false;
 
-  o = section.option(
+  o = section.taboption(
+    "routing",
     form.DynamicList,
     "user_domains",
     _("User Domains"),
@@ -534,7 +704,8 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = section.taboption(
+    "routing",
     form.TextValue,
     "user_domains_text",
     _("User Domains List"),
@@ -576,11 +747,17 @@ function createSectionContent(section) {
     return true;
   };
 
-  o = section.option(
+  // --- Custom subnets group (mode selector + the matching input below) ---
+  // Same pattern as the domains group; keeps user_subnet_list_type,
+  // user_subnets and user_subnets_text as separate UCI keys.
+  o = section.taboption(
+    "routing",
     form.ListValue,
     "user_subnet_list_type",
-    _("User Subnet List Type"),
-    _("Select the list type for adding custom subnets"),
+    _("Custom subnets"),
+    _(
+      "Add your own subnets or IPs: choose Dynamic List (one per row) or Text List (free-form), or Disabled to skip",
+    ),
   );
   o.value("disabled", _("Disabled"));
   o.value("dynamic", _("Dynamic List"));
@@ -588,7 +765,8 @@ function createSectionContent(section) {
   o.default = "disabled";
   o.rmempty = false;
 
-  o = section.option(
+  o = section.taboption(
+    "routing",
     form.DynamicList,
     "user_subnets",
     _("User Subnets"),
@@ -614,7 +792,8 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = section.taboption(
+    "routing",
     form.TextValue,
     "user_subnets_text",
     _("User Subnets List"),
@@ -655,7 +834,8 @@ function createSectionContent(section) {
     return true;
   };
 
-  o = section.option(
+  o = section.taboption(
+    "routing",
     form.DynamicList,
     "local_domain_lists",
     _("Local Domain Lists"),
@@ -678,7 +858,8 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = section.taboption(
+    "routing",
     form.DynamicList,
     "local_subnet_lists",
     _("Local Subnet Lists"),
@@ -701,7 +882,8 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = section.taboption(
+    "routing",
     form.DynamicList,
     "remote_domain_lists",
     _("Remote Domain Lists"),
@@ -724,7 +906,8 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = section.taboption(
+    "routing",
     form.DynamicList,
     "remote_subnet_lists",
     _("Remote Subnet Lists"),
@@ -747,7 +930,8 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = section.taboption(
+    "routing",
     form.DynamicList,
     "fully_routed_ips",
     _("Fully Routed IPs"),
@@ -774,7 +958,8 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = section.taboption(
+    "advanced",
     form.Flag,
     "mixed_proxy_enabled",
     _("Enable Mixed Proxy"),
@@ -787,7 +972,8 @@ function createSectionContent(section) {
   o.depends("connection_type", "proxy");
   o.depends("connection_type", "vpn");
 
-  o = section.option(
+  o = section.taboption(
+    "advanced",
     form.Value,
     "mixed_proxy_port",
     _("Mixed Proxy Port"),
@@ -802,7 +988,8 @@ function createSectionContent(section) {
   o.rmempty = true;
   o.depends("mixed_proxy_enabled", "1");
 
-  o = section.option(
+  o = section.taboption(
+    "advanced",
     form.Flag,
     "resolve_real_ip_for_routing",
     _("Resolve real IP for routing"),

@@ -8,6 +8,9 @@ const validUrls = [
   ['With query', 'https://example.com/?q=test'],
   ['With port', 'http://example.com:8080'],
   ['With subdomain', 'https://sub.example.com'],
+  ['IPv4 host with port and path', 'https://91.199.111.52:2096/sub/abc'],
+  ['IPv4 host with path', 'http://10.0.0.1/x'],
+  ['Bracketed IPv6 host with port and path', 'https://[2001:db8::1]:2096/sub'],
 ];
 
 const invalidUrls = [
@@ -17,6 +20,9 @@ const invalidUrls = [
   ['Unsupported protocol (ws)', 'ws://example.com'],
   ['Empty string', ''],
   ['Without tld', 'https://google'],
+  ['Bad IPv4 host', 'https://999.1.1.1/x'],
+  ['Bad protocol with IP host', 'ftp://1.2.3.4'],
+  ['No host', 'https://'],
 ];
 
 describe('validateUrl', () => {

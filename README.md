@@ -32,10 +32,14 @@
 
 ## Функции
 
-- [x] **Маршрутизация по доменам и подсетям** - нужное в туннель, остальное напрямую<br><sub>VLESS · Shadowsocks · Trojan · Hysteria2 · готовые community-списки</sub>
-- [x] **Subscription URL** - ссылки подписки от провайдера с автообновлением и автовыбором лучшего сервера<br><sub>любая подписка remnawave · 3x-ui · marzban · github</sub>
-- [x] **Переключаемое ядро sing-box** - стабильное ↔ sing-box-extended прямо из веб-интерфейса<br><sub>клиентский транспорт xhttp · установка и откат в один клик</sub>
-- [x] **Веб-интерфейс LuCI** - дашборд, диагностика и настройки без ручной правки конфигов<br><sub>статус серверов · проверка соединения · логи</sub>
+- [x] **Маршрутизация по доменам и подсетям** - нужное в туннель, остальное напрямую<br><sub>VLESS · Shadowsocks · Trojan · Hysteria2 · VMess · SOCKS · готовые community-списки</sub>
+- [x] **Subscription URL** - ссылки подписки от провайдера с автообновлением и автовыбором лучшего сервера<br><sub>любая подписка remnawave · 3x-ui · marzban · github · форматы base64 / URI / Clash / Xray JSON</sub>
+- [x] **Несколько подписок и фильтры** - несколько фидов в одной секции, фильтр серверов по ключевым словам (include / exclude)<br><sub>объединение без дублей · регистронезависимо · работает и по эмодзи</sub>
+- [x] **Группировка серверов** - по флагу страны или по префиксу имени, с авто-выбором «⚡ Самый быстрый» среди всех групп<br><sub>URLTest внутри группы · URLTest над группами · ручной выбор сохранён</sub>
+- [x] **Переключаемое ядро sing-box** - стабильное ↔ sing-box-extended прямо из веб-интерфейса<br><sub>клиентский транспорт xhttp · самовосстановление и автооткат · установка в один клик</sub>
+- [x] **Самообновление из веб-интерфейса** - проверка и установка обновлений NetShift прямо из LuCI<br><sub>асинхронно · бэкап конфига · без риска «окирпичивания»</sub>
+- [x] **Веб-интерфейс LuCI** - дашборд, менеджер компонентов, диагностика и настройки без ручной правки конфигов<br><sub>статус серверов · проверка соединения · логи · вкладки-карточки</sub>
+- [x] **IPv6, блокировка DoH, глобальный прокси** - полная маршрутизация v6 через туннель, защита DNS роутера, режим «весь трафик в туннель»<br><sub>v6 tproxy / DNS / FakeIP · DNS через прокси · фоновый watchdog sing-box</sub>
 - [x] **Автоматическая миграция** - обновление со старого podkop переносит конфиг без перенастройки
 
 
@@ -54,8 +58,9 @@
 <details open>
 <summary><b>Системные требования</b></summary>
 
-- OpenWrt **24.10** или выше.
+- OpenWrt **24.10** или выше (поддерживаются и сборки на `opkg`/`.ipk`, и новые на `apk`/`.apk` - OpenWrt 25.12+).
 - Минимум **25 МБ** свободного места. Устройства с флеш-памятью 16 МБ не поддерживаются.
+- На устройстве: `sing-box >= 1.12.0`, `jq >= 1.7.1`, `coreutils-base64 >= 9.7` (ставятся как зависимости пакета).
 
 </details>
 
@@ -114,13 +119,28 @@ sh <(wget -O - https://raw.githubusercontent.com/yandexru45/netshift/refs/heads/
 Интерфейс появится в LuCI: **Services → NetShift**.
 
 <details>
+<summary><b>Готовые community-списки</b></summary>
+
+Готовые наборы доменов/подсетей, которые можно добавить в секцию через `community_lists` (в UI - чекбоксами). Списки обновляются автоматически:
+
+`russia_inside` · `russia_outside` · `ukraine_inside` · `geoblock` · `block` · `porn` · `news` · `anime` · `youtube` · `hdrezka` · `tiktok` · `google_ai` · `google_play` · `hodca` · `discord` · `meta` · `twitter` · `cloudflare` · `cloudfront` · `digitalocean` · `hetzner` · `ovh` · `telegram` · `roblox`
+
+```sh
+uci add_list netshift.my_sub.community_lists='youtube'
+uci add_list netshift.my_sub.community_lists='telegram'
+uci commit netshift
+```
+
+</details>
+
+<details>
 <summary><b>Настройка подписки (Subscription URL) через UCI</b></summary>
 
-При скачивании подписки отправляются заголовки:
+Поддерживаются любые подписки (remnawave · 3x-ui · marzban · github) в форматах **base64 · список URI · Clash · Xray JSON**, в т.ч. **gzip-сжатые** ответы. При скачивании подписки отправляются заголовки:
 
 | Заголовок | Значение |
 |---|---|
-| `User-Agent` | `singbox/<версия>` |
+| `User-Agent` | подбирается автоматически (`singbox/<версия>` или клиентский, см. формат) |
 | `X-HWID` | уникальный идентификатор роутера |
 | `X-Device-OS` | `OpenWrt Linux` |
 | `X-Device-Model` | модель роутера |
@@ -136,25 +156,112 @@ uci add_list netshift.my_sub.community_lists='russia_inside'
 uci commit netshift
 ```
 
-Ручное обновление подписки:
+**Несколько подписок** в одной секции - добавьте `subscription_url` списком (в UI - поле с «+»); все фиды скачиваются и объединяются в один набор узлов без дублей:
 
 ```sh
-/usr/bin/netshift subscription_update
+uci add_list netshift.my_sub.subscription_url='https://provider-a.com/sub'
+uci add_list netshift.my_sub.subscription_url='https://provider-b.com/sub'
+```
+
+**Фильтр серверов** по ключевым словам - белый/чёрный список (регистр не важен, работает и по эмодзи):
+
+```sh
+uci add_list netshift.my_sub.subscription_filter_include='🇩🇪'
+uci add_list netshift.my_sub.subscription_filter_exclude='trial'
+```
+
+**Группировка серверов** - собирает узлы в URLTest-группы и добавляет авто-выбор «⚡ Самый быстрый» среди всех групп (при ≥2 группах он же выбор по умолчанию; ручной выбор группы сохраняется):
+
+```sh
+# off | country (по флагу страны) | prefix (по первым N символам имени)
+uci set netshift.my_sub.subscription_group_mode='country'
+# для prefix: сколько первых символов имени брать (по умолчанию 2)
+uci set netshift.my_sub.subscription_group_prefix_len='2'
+```
+
+**Предпочтительный формат** - для панелей, которые отдают нужные узлы (например xhttp / Hysteria2) только под определённым клиентом:
+
+```sh
+# auto | xray (Xray JSON, UA как у Happ) | singbox
+uci set netshift.my_sub.subscription_format_preference='auto'
+```
+
+**Подписки по IP-хосту и «кривой» HTTPS** - можно указать подписку с IP вместо домена (например `https://22.23.43.52:2096/sub/xxxx`); для панелей с самоподписанным / несовпадающим сертификатом включите небезопасный TLS:
+
+```sh
+uci set netshift.my_sub.subscription_allow_insecure='1'
+```
+
+Ручное обновление подписки и очистка кеша:
+
+```sh
+/usr/bin/netshift subscription_update          # перечитать и применить
+# Очистка кеша всех подписок и повторное скачивание - кнопка во вкладке «Диагностика»
 ```
 
 </details>
 
 <details>
-<summary><b>Ядро sing-box-extended (xhttp)</b></summary>
+<summary><b>Менеджер компонентов: ядро sing-box-extended (xhttp) и самообновление</b></summary>
 
-Переключение ядра между стабильным sing-box и сборкой **sing-box-extended** прямо из вкладки **Diagnostics** в LuCI:
+Вкладка **Менеджер компонентов** в LuCI управляет NetShift и ядром sing-box в одном месте - три карточки: **NetShift** / **sing-box (stock)** / **sing-box (extended)**. Установленная версия видна сразу, статус (актуально / устарело / не установлено) и кнопка «Проверить обновление» - по нажатию.
 
-- **Install extended** - установить расширенное ядро sing-box-extended.
+**Переключение ядра** между стабильным sing-box и сборкой **sing-box-extended**:
+
+- **Install extended** - расширенное ядро (даёт клиентский транспорт **xhttp**, только клиентский режим). Также поддерживается **VMess**.
 - **Install stable** - вернуться на стабильное ядро.
 
-После установки расширенного ядра становится доступен клиентский транспорт **xhttp** (только клиентский режим, не серверный). По умолчанию ставится стабильное ядро - extended включается по желанию.
+Смена ядра безопасна: перед переключением проверяется и при необходимости чинится связь, делается бэкап; при сбое - **автооткат**, роутер никогда не остаётся без рабочего ядра. По умолчанию стоит стабильное - extended включается по желанию.
+
+**Самообновление NetShift** - кнопка обновления прямо из веб-интерфейса: асинхронно, с бэкапом конфига, проверкой фактической версии после установки и без риска «окирпичивания». Русская локализация обновляется только если уже установлена.
 
 </details>
+
+<details>
+<summary><b>Дополнительные настройки (IPv6, блокировка DoH, глобальный прокси, DNS через прокси)</b></summary>
+
+Все опции - в секции `settings` (`0` - выкл, `1` - вкл):
+
+```sh
+# Полная маршрутизация IPv6 через туннель (v6 tproxy / DNS / FakeIP). По умолчанию выкл.
+uci set netshift.settings.enable_ipv6='1'
+
+# Блокировка DoH: клиенты в сети не обойдут DNS роутера через DNS-over-HTTPS
+# (режет известные DoH-эндпоинты IPv4 + IPv6 на уровне маршрутов sing-box).
+uci set netshift.settings.block_doh='1'
+
+# Глобальный прокси: ВЕСЬ трафик через выбранный outbound (а не только избранное).
+# Только при явном включении - иначе действует выборочная маршрутизация.
+uci set netshift.settings.global_proxy='1'
+
+# DNS через прокси (detour): DNS-запросы идут через туннель.
+uci set netshift.settings.dns_via_outbound='1'
+
+# Блокировать QUIC (заставляет приложения откатываться на TCP/TLS).
+uci set netshift.settings.disable_quic='1'
+
+uci commit netshift
+```
+
+> По умолчанию NetShift гонит в sing-box **только** проксируемые подсети/домены, остальное - напрямую (выборочная маркировка). Режим «весь трафик в туннель» включается **только** опцией `global_proxy`.
+
+</details>
+
+## История изменений
+
+Полный список изменений по версиям - на странице [Releases](https://github.com/yandexru45/netshift/releases). Анонсы обновлений публикуются в [Telegram-канале](https://t.me/netshift_news).
+
+Коротко о крупных вехах:
+
+| Версия | Главное |
+|---|---|
+| **0.9.1** | Авто-выбор «⚡ Самый быстрый» среди групп (URLTest над URLTest'ами) |
+| **0.9.0** | Меньше ошибок «лимит GitHub API» (обход через redirect-путь github.com); фикс старого `option subscription_url` |
+| **0.8.9** | Универсальная группировка подписки (страна / префикс имени); поддержка gzip-подписок; фикс ложного «версия устарела» |
+| **0.8.7-0.8.8** | Критфикс маршрутизации 2-й секции; выборочная маркировка (меньше нагрузки CPU); Hysteria2 + xhttp везде; несколько подписок; надёжное самообновление |
+| **0.8.6** | IPv6 · блокировка DoH · вкладка «Менеджер компонентов» · самообновление · подписки по IP / небезопасный TLS · глобальный прокси · DNS через прокси · watchdog |
+| **0.8.5** | VMess (extended) · надёжная смена ядра с автооткатом · фильтр серверов по ключевым словам · Xray JSON + автоподбор User-Agent |
+| **0.8.0** | Переименование podkop → NetShift с авто-миграцией конфигов; sing-box-extended (xhttp) из веб-интерфейса |
 
 ## Project Structure
 
@@ -188,7 +295,7 @@ uci commit netshift
 
 ## Build Artifacts
 
-Пакеты собираются в Docker-образе OpenWrt SDK (24.10) и публикуются как релиз при push git-тега ([`.github/workflows/build.yml`](.github/workflows/build.yml)).
+Пакеты собираются в Docker-образах OpenWrt SDK (`.ipk` - 24.10, `.apk` - 25.12) и публикуются как релиз при push git-тега ([`.github/workflows/build.yml`](.github/workflows/build.yml)).
 
 | Пакет | Формат | Назначение |
 |---|---|---|
@@ -199,14 +306,14 @@ uci commit netshift
 Локальная сборка:
 
 ```sh
-# ipk (большинство устройств OpenWrt 24.10)
-docker build -f Dockerfile-ipk --build-arg NETSHIFT_VERSION=0.8.0 -t netshift:ipk .
+# ipk (OpenWrt 24.10, opkg)
+docker build -f Dockerfile-ipk --build-arg NETSHIFT_VERSION=0.9.1 -t netshift:ipk .
 
-# apk (новые сборки OpenWrt на apk)
-docker build -f Dockerfile-apk --build-arg NETSHIFT_VERSION=0.8.0 -t netshift:apk .
+# apk (новые сборки OpenWrt 25.12+, apk)
+docker build -f Dockerfile-apk --build-arg NETSHIFT_VERSION=0.9.1 -t netshift:apk .
 ```
 
-> Требуется sing-box >= 1.12.0 и jq >= 1.7.1 на целевом устройстве.
+> Требуется sing-box >= 1.12.0, jq >= 1.7.1 и coreutils-base64 >= 9.7 на целевом устройстве.
 
 ## Star History
 

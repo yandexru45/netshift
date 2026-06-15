@@ -1197,10 +1197,13 @@ sing_box_cm_add_selector_outbound() {
 #   auto_detect_interface: boolean, enable or disable automatic interface detection
 #   default_domain_resolver: string, default DNS resolver for domain-based routing
 #   default_interface: string, default network interface to use when auto detection is disabled (optional)
+#   default_mark: integer, routing mark stamped on sing-box's own egress
+#       connections so the nft/ip-rule tproxy path does not re-capture them
+#       (optional; empty -> omitted, byte-identical to the no-mark output)
 # Outputs:
 #   Writes updated JSON configuration to stdout
 # Example:
-#   CONFIG=$(sing_box_cm_configure_route "$CONFIG" "direct-out" true "udp-server")
+#   CONFIG=$(sing_box_cm_configure_route "$CONFIG" "direct-out" true "udp-server" "" 2097152)
 #######################################
 sing_box_cm_configure_route() {
     local config="$1"
@@ -1208,12 +1211,14 @@ sing_box_cm_configure_route() {
     local auto_detect_interface="$3"
     local default_domain_resolver="$4"
     local default_interface="$5"
+    local default_mark="$6"
 
     echo "$config" | jq \
         --arg final "$final" \
         --argjson auto_detect_interface "$auto_detect_interface" \
         --arg default_domain_resolver "$default_domain_resolver" \
         --arg default_interface "$default_interface" \
+        --arg default_mark "$default_mark" \
         '.route = {
             rules: (.route.rules // []),
             rule_set: (.route.rule_set // []),
@@ -1222,6 +1227,7 @@ sing_box_cm_configure_route() {
             default_domain_resolver: $default_domain_resolver
         }
         + (if $default_interface != "" then { default_interface: $default_interface } else {} end)
+        + (if $default_mark != "" then { default_mark: ($default_mark | tonumber) } else {} end)
         '
 }
 

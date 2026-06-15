@@ -1,5 +1,11 @@
 import { NetShift } from '../types';
 import { initialDiagnosticStore } from '../tabs/diagnostic/diagnostic.store';
+import { initialManagerStore } from '../tabs/manager/manager.store';
+import type { ManagerComponentKey } from '../tabs/manager/cards';
+
+// Single source of truth for the component key union lives in `tabs/manager/cards`;
+// re-export it here so store consumers keep their existing import path.
+export type { ManagerComponentKey };
 
 function jsonStableStringify<T, V>(obj: T): string {
   return JSON.stringify(obj, (_, value) => {
@@ -180,7 +186,7 @@ export interface StoreType {
     globalCheck: { loading: boolean };
     viewLogs: { loading: boolean };
     showSingBoxConfig: { loading: boolean };
-    singBoxInstall: { loading: boolean };
+    clearSubscriptionCache: { loading: boolean };
   };
   diagnosticsSystemInfo: {
     loading: boolean;
@@ -192,6 +198,21 @@ export interface StoreType {
     device_model: string;
     sing_box_extended: 0 | 1;
   };
+  managerActions: {
+    netshiftCheck: { loading: boolean };
+    netshiftUpdate: { loading: boolean };
+    singBoxStockCheck: { loading: boolean };
+    singBoxStockAction: { loading: boolean };
+    singBoxExtendedCheck: { loading: boolean };
+    singBoxExtendedAction: { loading: boolean };
+  };
+  managerChecks: Record<
+    ManagerComponentKey,
+    {
+      status: NetShift.ComponentUpdateStatus | null;
+      latest_version: string;
+    }
+  >;
 }
 
 const initialStore: StoreType = {
@@ -226,6 +247,7 @@ const initialStore: StoreType = {
     data: [],
   },
   ...initialDiagnosticStore,
+  ...initialManagerStore,
 };
 
 export const store = new StoreService<StoreType>(initialStore);

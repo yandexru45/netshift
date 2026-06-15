@@ -117,9 +117,11 @@ export namespace NetShift {
   export interface ConfigProxySubscriptionSection {
     connection_type: 'proxy';
     proxy_config_type: 'subscription';
-    subscription_url: string;
+    subscription_url: string[];
+    subscription_format_preference?: 'auto' | 'xray' | 'singbox';
     subscription_update_interval?: string;
-    subscription_group_by_countries?: '0' | '1';
+    subscription_group_mode?: 'off' | 'country' | 'prefix';
+    subscription_group_prefix_len?: string;
     subscription_filter_include_keywords?: string[];
     subscription_filter_exclude_keywords?: string[];
   }
@@ -183,7 +185,6 @@ export namespace NetShift {
     rules_mangle_exist: 0 | 1;
     rules_mangle_counters: 0 | 1;
     rules_mangle_output_exist: 0 | 1;
-    rules_mangle_output_counters: 0 | 1;
     rules_proxy_exist: 0 | 1;
     rules_proxy_counters: 0 | 1;
     rules_other_mark_exist: 0 | 1;
@@ -230,4 +231,23 @@ export namespace NetShift {
   }
 
   export type GetClashApiGroupLatency = Record<string, number>;
+
+  // Component Manager (task-018) — consumes the STABLE backend contract from
+  // task-017. Status union returned by the sync update-check actions.
+  export type ComponentUpdateStatus =
+    | 'latest'
+    | 'outdated'
+    | 'dev'
+    | 'not_installed';
+
+  // Shape echoed by the sync update-check actions:
+  //   component_action sing_box check_update        (extended)
+  //   component_action sing_box check_update_stable (stock)
+  export interface ComponentCheckUpdateResult {
+    success: boolean;
+    current_version?: string;
+    latest_version?: string;
+    status?: ComponentUpdateStatus;
+    message?: string;
+  }
 }

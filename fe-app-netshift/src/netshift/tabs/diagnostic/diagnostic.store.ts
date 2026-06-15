@@ -46,7 +46,7 @@ export const initialDiagnosticStore: Pick<
     showSingBoxConfig: {
       loading: false,
     },
-    singBoxInstall: {
+    clearSubscriptionCache: {
       loading: false,
     },
   },

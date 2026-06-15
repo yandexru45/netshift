@@ -3,10 +3,12 @@ import { ClashAPI, NetShift } from '../../types';
 import { executeShellCommand } from '../../../helpers';
 import {
   ComponentActionStartResponse,
+  ComponentActionStatus,
   SingBoxComponentActionResult,
   parseComponentActionStatus,
   pollSingBoxComponentAction,
 } from './pollSingBoxComponentAction';
+import { parseComponentCheckUpdate } from './parseComponentCheckUpdate';
 
 export const NetShiftShellMethods = {
   checkDNSAvailable: async () =>
@@ -171,6 +173,160 @@ export const NetShiftShellMethods = {
       }
 
       return parseComponentActionStatus(statusResponse.stdout);
+    });
+  },
+  // Sing-box update checks (sync) — STABLE task-017 contract:
+  //   component_action sing_box check_update        (extended)
+  //   component_action sing_box check_update_stable (stock)
+  // → {success, current_version, latest_version, status}.
+  singBoxCheckUpdate: async (
+    action: 'check_update' | 'check_update_stable',
+  ): Promise<NetShift.ComponentCheckUpdateResult> => {
+    const response = await executeShellCommand({
+      command: '/usr/bin/netshift',
+      args: ['component_action', 'sing_box', action],
+      timeout: 600000,
+    });
+
+    if (response.stdout) {
+      return parseComponentCheckUpdate(response.stdout);
+    }
+
+    return {
+      success: false,
+      message: response.stderr || '',
+    };
+  },
+  // NetShift update check (sync) — task-029/030 contract:
+  //   component_action netshift check_update
+  // → {success, current_version, latest_version, status}. Same shape as the
+  // sing-box cores (parsed by parseComponentCheckUpdate). The status is already
+  // v-normalized server-side, so the caller TRUSTS result.status (no string
+  // compare in TS). Stays on the SYNC component_action path (fast call).
+  netshiftCheckUpdate:
+    async (): Promise<NetShift.ComponentCheckUpdateResult> => {
+      const response = await executeShellCommand({
+        command: '/usr/bin/netshift',
+        args: ['component_action', 'netshift', 'check_update'],
+        timeout: 600000,
+      });
+
+      if (response.stdout) {
+        return parseComponentCheckUpdate(response.stdout);
+      }
+
+      return {
+        success: false,
+        message: response.stderr || '',
+      };
+    },
+  // Clear subscription cache (async) — task-039/040 contract:
+  // component_action_async subscription clear_cache + component_action_status
+  // <job>. Deletes all subscription caches then re-downloads, which restarts
+  // the service and can exceed the rpcd ~30s wall — so it MUST run through the
+  // SAME async start+poll mechanism as the sing-box core switch (reusing the
+  // component-agnostic `pollSingBoxComponentAction`). The component/action
+  // strings are EXACTLY 'subscription'/'clear_cache' (match task-039's router).
+  clearSubscriptionCache: async (): Promise<SingBoxComponentActionResult> => {
+    const startResponse = await executeShellCommand({
+      command: '/usr/bin/netshift',
+      args: ['component_action_async', 'subscription', 'clear_cache'],
+    });
+
+    let start: ComponentActionStartResponse | null = null;
+
+    if (startResponse.stdout) {
+      try {
+        start = JSON.parse(
+          startResponse.stdout,
+        ) as ComponentActionStartResponse;
+      } catch (_e) {
+        start = null;
+      }
+    }
+
+    if (!start || start.success !== true || !start.job_id) {
+      return {
+        success: false,
+        message:
+          start?.message ||
+          startResponse.stderr ||
+          _('Failed to clear subscription cache'),
+      };
+    }
+
+    const jobId = start.job_id;
+
+    return pollSingBoxComponentAction(async () => {
+      const statusResponse = await executeShellCommand({
+        command: '/usr/bin/netshift',
+        args: ['component_action_status', jobId],
+      });
+
+      if (!statusResponse.stdout) {
+        return null;
+      }
+
+      return parseComponentActionStatus(statusResponse.stdout);
+    });
+  },
+  // NetShift self-update (async) — STABLE task-017 contract:
+  // component_action_async netshift self_update + component_action_status <job>.
+  // Reuses the component-agnostic poll. Because the package install swaps
+  // /usr/bin/netshift mid-job, status polls can transiently fail (rpcd / binary
+  // swap); once the job has STARTED we treat such failures leniently — keep
+  // polling (return a synthetic running status) instead of aborting hard, so a
+  // successful self-update is not misreported as a failure. The UI reloads the
+  // page on success.
+  netshiftSelfUpdate: async (): Promise<SingBoxComponentActionResult> => {
+    const startResponse = await executeShellCommand({
+      command: '/usr/bin/netshift',
+      args: ['component_action_async', 'netshift', 'self_update'],
+    });
+
+    let start: ComponentActionStartResponse | null = null;
+
+    if (startResponse.stdout) {
+      try {
+        start = JSON.parse(
+          startResponse.stdout,
+        ) as ComponentActionStartResponse;
+      } catch (_e) {
+        start = null;
+      }
+    }
+
+    if (!start || start.success !== true || !start.job_id) {
+      return {
+        success: false,
+        message:
+          start?.message || startResponse.stderr || _('Self-update failed'),
+      };
+    }
+
+    const jobId = start.job_id;
+
+    return pollSingBoxComponentAction(async () => {
+      // Lenient mid-job polling: any exec/parse error AFTER a successful start
+      // is reported as "still running" so the binary swap doesn't end the loop
+      // prematurely. The MAX_POLLS backstop still bounds the loop.
+      try {
+        const statusResponse = await executeShellCommand({
+          command: '/usr/bin/netshift',
+          args: ['component_action_status', jobId],
+        });
+
+        if (!statusResponse.stdout) {
+          return { running: true } as ComponentActionStatus;
+        }
+
+        return (
+          parseComponentActionStatus(statusResponse.stdout) ??
+          ({ running: true } as ComponentActionStatus)
+        );
+      } catch (_e) {
+        return { running: true } as ComponentActionStatus;
+      }
     });
   },
 };

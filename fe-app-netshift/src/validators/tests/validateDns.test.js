@@ -22,6 +22,8 @@ export const additionalValidDns = [
 export const additionalInvalidDns = [
   ['IPv6 invalid hex', '2001:db8::zzzz'],
   ['IPv6 group too long', '12345::1'],
+  ['IPv6 triple colon only', ':::'],
+  ['IPv6 multiple compressions', '1::2::3'],
 ];
 
 const validDns = [...validIPs, ...validDomains, ...additionalValidDns];

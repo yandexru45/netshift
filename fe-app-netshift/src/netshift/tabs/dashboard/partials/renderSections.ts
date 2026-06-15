@@ -1,3 +1,4 @@
+import { renderButton } from '../../../../partials';
 import { NetShift } from '../../../types';
 
 interface IRenderSectionsProps {
@@ -13,7 +14,7 @@ function renderFailedState() {
   return E(
     'div',
     {
-      class: 'pdk_dashboard-page__outbound-section centered',
+      class: 'card pdk_dashboard-page__outbound-section centered',
       style: 'height: 127px',
     },
     E('span', {}, [E('span', {}, _('Dashboard currently unavailable'))]),
@@ -23,7 +24,7 @@ function renderFailedState() {
 function renderLoadingState() {
   return E('div', {
     id: 'dashboard-sections-grid-skeleton',
-    class: 'pdk_dashboard-page__outbound-section skeleton',
+    class: 'card pdk_dashboard-page__outbound-section skeleton',
     style: 'height: 127px',
   });
 }
@@ -64,7 +65,7 @@ export function renderDefaultState({
     return E(
       'div',
       {
-        class: `pdk_dashboard-page__outbound-grid__item ${outbound.selected ? 'pdk_dashboard-page__outbound-grid__item--active' : ''} ${section.withTagSelect ? 'pdk_dashboard-page__outbound-grid__item--selectable' : ''}`,
+        class: `card pdk_dashboard-page__outbound-grid__item ${outbound.selected ? 'pdk_dashboard-page__outbound-grid__item--active' : ''} ${section.withTagSelect ? 'pdk_dashboard-page__outbound-grid__item--selectable' : ''}`,
         click: () =>
           section.withTagSelect &&
           onChooseOutbound(section.code, outbound.code),
@@ -87,7 +88,7 @@ export function renderDefaultState({
     );
   }
 
-  return E('div', { class: 'pdk_dashboard-page__outbound-section' }, [
+  return E('div', { class: 'card pdk_dashboard-page__outbound-section' }, [
     // Title with test latency
     E('div', { class: 'pdk_dashboard-page__outbound-section__title-section' }, [
       E(
@@ -99,14 +100,11 @@ export function renderDefaultState({
       ),
       latencyFetching
         ? E('div', { class: 'skeleton', style: 'width: 99px; height: 28px' })
-        : E(
-            'button',
-            {
-              class: 'btn dashboard-sections-grid-item-test-latency',
-              click: () => testLatency(),
-            },
-            _('Test latency'),
-          ),
+        : renderButton({
+            text: _('Test latency'),
+            onClick: () => testLatency(),
+            classNames: ['dashboard-sections-grid-item-test-latency'],
+          }),
     ]),
     E(
       'div',

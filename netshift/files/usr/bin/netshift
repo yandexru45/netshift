@@ -80,7 +80,7 @@ check_requirements() {
     if has_outbound_section; then
         log "Outbound section found" "debug"
     else
-        log "Outbound section not found. Please check your configuration file (missing proxy_string, selector_proxy_links, urltest_proxy_links, subscription_url, outbound_json, or interface according to connection_type/proxy_config_type). Aborted." "error"
+        log "Outbound section not found. Please check your configuration file (missing proxy_string, selector_proxy_links, urltest_proxy_links, selector_proxy_links_text, urltest_proxy_links_text, subscription_url, outbound_json, or interface according to connection_type/proxy_config_type). Aborted." "error"
         exit 1
     fi
 }
@@ -111,15 +111,27 @@ section_has_configured_outbound() {
             config_get urltest_proxy_links "$section" "urltest_proxy_links"
             [ -n "$urltest_proxy_links" ] && return 0
             ;;
+        selector_text)
+            local selector_proxy_links_text
+            config_get selector_proxy_links_text "$section" "selector_proxy_links_text"
+            [ -n "$selector_proxy_links_text" ] && return 0
+            ;;
+        urltest_text)
+            local urltest_proxy_links_text
+            config_get urltest_proxy_links_text "$section" "urltest_proxy_links_text"
+            [ -n "$urltest_proxy_links_text" ] && return 0
+            ;;
         outbound)
             local outbound_json
             config_get outbound_json "$section" "outbound_json"
             [ -n "$outbound_json" ] && return 0
             ;;
         subscription)
-            local subscription_url
-            config_get subscription_url "$section" "subscription_url"
-            [ -n "$subscription_url" ] && return 0
+            # get_subscription_urls_for_section handles both the UCI `list` shape
+            # (new UI configs) and a scalar `option` shape (legacy / CLI /
+            # migrated configs), so the section has a configured outbound if it
+            # returns at least one URL.
+            [ -n "$(get_subscription_urls_for_section "$section")" ] && return 0
             ;;
         esac
         ;;
@@ -149,22 +161,41 @@ has_outbound_section() {
     return $section_exists
 }
 
+# Stable, filesystem-safe subkey for a subscription URL within a section. A
+# section may now list MULTIPLE subscription_url entries; each feed keeps its
+# own independent download/UA/rejected/json cache keyed by this hash so the
+# feeds never collide and one bad feed cannot poison another. md5sum is
+# busybox-safe and the URL bytes are opaque user text (never parsed here).
+get_subscription_url_hash() {
+    local url="$1"
+
+    printf '%s' "$url" | md5sum 2>/dev/null | awk '{print $1}'
+}
+
+# Subscription cache-path builders. The optional second argument is the per-URL
+# hash (see get_subscription_url_hash): when present the path is keyed
+# "${section}.<urlhash>.<ext>"; when absent it falls back to the legacy bare
+# "${section}.<ext>" path (still used by migrate_subscription_cache_from_tmp and
+# the legacy-cleanup reaper). Multi-URL feeds always pass a hash.
 get_subscription_json_path() {
     local section="$1"
+    local urlhash="$2"
 
-    echo "$SUBSCRIPTION_CACHE_FOLDER/${section}.json"
+    echo "$SUBSCRIPTION_CACHE_FOLDER/${section}${urlhash:+.$urlhash}.json"
 }
 
 get_subscription_url_cache_path() {
     local section="$1"
+    local urlhash="$2"
 
-    echo "$SUBSCRIPTION_CACHE_FOLDER/${section}.url"
+    echo "$SUBSCRIPTION_CACHE_FOLDER/${section}${urlhash:+.$urlhash}.url"
 }
 
 get_subscription_rejected_cache_path() {
     local section="$1"
+    local urlhash="$2"
 
-    echo "$SUBSCRIPTION_CACHE_FOLDER/${section}.rejected"
+    echo "$SUBSCRIPTION_CACHE_FOLDER/${section}${urlhash:+.$urlhash}.rejected"
 }
 
 # Path of the cached "winning" User-Agent for a subscription source: the first
@@ -172,8 +203,65 @@ get_subscription_rejected_cache_path() {
 # refresh so we don't re-probe the whole whitelist every time.
 get_subscription_user_agent_cache_path() {
     local section="$1"
+    local urlhash="$2"
 
-    echo "$SUBSCRIPTION_CACHE_FOLDER/${section}.user_agent"
+    echo "$SUBSCRIPTION_CACHE_FOLDER/${section}${urlhash:+.$urlhash}.user_agent"
+}
+
+# Collect a section's subscription_url entries (a UCI list; a legacy / CLI /
+# migrated `option subscription_url` is a scalar that config_list_foreach does
+# NOT iterate — get_subscription_urls_for_section handles that shape with a
+# scalar fallback) into the newline-delimited global SUBSCRIPTION_URLS_COLLECTED.
+# URLs are opaque user text and may contain shell-special chars, so they are
+# accumulated newline-delimited (URLs cannot contain a newline) and consumers
+# read them with `while IFS= read -r`, never via word-splitting.
+_collect_subscription_url_handler() {
+    local url="$1"
+
+    [ -n "$url" ] || return 0
+    if [ -z "$SUBSCRIPTION_URLS_COLLECTED" ]; then
+        SUBSCRIPTION_URLS_COLLECTED="$url"
+    else
+        SUBSCRIPTION_URLS_COLLECTED="$SUBSCRIPTION_URLS_COLLECTED
+$url"
+    fi
+}
+
+get_subscription_urls_for_section() {
+    local section="$1"
+    local scalar_url
+
+    SUBSCRIPTION_URLS_COLLECTED=""
+    config_list_foreach "$section" "subscription_url" _collect_subscription_url_handler
+
+    # Backward compat: legacy / CLI / podkop-migrated configs store
+    # subscription_url as a scalar `option` (not a `list`). config_list_foreach
+    # iterates ONLY list values, so it returns nothing for a scalar option. Fall
+    # back to a scalar read and treat it as a 1-element list. (PROVEN on hardware:
+    # config_list_foreach over an option => empty; config_get => the value.) This
+    # is the load-bearing fix and must stand alone even when the option->list
+    # migration is skipped (read-only fs / uci failure).
+    if [ -z "$SUBSCRIPTION_URLS_COLLECTED" ]; then
+        config_get scalar_url "$section" "subscription_url"
+        [ -n "$scalar_url" ] && _collect_subscription_url_handler "$scalar_url"
+    fi
+
+    printf '%s' "$SUBSCRIPTION_URLS_COLLECTED"
+}
+
+# Remove any stale legacy bare-"${section}.<ext>" cache files left over from
+# before per-URL hashing. We now ALWAYS hash (uniform code path), so a bare file
+# is never read again; reaping it keeps the cache dir from accumulating orphans
+# and prevents subscription_cache_is_usable ever picking up a stale bare body.
+reap_legacy_subscription_cache_files() {
+    local section="$1"
+
+    rm -f \
+        "$(get_subscription_json_path "$section")" \
+        "$(get_subscription_url_cache_path "$section")" \
+        "$(get_subscription_rejected_cache_path "$section")" \
+        "$(get_subscription_user_agent_cache_path "$section")" \
+        2>/dev/null
 }
 
 ensure_subscription_cache_dir() {
@@ -206,22 +294,40 @@ ensure_subscription_cache_dir() {
 }
 
 migrate_subscription_cache_from_tmp() {
-    local src_json src_url dst_json dst_url
+    local src_json src_url src_section src_url_value dst_url dst_json dst_url_cache urlhash
 
     [ -d "$TMP_SUBSCRIPTION_FOLDER" ] || return 0
     ensure_subscription_cache_dir || return 0
 
+    # Legacy tmp caches are bare-keyed "<section>.json" (one feed per section).
+    # We now always hash per URL, so migrate each usable tmp body to the hashed
+    # destination of the URL it belongs to: prefer the URL recorded in the tmp
+    # "<section>.url" sidecar, else fall back to the section's first configured
+    # subscription_url. This keeps a legacy single-feed section working across an
+    # upgrade without an immediate re-download.
     for src_json in "$TMP_SUBSCRIPTION_FOLDER"/*.json; do
         [ -e "$src_json" ] || continue
+        src_section="$(basename "${src_json%.json}")"
         src_url="${src_json%.json}.url"
-        dst_json="$(get_subscription_json_path "$(basename "${src_json%.json}")")"
-        dst_url="$(get_subscription_url_cache_path "$(basename "${src_json%.json}")")"
 
-        if [ ! -e "$dst_json" ] && subscription_cache_is_usable "$src_json"; then
+        subscription_cache_is_usable "$src_json" || continue
+
+        src_url_value="$(cat "$src_url" 2>/dev/null)"
+        if [ -z "$src_url_value" ]; then
+            src_url_value="$(get_subscription_urls_for_section "$src_section" | head -n 1)"
+        fi
+        [ -n "$src_url_value" ] || continue
+
+        urlhash="$(get_subscription_url_hash "$src_url_value")"
+        [ -n "$urlhash" ] || continue
+        dst_json="$(get_subscription_json_path "$src_section" "$urlhash")"
+        dst_url_cache="$(get_subscription_url_cache_path "$src_section" "$urlhash")"
+
+        if [ ! -e "$dst_json" ]; then
             cp "$src_json" "$dst_json" 2>/dev/null
-            [ -f "$src_url" ] && cp "$src_url" "$dst_url" 2>/dev/null
-            chmod 600 "$dst_json" "$dst_url" 2>/dev/null
-            log "Migrated subscription cache for section '$(basename "${src_json%.json}")' to persistent storage" "info"
+            printf '%s' "$src_url_value" > "$dst_url_cache" 2>/dev/null
+            chmod 600 "$dst_json" "$dst_url_cache" 2>/dev/null
+            log "Migrated subscription cache for section '$src_section' to per-URL persistent storage" "info"
         fi
     done
 }
@@ -229,38 +335,49 @@ migrate_subscription_cache_from_tmp() {
 mark_subscription_outbound_unavailable() {
     local section="$1"
     local keyword_filter_active="${2:-0}"
-    local subscription_json_path rejected_cache_path rejected_hash
+    local url urlhash subscription_json_path rejected_cache_path rejected_hash
 
     case " $SUBSCRIPTION_UNAVAILABLE_SECTIONS " in
     *" $section "*) ;;
     *) SUBSCRIPTION_UNAVAILABLE_SECTIONS="$SUBSCRIPTION_UNAVAILABLE_SECTIONS $section" ;;
     esac
 
-    subscription_json_path="$(get_subscription_json_path "$section")"
-    rejected_cache_path="$(get_subscription_rejected_cache_path "$section")"
-
     if [ "$keyword_filter_active" -eq 1 ]; then
         # The empty result came from the user's keyword filter, not from a bad
-        # feed: the body itself may be perfectly valid. Recording its hash here
-        # would poison the cache and wedge future downloads (return 14 loop), and
-        # would also survive the user loosening the filter. So never write the
-        # rejected-hash for this case, and proactively clear any stale one so a
-        # body poisoned by an earlier empty-filter run self-heals on this pass.
-        rm -f "$rejected_cache_path"
-        log "Subscription keyword filter for section '$section' removed all nodes; matching traffic for this section will be rejected until the filter is loosened or a matching node appears (the feed itself is not rejected)" "warn"
+        # feed: the bodies themselves may be perfectly valid. Recording their
+        # hashes here would poison the per-URL caches and wedge future downloads
+        # (return 14 loop), and would survive the user loosening the filter. So
+        # never write the rejected-hash for this case, and proactively clear any
+        # stale per-URL rejected hash so a feed poisoned by an earlier
+        # empty-filter run self-heals on this pass.
+        get_subscription_urls_for_section "$section" | while IFS= read -r url; do
+            [ -n "$url" ] || continue
+            urlhash="$(get_subscription_url_hash "$url")"
+            rm -f "$(get_subscription_rejected_cache_path "$section" "$urlhash")"
+        done
+        log "Subscription keyword filter for section '$section' removed all nodes; matching traffic for this section will be rejected until the filter is loosened or a matching node appears (the feeds themselves are not rejected)" "warn"
         subscription_startup_blocked=1
         return 0
     fi
 
     log "Subscription cache for section '$section' is unavailable; matching traffic for this section will be rejected until refresh succeeds" "warn"
-    # A structurally valid subscription can still contain no sing-box usable
-    # proxy outbounds. Remember its hash so the retry worker does not persist,
-    # restart and reject exactly the same unusable feed in a flash-writing loop.
-    rejected_hash="$(md5sum "$subscription_json_path" 2>/dev/null | awk '{print $1}')"
-    if [ -n "$rejected_hash" ] && [ "$(cat "$rejected_cache_path" 2>/dev/null)" != "$rejected_hash" ]; then
-        printf '%s' "$rejected_hash" > "${rejected_cache_path}.tmp.$$" && mv "${rejected_cache_path}.tmp.$$" "$rejected_cache_path"
-        chmod 600 "$rejected_cache_path" 2>/dev/null
-    fi
+    # A structurally valid subscription feed can still contain no sing-box usable
+    # proxy outbounds (e.g. all statically-unsupported). Remember each usable
+    # cached feed's hash PER-URL so the retry worker does not persist, restart
+    # and reject exactly the same unusable feed in a flash-writing loop; keeping
+    # this per-URL means one bad feed cannot poison another feed's retry state.
+    get_subscription_urls_for_section "$section" | while IFS= read -r url; do
+        [ -n "$url" ] || continue
+        urlhash="$(get_subscription_url_hash "$url")"
+        subscription_json_path="$(get_subscription_json_path "$section" "$urlhash")"
+        rejected_cache_path="$(get_subscription_rejected_cache_path "$section" "$urlhash")"
+        [ -s "$subscription_json_path" ] || continue
+        rejected_hash="$(md5sum "$subscription_json_path" 2>/dev/null | awk '{print $1}')"
+        if [ -n "$rejected_hash" ] && [ "$(cat "$rejected_cache_path" 2>/dev/null)" != "$rejected_hash" ]; then
+            printf '%s' "$rejected_hash" > "${rejected_cache_path}.tmp.$$" && mv "${rejected_cache_path}.tmp.$$" "$rejected_cache_path"
+            chmod 600 "$rejected_cache_path" 2>/dev/null
+        fi
+    done
     subscription_startup_blocked=1
 }
 
@@ -271,6 +388,24 @@ subscription_outbound_is_unavailable() {
     *" $section "*) return 0 ;;
     esac
     return 1
+}
+
+# Mark a non-subscription proxy section (url/selector/urltest) as having no
+# usable outbound, so sing_box_configure_route emits a reject route rule for it
+# (like the subscription-unavailable path) instead of a route rule pointing at a
+# never-created outbound tag. Used when every configured link for the section
+# was an unsupported scheme and got skipped by the facade. This reuses the
+# existing SUBSCRIPTION_UNAVAILABLE_SECTIONS mechanism (subscription_outbound_is_unavailable),
+# but does NOT touch any per-URL subscription rejected-hash cache (that is
+# subscription-only). The section degrades to "matching traffic rejected"
+# without aborting generation of the rest of the config.
+mark_section_outbound_unavailable() {
+    local section="$1"
+
+    case " $SUBSCRIPTION_UNAVAILABLE_SECTIONS " in
+    *" $section "*) ;;
+    *) SUBSCRIPTION_UNAVAILABLE_SECTIONS="$SUBSCRIPTION_UNAVAILABLE_SECTIONS $section" ;;
+    esac
 }
 
 get_subscription_download_proxy_address() {
@@ -297,7 +432,7 @@ get_subscription_download_proxy_address() {
     fi
 
     if [ "$download_lists_via_proxy_section" = "$section" ]; then
-        if subscription_cache_is_usable "$(get_subscription_json_path "$section")"; then
+        if section_has_usable_subscription_cache "$section"; then
             log "Updating subscription for section '$section' through its currently active cached proxy" "info"
             echo "$(get_service_proxy_address 2>/dev/null || echo '')"
             return 0
@@ -311,7 +446,7 @@ get_subscription_download_proxy_address() {
     config_get selected_connection_type "$download_lists_via_proxy_section" "connection_type"
     config_get selected_proxy_config_type "$download_lists_via_proxy_section" "proxy_config_type"
     if [ "$selected_connection_type" = "proxy" ] && [ "$selected_proxy_config_type" = "subscription" ] && \
-        ! subscription_cache_is_usable "$(get_subscription_json_path "$download_lists_via_proxy_section")"; then
+        ! section_has_usable_subscription_cache "$download_lists_via_proxy_section"; then
         log "Selected download proxy section '$download_lists_via_proxy_section' has no usable subscription cache; using direct mode for recovery of '$section'" "warn"
         return 0
     fi
@@ -356,6 +491,31 @@ subscription_cache_is_usable() {
     return 0
 }
 
+# True (0) if ANY of the section's per-URL subscription caches is usable. Used
+# wherever a single-feed "section has a working cache" decision is needed (e.g.
+# download-proxy selection); the section is considered to have a usable cache as
+# soon as one feed does. URLs are written to a temp file and read with a plain
+# `while read` (NOT a pipe) so the `found` flag survives in this shell.
+section_has_usable_subscription_cache() {
+    local section="$1"
+    local url urlhash found urls_tmp
+
+    found=1
+    urls_tmp="$(mktemp "${TMPDIR:-/tmp}/netshift-sub-urls.XXXXXX")" || return 1
+    get_subscription_urls_for_section "$section" > "$urls_tmp"
+    while IFS= read -r url || [ -n "$url" ]; do
+        [ -n "$url" ] || continue
+        urlhash="$(get_subscription_url_hash "$url")"
+        if subscription_cache_is_usable "$(get_subscription_json_path "$section" "$urlhash")"; then
+            found=0
+            break
+        fi
+    done < "$urls_tmp"
+    rm -f "$urls_tmp"
+
+    return "$found"
+}
+
 wait_for_subscription_connectivity() {
     local section="$1"
     local subscription_url="$2"
@@ -385,9 +545,13 @@ download_subscription_into_cache() {
     local subscription_json_path="$3"
     local subscription_url_cache_path="$4"
     local service_proxy_address="$5"
+    # Optional per-URL hash subkey: keys the UA and rejected caches so each feed
+    # in a multi-URL section keeps independent state. Empty = legacy bare paths.
+    local urlhash="$6"
     local tmpfile persist_tmpfile url_tmpfile rejected_cache_path tmp_hash rejected_hash validation_reason file_size fallback_tmp
     local configured_user_agent user_agent_cache_path cached_user_agent candidates_file
     local effective_user_agent download_ok winning_user_agent ua_tmpfile
+    local subscription_insecure subscription_format_preference
 
     ensure_subscription_cache_dir || {
         log "Failed to prepare persistent subscription cache directory '$SUBSCRIPTION_CACHE_FOLDER' for section '$section'" "error"
@@ -406,14 +570,28 @@ download_subscription_into_cache() {
     # client User-Agent, so when none is configured we probe a whitelist of
     # well-known clients and keep the first that yields valid outbounds. The
     # previously successful UA (cached) is tried first to avoid re-probing.
-    user_agent_cache_path="$(get_subscription_user_agent_cache_path "$section")"
+    user_agent_cache_path="$(get_subscription_user_agent_cache_path "$section" "$urlhash")"
     configured_user_agent="$(uci -q get "netshift.${section}.subscription_user_agent" 2>/dev/null)"
     cached_user_agent="$(cat "$user_agent_cache_path" 2>/dev/null)"
+    # Per-section format preference reorders the UA probe (auto|xray|singbox).
+    # Empty/unset -> auto (today's order); unknown values are treated as auto by
+    # the builder. The probe loop still keeps the first body with valid outbounds.
+    subscription_format_preference="$(uci -q get "netshift.${section}.subscription_format_preference" 2>/dev/null)"
+    [ -n "$subscription_format_preference" ] || subscription_format_preference="auto"
     candidates_file="${tmpfile}.ua"
-    if ! build_subscription_user_agent_candidates "$configured_user_agent" "$cached_user_agent" > "$candidates_file"; then
+    if ! build_subscription_user_agent_candidates "$configured_user_agent" "$cached_user_agent" "$subscription_format_preference" > "$candidates_file"; then
         log "Failed to build subscription User-Agent candidate list for section '$section'" "error"
         rm -f "$tmpfile" "$candidates_file"
         return 11
+    fi
+
+    # Opt-in per-section insecure TLS fetch (default OFF = secure). When enabled
+    # download_subscription adds wget --no-check-certificate so IP-host panels
+    # with invalid/self-signed/missing-SAN certs work. Log once (redacted).
+    subscription_insecure="$(uci -q get "netshift.${section}.subscription_insecure" 2>/dev/null)"
+    [ -n "$subscription_insecure" ] || subscription_insecure=0
+    if [ "$subscription_insecure" = "1" ]; then
+        log "Subscription fetch for section '$section' uses --no-check-certificate (TLS verification disabled): url=$(redact_url_for_log "$subscription_url")" "warn"
     fi
 
     download_ok=0
@@ -426,8 +604,18 @@ download_subscription_into_cache() {
 
         log "Trying subscription User-Agent for section '$section': $effective_user_agent" "info"
 
-        if ! download_subscription "$subscription_url" "$tmpfile" "$service_proxy_address" 3 2 10 "$effective_user_agent"; then
+        if ! download_subscription "$subscription_url" "$tmpfile" "$service_proxy_address" 3 2 10 "$effective_user_agent" "$subscription_insecure"; then
             log "Subscription download failed for section '$section' with User-Agent '$effective_user_agent'; trying next candidate" "warn"
+            continue
+        fi
+
+        # Some panels return a gzip-compressed body unconditionally (we send no
+        # Accept-Encoding and busybox wget does not transparently decompress).
+        # Decompress in place before validate/normalize so every consumer sees
+        # text. Best-effort: a plain-text body is left untouched.
+        maybe_gunzip_subscription_file "$tmpfile"
+        if subscription_body_is_binary "$tmpfile"; then
+            log "Subscription body for section '$section' is binary/undecodable after gzip handling (not text, not gzip) with User-Agent '$effective_user_agent'; trying next candidate" "warn"
             continue
         fi
 
@@ -472,7 +660,7 @@ download_subscription_into_cache() {
         fi
     fi
 
-    rejected_cache_path="$(get_subscription_rejected_cache_path "$section")"
+    rejected_cache_path="$(get_subscription_rejected_cache_path "$section" "$urlhash")"
     tmp_hash="$(md5sum "$tmpfile" 2>/dev/null | awk '{print $1}')"
     rejected_hash="$(cat "$rejected_cache_path" 2>/dev/null)"
     if [ -n "$tmp_hash" ] && [ "$tmp_hash" = "$rejected_hash" ]; then
@@ -519,8 +707,10 @@ download_subscription_into_cache() {
 
 prepare_subscription_cache_for_startup() {
     local section="$1"
-    local connection_type proxy_config_type subscription_url subscription_json_path subscription_url_cache_path
-    local cached_subscription_url service_proxy_address had_usable_cache cache_needs_refresh
+    local connection_type proxy_config_type urls_tmp url urlhash
+    local subscription_json_path subscription_url_cache_path cached_subscription_url
+    local service_proxy_address had_usable_cache cache_needs_refresh
+    local _download_lists_via_proxy section_any_usable url_count
 
     config_get connection_type "$section" "connection_type"
     [ "$connection_type" = "proxy" ] || return 0
@@ -528,59 +718,83 @@ prepare_subscription_cache_for_startup() {
     config_get proxy_config_type "$section" "proxy_config_type"
     [ "$proxy_config_type" = "subscription" ] || return 0
 
-    config_get subscription_url "$section" "subscription_url"
-    if [ -z "$subscription_url" ]; then
+    ensure_subscription_cache_dir || true
+    migrate_subscription_cache_from_tmp
+    # Reap any stale legacy bare-"${section}.<ext>" cache so it can never be read
+    # again (we always hash now).
+    reap_legacy_subscription_cache_files "$section"
+
+    urls_tmp="$(mktemp "${TMPDIR:-/tmp}/netshift-startup-urls.XXXXXX")" || {
+        log "Failed to create temporary URL list for section '$section'" "error"
+        return 0
+    }
+    get_subscription_urls_for_section "$section" > "$urls_tmp"
+    url_count=0
+    while IFS= read -r url || [ -n "$url" ]; do
+        [ -n "$url" ] && url_count=$((url_count + 1))
+    done < "$urls_tmp"
+
+    if [ "$url_count" -eq 0 ]; then
+        rm -f "$urls_tmp"
         log "Subscription URL is not set for section '$section'. Aborted." "fatal"
         exit 1
     fi
 
-    subscription_json_path="$(get_subscription_json_path "$section")"
-    subscription_url_cache_path="$(get_subscription_url_cache_path "$section")"
-    cached_subscription_url=""
-    had_usable_cache=0
-    cache_needs_refresh=0
-
-    ensure_subscription_cache_dir || true
-    migrate_subscription_cache_from_tmp
-
-    if subscription_cache_is_usable "$subscription_json_path"; then
-        had_usable_cache=1
-    else
-        rm -f "$subscription_json_path"
-    fi
-
-    if [ -f "$subscription_url_cache_path" ]; then
-        cached_subscription_url="$(cat "$subscription_url_cache_path" 2> /dev/null)"
-    fi
-
-    if [ "$had_usable_cache" -eq 0 ] || [ "$cached_subscription_url" != "$subscription_url" ]; then
-        cache_needs_refresh=1
-    fi
-
-    if [ "$cache_needs_refresh" -eq 0 ]; then
-        return 0
-    fi
-
-    # Bootstrap subscription directly: sing-box (and its service proxy) is not
-    # running yet at this stage, so proxy-based bootstrap would deadlock here.
-    service_proxy_address=""
-    local _download_lists_via_proxy
     config_get_bool _download_lists_via_proxy "settings" "download_lists_via_proxy" 0
     if [ "$_download_lists_via_proxy" -eq 1 ]; then
         log "download_lists_via_proxy is set, but sing-box is not running yet during startup. Bootstrapping subscription for section '$section' over a direct connection" "info"
     fi
 
-    if wait_for_subscription_connectivity "$section" "$subscription_url" "$service_proxy_address" 2 2 5; then
-        if download_subscription_into_cache \
-            "$section" "$subscription_url" "$subscription_json_path" "$subscription_url_cache_path" "$service_proxy_address"; then
-            return 0
-        fi
-    fi
+    # Best-effort: each URL is downloaded independently; a single dead feed must
+    # not abort the others. The section is "available" if at least one feed has
+    # a usable cache after this pass.
+    section_any_usable=0
+    while IFS= read -r url || [ -n "$url" ]; do
+        [ -n "$url" ] || continue
+        urlhash="$(get_subscription_url_hash "$url")"
+        subscription_json_path="$(get_subscription_json_path "$section" "$urlhash")"
+        subscription_url_cache_path="$(get_subscription_url_cache_path "$section" "$urlhash")"
 
-    if [ "$had_usable_cache" -eq 1 ]; then
-        log "Keeping cached subscription for section '$section' until a fresh download succeeds" "warn"
-    else
-        log "No usable subscription cache for section '$section'; startup will continue with a temporary blocked outbound until subscription becomes reachable" "warn"
+        had_usable_cache=0
+        if subscription_cache_is_usable "$subscription_json_path"; then
+            had_usable_cache=1
+        else
+            rm -f "$subscription_json_path"
+        fi
+
+        cached_subscription_url=""
+        [ -f "$subscription_url_cache_path" ] && cached_subscription_url="$(cat "$subscription_url_cache_path" 2>/dev/null)"
+
+        cache_needs_refresh=0
+        if [ "$had_usable_cache" -eq 0 ] || [ "$cached_subscription_url" != "$url" ]; then
+            cache_needs_refresh=1
+        fi
+
+        if [ "$cache_needs_refresh" -eq 0 ]; then
+            section_any_usable=1
+            continue
+        fi
+
+        # Bootstrap directly: sing-box (and its service proxy) is not running yet.
+        service_proxy_address=""
+        if wait_for_subscription_connectivity "$section" "$url" "$service_proxy_address" 2 2 5 &&
+            download_subscription_into_cache \
+                "$section" "$url" "$subscription_json_path" "$subscription_url_cache_path" "$service_proxy_address" "$urlhash"; then
+            section_any_usable=1
+            continue
+        fi
+
+        if [ "$had_usable_cache" -eq 1 ]; then
+            log "Keeping cached subscription feed for section '$section' (url=$(redact_url_for_log "$url")) until a fresh download succeeds" "warn"
+            section_any_usable=1
+        else
+            log "Subscription feed for section '$section' (url=$(redact_url_for_log "$url")) is not reachable and has no usable cache yet" "warn"
+        fi
+    done < "$urls_tmp"
+    rm -f "$urls_tmp"
+
+    if [ "$section_any_usable" -eq 0 ]; then
+        log "No usable subscription cache for any feed of section '$section'; startup will continue with a temporary blocked outbound until a subscription becomes reachable" "warn"
         subscription_startup_blocked=1
     fi
 
@@ -650,6 +864,12 @@ start_subscription_startup_retry_worker() {
 
 start_main() {
     log "Starting netshift"
+
+    # Normalize legacy scalar `option subscription_url` to the canonical `list`
+    # shape BEFORE check_requirements / config generation read the URLs. The
+    # read-fallback in get_subscription_urls_for_section already covers
+    # correctness; this is hygiene that converges stored configs to a list.
+    migrate_legacy_subscription_url_option
 
     check_requirements
 
@@ -732,6 +952,7 @@ stop_main() {
 }
 
 start() {
+    local start_rc dont_touch_dhcp
     start_main
     start_rc=$?
 
@@ -751,21 +972,137 @@ start() {
     uci_set "netshift" "settings" "shutdown_correctly" 0
     uci commit "netshift" && config_load "$NETSHIFT_CONFIG"
 
-    monitor_sing_box &
-    echo $! > /var/run/netshift_monitor.pid
-    log "Started sing-box health monitor with PID $!" "info"
+    start_sing_box_monitor
+}
+
+_kill_stale_sing_box_monitors() {
+    # task-036: kill ALL detached health-monitor processes, not just the one
+    # currently named in MONITOR_PIDFILE.
+    #
+    # Why this is needed: each monitor self-writes its OWN $$ to MONITOR_PIDFILE
+    # at the top of monitor_sing_box (task-035), so the pidfile only ever
+    # remembers the LATEST monitor. A monitor spawned by a PRIOR reload whose pid
+    # was overwritten in the pidfile is invisible to stop() (which kills only the
+    # pidfile pid) → since the monitor is detached via setsid (own session,
+    # reparented to init) it survives stop()/reload forever → monitors leak
+    # (2-3 live monitors instead of exactly 1) after repeated reloads.
+    #
+    # The hidden `__monitor` subcommand is a unique, stable marker that matches
+    # ONLY the detached monitor (the re-exec'd argv is
+    # `/bin/ash /usr/bin/netshift __monitor`) and never the main netshift process
+    # or any other invocation. We MUST exclude our OWN pid ($$) and our parent
+    # ($PPID): the recovery path inside monitor_sing_box calls stop_main/start_main
+    # (NOT stop()/start_sing_box_monitor), so this helper is never reached from
+    # recovery — but excluding self is the belt that guarantees a monitor can
+    # never kill ITSELF even if a future caller wires this into a monitor-reachable
+    # path.
+    local selector="/usr/bin/netshift __monitor"
+    local self="$$"
+    local parent="${PPID:-0}"
+    local mpids mpid killed=0
+
+    if command -v pgrep > /dev/null 2>&1; then
+        # busybox pgrep supports -f (full-command-line match); already used by
+        # get_system_info (`pgrep -f "sing-box"`). Capture into a var and iterate
+        # with a counted `for` (no pipe) so the killed counter survives.
+        mpids="$(pgrep -f "$selector" 2> /dev/null)"
+    else
+        # Fallback for the rare box without pgrep: ps | grep, busybox-safe. Match
+        # the unique `__monitor` marker, drop the grep line itself.
+        mpids="$(ps w 2> /dev/null | grep "$selector" | grep -v grep | awk '{print $1}')"
+    fi
+
+    for mpid in $mpids; do
+        [ -n "$mpid" ] || continue
+        # Numeric guard (defensive: ps formats vary across busybox builds).
+        case "$mpid" in
+            *[!0-9]*) continue ;;
+        esac
+        # Never kill ourselves or our parent (the init/reload action).
+        [ "$mpid" = "$self" ] && continue
+        [ "$mpid" = "$parent" ] && continue
+        if kill -0 "$mpid" 2> /dev/null; then
+            kill "$mpid" 2> /dev/null
+            killed=$((killed + 1))
+        fi
+    done
+
+    if [ "$killed" -gt 0 ]; then
+        log "Terminated $killed stale sing-box health monitor(s)" "info"
+    fi
+}
+
+start_sing_box_monitor() {
+    local pidfile="$MONITOR_PIDFILE"
+    local pid waited
+
+    # task-036: reliably terminate EVERY prior monitor before spawning a new one,
+    # so exactly ONE monitor exists after any number of reloads/restarts. The old
+    # "return 0 if the pidfile pid is alive" guard was insufficient: a reload runs
+    # stop() (kills only the pidfile pid) then start() → here. Because each
+    # monitor overwrites the pidfile with its own pid, monitors from prior reloads
+    # were never recorded → never killed → leaked (orphaned, reparented to init by
+    # setsid). Killing ALL `__monitor` procs (excluding self/parent) closes that
+    # gap. We then ALWAYS spawn a fresh monitor bound to the just-(re)started
+    # sing-box, instead of skipping — a stale monitor from a prior config is not a
+    # valid substitute for one bound to the new run.
+    _kill_stale_sing_box_monitors
+    rm -f "$pidfile"
+
+    # CRITICAL (task-035): the health monitor is a long-lived `while true` loop.
+    # When start_main runs on the reload/restart path, procd holds its init
+    # service lock on fd 1000 (/tmp/lock/procd_<name>.lock). A bare
+    # `monitor_sing_box &` inherits ALL open fds, including fd 1000, so the
+    # monitor would hold the procd lock FOREVER and the NEXT reload/restart
+    # would block on `flock 1000` indefinitely (settings never re-applied).
+    #
+    # Detach the monitor from procd entirely:
+    #   - `setsid` puts it in its own session (no controlling terminal, not in
+    #     procd's process group), and re-execs /usr/bin/netshift fresh.
+    #   - `exec 1000>&-` closes the inherited procd lock fd in the child before
+    #     the re-exec, so even though exec does NOT close non-CLOEXEC fds, fd
+    #     1000 is already gone (harmless no-op on the plain start/boot path
+    #     where the lock fd is absent).
+    #   - `</dev/null >/dev/null 2>&1` drops the inherited stdio (procd's
+    #     stdout/stderr pipes) so the monitor never keeps those open either.
+    # The re-exec runs the hidden `__monitor` subcommand, which calls the
+    # existing monitor_sing_box function (detection/recovery logic unchanged)
+    # and writes its OWN pid to the pidfile (so stop() can still kill it
+    # regardless of how setsid forks/execs the chain).
+    setsid /bin/sh -c 'exec 1000>&- 2>/dev/null; exec /usr/bin/netshift __monitor' < /dev/null > /dev/null 2>&1 &
+
+    # The monitor child writes its real pid to the pidfile itself; wait briefly
+    # for it to appear so callers/diagnostics see a populated pidfile.
+    waited=0
+    while [ ! -s "$pidfile" ] && [ "$waited" -lt 20 ]; do
+        sleep 0.1 2> /dev/null || sleep 1
+        waited=$((waited + 1))
+    done
+
+    if [ -s "$pidfile" ]; then
+        pid="$(cat "$pidfile" 2> /dev/null)"
+        log "Started sing-box health monitor with PID $pid" "info"
+    else
+        log "Started sing-box health monitor (pid pending)" "info"
+    fi
 }
 
 stop() {
-    if [ -f /var/run/netshift_monitor.pid ]; then
+    if [ -f "$MONITOR_PIDFILE" ]; then
         local monitor_pid
-        monitor_pid="$(cat /var/run/netshift_monitor.pid 2>/dev/null)"
+        monitor_pid="$(cat "$MONITOR_PIDFILE" 2>/dev/null)"
         if [ -n "$monitor_pid" ] && kill -0 "$monitor_pid" 2>/dev/null; then
             kill "$monitor_pid" 2>/dev/null
             log "Stopped sing-box health monitor" "info"
         fi
-        rm -f /var/run/netshift_monitor.pid
+        rm -f "$MONITOR_PIDFILE"
     fi
+
+    # task-036: the pidfile only ever names the LATEST monitor, so a leaked
+    # monitor from a prior reload (detached via setsid, reparented to init) is
+    # invisible above. Reap ALL detached `__monitor` processes here so a clean
+    # stop leaves zero monitors running. Excludes self/parent.
+    _kill_stale_sing_box_monitors
 
     local dont_touch_dhcp
     config_get_bool dont_touch_dhcp "settings" "dont_touch_dhcp" 0
@@ -782,6 +1119,12 @@ stop() {
 monitor_sing_box() {
     local crash_count=0
     local backoff=0
+    local dont_touch_dhcp
+
+    # Record our OWN pid (task-035): the monitor runs detached via setsid, so
+    # the launcher cannot reliably capture the final pid of the exec/setsid
+    # chain. Writing $$ here is authoritative for stop()/diagnostics.
+    echo $$ > "$MONITOR_PIDFILE"
 
     while true; do
         sleep "$MONITOR_CHECK_INTERVAL"
@@ -824,8 +1167,7 @@ monitor_sing_box() {
 
         log "Attempting sing-box recovery restart" "warn"
         stop_main
-        start_main
-        if [ $? -eq 0 ]; then
+        if start_main; then
             config_get_bool dont_touch_dhcp "settings" "dont_touch_dhcp" 0
             if [ "$dont_touch_dhcp" -eq 0 ]; then
                 dnsmasq_configure force
@@ -836,7 +1178,7 @@ monitor_sing_box() {
         fi
     done
 
-    rm -f /var/run/netshift_monitor.pid
+    rm -f "$MONITOR_PIDFILE"
 }
 
 sing_box_process_exists() {
@@ -858,6 +1200,71 @@ restart() {
 # Migrations and validation funcs
 migration() {
     :
+}
+
+# config_foreach callback for migrate_legacy_subscription_url_option. For a
+# subscription section whose subscription_url is stored as a scalar `option`
+# (legacy / CLI / podkop-migrated configs) rather than a UCI `list`, rewrite it
+# in place as a `list` via uci. Detects the broken shape robustly: the LIST read
+# (config_list_foreach) yields nothing AND a scalar config_get is non-empty —
+# exactly the option-only shape, so an already-correct list is never touched.
+# Sets the module-level SUBSCRIPTION_URL_OPTION_MIGRATED flag when it changes
+# anything so the caller commits + reloads exactly once. Never exits: any uci
+# failure is logged at warn and skipped (the read-fallback in
+# get_subscription_urls_for_section covers correctness regardless).
+_migrate_legacy_subscription_url_option_handler() {
+    local section="$1"
+    local connection_type proxy_config_type scalar_url
+
+    config_get connection_type "$section" "connection_type"
+    [ "$connection_type" = "proxy" ] || return 0
+
+    config_get proxy_config_type "$section" "proxy_config_type" "url"
+    [ "$proxy_config_type" = "subscription" ] || return 0
+
+    # Only the broken shape: empty via the list path but present as a scalar.
+    SUBSCRIPTION_URLS_COLLECTED=""
+    config_list_foreach "$section" "subscription_url" _collect_subscription_url_handler
+    [ -z "$SUBSCRIPTION_URLS_COLLECTED" ] || return 0
+
+    config_get scalar_url "$section" "subscription_url"
+    [ -n "$scalar_url" ] || return 0
+
+    # Rewrite the scalar option as a list. Use the uci_add_list SHELL HELPER
+    # (from /lib/functions.sh), NOT the `uci add_list "key=value"` CLI form: the
+    # CLI form splits on the FIRST `=`, so a URL with a query string (very common,
+    # e.g. "...?token=abc&x=1") makes the CLI add_list fail and lose the value.
+    # The helper passes the value as a separate argument, preserving `=`/`&`
+    # byte-for-byte. Delete the scalar first so the result is a CLEAN single-
+    # element list (adding while the scalar option still exists would duplicate
+    # it into a 2-element list); if the add then fails, RESTORE the scalar option
+    # so a failed migration can never leave the section with NO url. Never exits.
+    uci -q delete "netshift.${section}.subscription_url" 2>/dev/null
+    if uci_add_list netshift "$section" subscription_url "$scalar_url" 2>/dev/null; then
+        SUBSCRIPTION_URL_OPTION_MIGRATED=1
+        log "Migrated legacy scalar subscription_url to list for section '$section'" "info"
+    else
+        uci_set netshift "$section" subscription_url "$scalar_url"
+        log "Failed to migrate scalar subscription_url to list for section '$section'; restored the original option and continuing (read fallback covers correctness)" "warn"
+    fi
+}
+
+# One-time, idempotent normalization of a legacy scalar `option subscription_url`
+# into the canonical `list subscription_url`. Runs once at startup AFTER
+# config_load and BEFORE config generation reads the URLs. Idempotent: a config
+# already using `list` is left untouched (no commit, no churn). Never exits.
+migrate_legacy_subscription_url_option() {
+    SUBSCRIPTION_URL_OPTION_MIGRATED=0
+
+    config_foreach _migrate_legacy_subscription_url_option_handler "section"
+
+    if [ "$SUBSCRIPTION_URL_OPTION_MIGRATED" -eq 1 ]; then
+        if uci commit "netshift" 2>/dev/null; then
+            config_load "$NETSHIFT_CONFIG"
+        else
+            log "Failed to commit subscription_url option->list migration; continuing (read fallback covers correctness)" "warn"
+        fi
+    fi
 }
 
 validate_service() {
@@ -935,7 +1342,109 @@ nft_init_interfaces_set() {
     done
 }
 
+# ── task-034: destination-selective marking population ──────────────────────
+# The prerouting `mangle` chain marks ONLY proxied destinations into tproxy.
+# Those destinations live in the union nft set NFT_COMMON_SET_NAME (IPv4) and
+# its IPv6 mirror NFT_COMMON_SET_NAME_V6. These two helpers are the SINGLE
+# centralized population point: every place that adds an ip_cidr to a sing-box
+# route rule_set ALSO calls one of these so the nft set and the sing-box
+# rule_set cannot drift (the historical 0.8.5 two-sources-of-truth fragility).
+#
+# Fail-open: if the set does not exist yet (table not built) or a line is
+# malformed, that subnet simply isn't marked (goes direct) — never a blackhole.
+
+# Add the IPv4/IPv6 CIDRs found in a file into the union destination set(s).
+populate_netshift_subnets_from_file() {
+    local filepath="$1"
+
+    [ -f "$filepath" ] || return 0
+
+    if nft list set inet "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME" > /dev/null 2>&1; then
+        nft_add_set_elements_from_file_chunked "$filepath" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
+    fi
+
+    if netshift_ipv6_enabled &&
+        nft list set inet "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME_V6" > /dev/null 2>&1; then
+        nft_add_set_elements_from_file_chunked_v6 "$filepath" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME_V6"
+    fi
+}
+
+# Add a comma/space-separated string of CIDRs into the union destination set(s).
+# Items are written to a temp file and routed through the file-based path so the
+# v4/v6 split logic is shared.
+populate_netshift_subnets_from_string() {
+    local items="$1"
+    local tmpfile
+
+    [ -n "$items" ] || return 0
+
+    tmpfile="$(mktemp)" || return 0
+    printf '%s\n' "$items" | tr ', ' '\n\n' > "$tmpfile"
+    populate_netshift_subnets_from_file "$tmpfile"
+    rm -f "$tmpfile"
+}
+
+# task-034: add source-based mark-all rules for every section's fully_routed_ips
+# (LAN clients whose ALL traffic must enter sing-box, regardless of destination).
+# Only used in the destination-selective default mode; under global_proxy ALL
+# traffic is already marked. Fail-open: a missing/empty list adds no rule.
+nft_mark_fully_routed_source_ips() {
+    config_foreach _nft_mark_fully_routed_ips_for_section "section"
+}
+
+_nft_mark_fully_routed_ips_for_section() {
+    local section="$1"
+    local connection_type fully_routed_ips ip
+
+    config_get connection_type "$section" "connection_type"
+    case "$connection_type" in
+    proxy | vpn) ;;
+    *) return 0 ;;
+    esac
+
+    config_get fully_routed_ips "$section" "fully_routed_ips"
+    [ -n "$fully_routed_ips" ] || return 0
+
+    _nft_fully_routed_list_seen=""
+    config_list_foreach "$section" "fully_routed_ips" _nft_mark_fully_routed_ip_handler
+    # Fallback for option-form (space-separated) values.
+    if [ -z "$_nft_fully_routed_list_seen" ]; then
+        for ip in $fully_routed_ips; do
+            _nft_mark_fully_routed_ip_handler "$ip"
+        done
+    fi
+}
+
+_nft_mark_fully_routed_ip_handler() {
+    local ip="$1"
+
+    _nft_fully_routed_list_seen=1
+    [ -n "$ip" ] || return 0
+
+    case "$ip" in
+    *:*)
+        if netshift_ipv6_enabled; then
+            nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip6 saddr "$ip" meta mark set "$NFT_FAKEIP_MARK" counter
+        fi
+        ;;
+    *)
+        nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip saddr "$ip" meta mark set "$NFT_FAKEIP_MARK" counter
+        ;;
+    esac
+}
+
 create_nft_rules() {
+    # Rebuild the table deterministically. `nft add chain`/`nft add rule` only
+    # ever APPEND, so if a NetShiftTable was left behind by a previous start
+    # that was not cleanly stopped (procd respawn, in-place package upgrade, or
+    # a crash), its STALE rules survive and the new rules pile on top. A leftover
+    # mark-EVERYTHING rule would then sit at the top of the prerouting chain and
+    # mark all traffic before the destination-selective rules below ever run —
+    # re-introducing the 100% CPU regression even though the selective code is
+    # present. Flush first so create_nft_rules always yields exactly this chain.
+    log "Flush stale nft table before rebuild"
+    nft_delete_table "$NFT_TABLE_NAME"
+
     log "Create nft table"
     nft_create_table "$NFT_TABLE_NAME"
 
@@ -968,8 +1477,11 @@ create_nft_rules() {
         }'
     fi
 
-    log "Create common set"
+    log "Create proxied-subnets union set"
     nft_create_ipv4_set "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
+    if netshift_ipv6_enabled; then
+        nft_create_ipv6_set "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME_V6"
+    fi
 
     log "Create interface set"
     nft_init_interfaces_set
@@ -984,16 +1496,78 @@ create_nft_rules() {
     if netshift_ipv6_enabled; then
         nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip6 daddr "@$NFT_LOCALV6_SET_NAME" return
     fi
-    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
+
+    # task-034: destination-selective marking.
+    #
+    # DEFAULT (no global_proxy section): mark ONLY traffic whose DESTINATION is
+    #   - a proxied subnet (@NFT_COMMON_SET_NAME / its v6 mirror), or
+    #   - the FakeIP range (proxied DOMAINS resolve to FakeIPs via the dns-in
+    #     inbound, so marking the FakeIP range carries domain routing in), or
+    #   - a DoH-block CIDR (when block_doh is on, so DoH probes are forced into
+    #     sing-box where the route-level reject rule drops them).
+    # Everything else (a torrent/4K stream to a random direct IP) is NEVER
+    # marked -> never enters sing-box -> CPU stays at 0.8.5 levels.
+    # `fully_routed_ips` are SOURCE clients whose ALL traffic must be proxied,
+    # so they are marked by source regardless of destination.
+    #
+    # GLOBAL_PROXY OVERRIDE: when a global_proxy section is active, ALL LAN
+    # tcp/udp is legitimately wanted inside sing-box (it routes every unmatched
+    # flow through the proxy), so we keep the mark-EVERYTHING rules. The same
+    # condition is read independently here (UCI only, via get_global_proxy_section)
+    # because create_nft_rules runs separately from sing_box_configure_route.
+    local nft_global_proxy_section
+    nft_global_proxy_section="$(get_global_proxy_section)"
+    if [ -n "$nft_global_proxy_section" ]; then
+        log "Global proxy section '$nft_global_proxy_section' active: marking ALL LAN traffic into sing-box" "info"
+        nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
+        nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
+    else
+        # Source-based mark-all for fully_routed_ips clients (regardless of dest).
+        nft_mark_fully_routed_source_ips
+
+        # Destination-selective: proxied subnets (union set).
+        nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "@$NFT_COMMON_SET_NAME" meta mark set "$NFT_FAKEIP_MARK" counter
+        # Destination-selective: FakeIP range (proxied domains).
+        nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "$SB_FAKEIP_INET4_RANGE" meta mark set "$NFT_FAKEIP_MARK" counter
+        if netshift_ipv6_enabled; then
+            nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip6 daddr "@$NFT_COMMON_SET_NAME_V6" meta mark set "$NFT_FAKEIP_MARK" counter
+            nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip6 daddr "$SB_FAKEIP_INET6_RANGE" meta mark set "$NFT_FAKEIP_MARK" counter
+        fi
+
+        # DoH-block CIDRs (when enabled): force well-known DoH resolver IPs into
+        # sing-box so the route-level DoH reject rule can drop them.
+        local nft_block_doh
+        config_get_bool nft_block_doh "settings" "block_doh" 0
+        if [ "$nft_block_doh" -eq 1 ]; then
+            log "DoH blocking enabled: marking DoH resolver CIDRs into sing-box" "info"
+            local doh_cidr
+            for doh_cidr in $DOH_BLOCK_IPV4_CIDRS; do
+                nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "$doh_cidr" meta mark set "$NFT_FAKEIP_MARK" counter
+            done
+            if netshift_ipv6_enabled; then
+                for doh_cidr in $DOH_BLOCK_IPV6_CIDRS; do
+                    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip6 daddr "$doh_cidr" meta mark set "$NFT_FAKEIP_MARK" counter
+                done
+            fi
+        fi
+    fi
 
     nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto tcp tproxy ip to "$SB_TPROXY_INBOUND_ADDRESS:$SB_TPROXY_INBOUND_PORT" counter
     nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto udp tproxy ip to "$SB_TPROXY_INBOUND_ADDRESS:$SB_TPROXY_INBOUND_PORT" counter
     if netshift_ipv6_enabled; then
-        nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto tcp tproxy ip6 to "$SB_TPROXY_INBOUND_ADDRESS_V6:$SB_TPROXY_INBOUND_PORT_V6" counter
-        nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto udp tproxy ip6 to "$SB_TPROXY_INBOUND_ADDRESS_V6:$SB_TPROXY_INBOUND_PORT_V6" counter
+        nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto tcp tproxy ip6 to "[$SB_TPROXY_INBOUND_ADDRESS_V6]:$SB_TPROXY_INBOUND_PORT_V6" counter
+        nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto udp tproxy ip6 to "[$SB_TPROXY_INBOUND_ADDRESS_V6]:$SB_TPROXY_INBOUND_PORT_V6" counter
     fi
 
+    # Router-originated (locally generated) traffic is left DIRECT on purpose.
+    # The model marks only LAN/forwarded traffic in `mangle` (prerouting) above
+    # and delegates the proxy/direct split to sing-box route rules; the router's
+    # own outgoing traffic is NOT proxied. These mangle_output rules only handle
+    # the returns needed to keep that traffic direct: local/loopback daddr returns
+    # and the outbound-mark return (sing-box-originated packets carrying
+    # NFT_OUTBOUND_MARK must not be re-marked into the tproxy path -> avoids a
+    # routing loop). Proxying router-originated traffic (the old mangle_output
+    # @common/FakeIP daddr marking) was dropped deliberately to avoid such loops.
     nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "@$NFT_LOCALV4_SET_NAME" return
     if netshift_ipv6_enabled; then
         nft add rule inet "$NFT_TABLE_NAME" mangle_output ip6 daddr "@$NFT_LOCALV6_SET_NAME" return
@@ -1028,20 +1602,22 @@ uci_remove_quiet() {
 }
 
 dnsmasq_is_configured_for_netshift() {
-    local servers server noresolv cachesize has_netshift_server=0
+    local configured
 
-    servers="$(uci_get "dhcp" "@dnsmasq[0]" "server")"
-    for server in $servers; do
-        if [ "$server" = "$SB_DNS_INBOUND_ADDRESS" ]; then
-            has_netshift_server=1
-            break
-        fi
-    done
-
-    noresolv="$(uci_get "dhcp" "@dnsmasq[0]" "noresolv")"
-    cachesize="$(uci_get "dhcp" "@dnsmasq[0]" "cachesize")"
-
-    [ "$has_netshift_server" -eq 1 ] && [ "$noresolv" = "1" ] && [ "$cachesize" = "0" ]
+    # The authoritative "netshift owns this dnsmasq config" flag is the
+    # netshift_configured sentinel that dnsmasq_configure sets unconditionally
+    # AFTER applying our config, and dnsmasq_restore clears on teardown. We do
+    # NOT infer ownership from the live server/noresolv/cachesize values: on a
+    # stock dnsmasq with no original server/noresolv/cachesize, dnsmasq_configure
+    # writes no backup markers, and after it runs the live values ARE netshift's
+    # own (noresolv=1, cachesize=0) — so a value-based or marker-based check
+    # could not distinguish "we configured it" from "an admin coincidentally set
+    # the same values", and the redundant `dnsmasq_configure force` path (monitor
+    # recovery / double-start) would re-run "backup" and capture netshift's own
+    # values as the backup, corrupting the later restore. The sentinel is the
+    # single source of truth.
+    configured="$(uci_get "dhcp" "@dnsmasq[0]" "netshift_configured")"
+    [ "$configured" = "1" ]
 }
 
 dnsmasq_configure() {
@@ -1076,6 +1652,10 @@ dnsmasq_configure() {
     uci_add_list "dhcp" "@dnsmasq[0]" "server" "$SB_DNS_INBOUND_ADDRESS"
     uci_set "dhcp" "@dnsmasq[0]" "noresolv" 1
     uci_set "dhcp" "@dnsmasq[0]" "cachesize" 0
+    # Authoritative ownership sentinel (see dnsmasq_is_configured_for_netshift):
+    # marks that netshift, not the admin, applied this dnsmasq config. Set
+    # unconditionally after our config is applied; cleared in dnsmasq_restore.
+    uci_set "dhcp" "@dnsmasq[0]" "netshift_configured" 1
     uci_commit "dhcp"
 
     /etc/init.d/dnsmasq restart
@@ -1129,6 +1709,11 @@ dnsmasq_restore() {
     else
         log "Backup DNS servers and default resolvfile not found, possible resolving issues" "warn"
     fi
+
+    # Clear the ownership sentinel so a fresh future dnsmasq_configure
+    # re-establishes ownership cleanly (and dnsmasq_is_configured_for_netshift
+    # no longer short-circuits once we have torn down).
+    uci_remove_quiet "dhcp" "@dnsmasq[0]" "netshift_configured"
 
     uci_commit "dhcp"
 
@@ -1353,8 +1938,9 @@ subscription_update() {
 
     _update_subscription_for_section() {
         local section="$1"
-        local connection_type proxy_config_type subscription_url subscription_json_path
+        local connection_type proxy_config_type url urlhash subscription_json_path
         local subscription_url_cache_path service_proxy_address update_result outbounds_count
+        local urls_tmp url_count section_changed feed_usable_count feed_failed_count
 
         config_get connection_type "$section" "connection_type"
         if [ "$connection_type" != "proxy" ]; then
@@ -1367,85 +1953,108 @@ subscription_update() {
             return
         fi
 
-        config_get subscription_url "$section" "subscription_url"
-        if [ -z "$subscription_url" ]; then
-            echolog "❌ Subscription URL not set for section '$section'"
-            failed_sections=$((failed_sections + 1))
-            return
-        fi
-
         mkdir -p "$TMP_SUBSCRIPTION_FOLDER"
         if ! ensure_subscription_cache_dir; then
             echolog "❌ Subscription cache directory is unavailable for section '$section'"
             failed_sections=$((failed_sections + 1))
             return
         fi
-        subscription_json_path="$(get_subscription_json_path "$section")"
-        subscription_url_cache_path="$(get_subscription_url_cache_path "$section")"
+        reap_legacy_subscription_cache_files "$section"
 
-        echolog "📥 Updating subscription for section '$section'..."
+        urls_tmp="$(mktemp "${TMPDIR:-/tmp}/netshift-refresh-urls.XXXXXX")" || {
+            echolog "❌ Failed to enumerate subscription URLs for section '$section'"
+            failed_sections=$((failed_sections + 1))
+            return
+        }
+        get_subscription_urls_for_section "$section" > "$urls_tmp"
+        url_count=0
+        while IFS= read -r url || [ -n "$url" ]; do
+            [ -n "$url" ] && url_count=$((url_count + 1))
+        done < "$urls_tmp"
 
-        service_proxy_address="$(get_subscription_download_proxy_address "$section" "runtime" || echo '')"
-        if [ -n "$service_proxy_address" ]; then
-            log "Updating subscription for section '$section' via service proxy $service_proxy_address" "info"
-        else
-            log "Updating subscription for section '$section' directly" "info"
-        fi
-
-        if ! wait_for_subscription_connectivity "$section" "$subscription_url" "$service_proxy_address" 6 5 5; then
-            echolog "❌ Subscription source is not reachable for section '$section'"
+        if [ "$url_count" -eq 0 ]; then
+            rm -f "$urls_tmp"
+            echolog "❌ Subscription URL not set for section '$section'"
             failed_sections=$((failed_sections + 1))
             return
         fi
 
-        download_subscription_into_cache \
-            "$section" "$subscription_url" "$subscription_json_path" "$subscription_url_cache_path" "$service_proxy_address"
-        update_result=$?
+        echolog "📥 Updating subscription for section '$section' ($url_count feed(s))..."
 
-        case "$update_result" in
-        0)
+        # Best-effort per-feed download. The section is "changed" (→ restart) if
+        # ANY feed changed; the section "failed" only if ALL feeds failed AND none
+        # has a usable cache. One dead feed never aborts the others.
+        section_changed=0
+        feed_usable_count=0
+        feed_failed_count=0
+        while IFS= read -r url || [ -n "$url" ]; do
+            [ -n "$url" ] || continue
+            urlhash="$(get_subscription_url_hash "$url")"
+            subscription_json_path="$(get_subscription_json_path "$section" "$urlhash")"
+            subscription_url_cache_path="$(get_subscription_url_cache_path "$section" "$urlhash")"
+
+            service_proxy_address="$(get_subscription_download_proxy_address "$section" "runtime" || echo '')"
+            if [ -n "$service_proxy_address" ]; then
+                log "Updating subscription feed for section '$section' (url=$(redact_url_for_log "$url")) via service proxy $service_proxy_address" "info"
+            else
+                log "Updating subscription feed for section '$section' (url=$(redact_url_for_log "$url")) directly" "info"
+            fi
+
+            if ! wait_for_subscription_connectivity "$section" "$url" "$service_proxy_address" 6 5 5; then
+                echolog "⚠️ Subscription feed not reachable for section '$section': url=$(redact_url_for_log "$url")"
+                feed_failed_count=$((feed_failed_count + 1))
+                subscription_cache_is_usable "$subscription_json_path" && feed_usable_count=$((feed_usable_count + 1))
+                continue
+            fi
+
+            download_subscription_into_cache \
+                "$section" "$url" "$subscription_json_path" "$subscription_url_cache_path" "$service_proxy_address" "$urlhash"
+            update_result=$?
+
+            case "$update_result" in
+            0)
+                section_changed=1
+                feed_usable_count=$((feed_usable_count + 1))
+                outbounds_count=$(jq -r '[.outbounds[] | select(
+                    .type != "selector" and
+                    .type != "urltest" and
+                    .type != "direct" and
+                    .type != "dns" and
+                    .type != "block"
+                )] | length' "$subscription_json_path" 2>/dev/null)
+                echolog "✅ Subscription feed updated for section '$section': $outbounds_count outbounds (url=$(redact_url_for_log "$url"))"
+                ;;
+            2)
+                feed_usable_count=$((feed_usable_count + 1))
+                echolog "ℹ️ Subscription feed for section '$section' is unchanged (url=$(redact_url_for_log "$url"))"
+                ;;
+            *)
+                feed_failed_count=$((feed_failed_count + 1))
+                # A previously cached body for this feed still counts as usable.
+                subscription_cache_is_usable "$subscription_json_path" && feed_usable_count=$((feed_usable_count + 1))
+                echolog "⚠️ Subscription feed failed for section '$section' (rc=$update_result): url=$(redact_url_for_log "$url")"
+                ;;
+            esac
+        done < "$urls_tmp"
+        rm -f "$urls_tmp"
+
+        if [ "$section_changed" -eq 1 ]; then
             updated_sections=$((updated_sections + 1))
-            outbounds_count=$(jq -r '[.outbounds[] | select(
-                .type != "selector" and
-                .type != "urltest" and
-                .type != "direct" and
-                .type != "dns" and
-                .type != "block"
-            )] | length' "$subscription_json_path" 2>/dev/null)
-
-            echolog "✅ Subscription updated for section '$section': $outbounds_count outbounds"
-            ;;
-        2)
-            echolog "ℹ️ Subscription for section '$section' is unchanged"
+            if [ "$feed_failed_count" -gt 0 ]; then
+                echolog "✅ Subscription updated for section '$section' ($feed_failed_count feed(s) failed and kept their previous cache)"
+            else
+                echolog "✅ Subscription updated for section '$section'"
+            fi
             return
-            ;;
-        10)
-            echolog "❌ Failed to prepare subscription cache for section '$section'"
-            ;;
-        11)
-            echolog "❌ Failed to create temporary subscription download file for section '$section'"
-            ;;
-        12)
-            echolog "❌ Failed to download subscription body for section '$section'"
-            ;;
-        13)
-            echolog "❌ Downloaded subscription for section '$section' is invalid"
-            ;;
-        14)
-            echolog "❌ Downloaded subscription for section '$section' is unchanged and still has no usable outbounds"
-            ;;
-        15)
-            echolog "❌ Failed to persist subscription cache for section '$section'"
-            ;;
-        *)
-            echolog "❌ Failed to update subscription for section '$section': internal error rc=$update_result"
-            ;;
-        esac
+        fi
 
-        if [ "$update_result" -ne 0 ]; then
+        if [ "$feed_usable_count" -eq 0 ]; then
+            echolog "❌ Failed to update any subscription feed for section '$section'"
             failed_sections=$((failed_sections + 1))
             return
         fi
+
+        echolog "ℹ️ Subscription for section '$section' is unchanged"
     }
     config_foreach _update_subscription_for_section "section"
 
@@ -1472,6 +2081,72 @@ subscription_update() {
     else
         echolog "✅ Subscription update completed"
     fi
+}
+
+# Worker for `component_action subscription clear_cache` (updater.sh router).
+# Wipes ALL per-feed subscription cache files under SUBSCRIPTION_CACHE_FOLDER
+# (the four "${section}.<md5(url)>.{json,url,rejected,user_agent}" sidecars per
+# feed), then re-runs subscription_update verbatim so every feed is re-downloaded
+# fresh, re-validated, and the service restarts on change. Deleting the .json
+# defeats the unchanged guard and deleting the .rejected defeats the rejected-hash
+# veto, so the redownload is a genuine full reset.
+#
+# CRITICAL: this runs inside the component_action async fork (component_action_async
+# → "$0" component_action subscription clear_cache). It MUST echo a single JSON
+# result and `return N` — NEVER `exit` (an exit would kill the fork before the
+# finished-state file is written). Mirrors the updates_* workers' echo+return
+# discipline.
+#
+# SAFETY: the globbed delete is guarded so a mistyped/empty SUBSCRIPTION_CACHE_FOLDER
+# can never become `rm -f /*`. We require a non-empty constant AND an existing
+# directory before `rm -f "$SUBSCRIPTION_CACHE_FOLDER"/*`, and only ever remove the
+# directory CONTENTS — never `rm -rf` the directory itself.
+subscription_clear_cache_and_redownload() {
+    local has_subscription removed cache_file update_rc
+
+    # Detect whether any subscription section is configured at all. If none,
+    # there is nothing to clear or redownload — succeed gracefully.
+    has_subscription=0
+    _detect_subscription_section_for_clear() {
+        local section="$1"
+        local connection_type proxy_config_type
+
+        config_get connection_type "$section" "connection_type"
+        [ "$connection_type" = "proxy" ] || return 0
+
+        config_get proxy_config_type "$section" "proxy_config_type"
+        [ "$proxy_config_type" = "subscription" ] && has_subscription=1
+    }
+    config_foreach _detect_subscription_section_for_clear "section"
+
+    # Guarded full-reset delete of the cache directory CONTENTS. The two guards
+    # (non-empty constant AND existing directory) make a wild `rm -f /*`
+    # impossible. No error when the directory is empty or missing.
+    removed=0
+    if [ -n "$SUBSCRIPTION_CACHE_FOLDER" ] && [ -d "$SUBSCRIPTION_CACHE_FOLDER" ]; then
+        for cache_file in "$SUBSCRIPTION_CACHE_FOLDER"/*; do
+            [ -e "$cache_file" ] || continue
+            rm -f "$cache_file" 2>/dev/null && removed=$((removed + 1))
+        done
+    fi
+    log "Cleared subscription cache: removed $removed file(s) from '$SUBSCRIPTION_CACHE_FOLDER'" "info"
+
+    if [ "$has_subscription" -eq 0 ]; then
+        echo "{\"success\":true,\"message\":\"No subscriptions configured; cleared $removed cache file(s), nothing to redownload\"}"
+        return 0
+    fi
+
+    # Reuse subscription_update ENTIRELY for the redownload + re-validate + restart.
+    subscription_update
+    update_rc=$?
+
+    if [ "$update_rc" -eq 0 ]; then
+        echo "{\"success\":true,\"message\":\"Cleared $removed subscription cache file(s) and re-downloaded all feeds\"}"
+        return 0
+    fi
+
+    echo "{\"success\":false,\"message\":\"Cleared $removed subscription cache file(s) but the redownload failed (rc=$update_rc); kept the last working cache\"}"
+    return "$update_rc"
 }
 
 # sing-box funcs
@@ -1573,10 +2248,25 @@ sing_box_get_unique_outbound_tag() {
     echo "$candidate"
 }
 
-sing_box_build_subscription_country_groups() {
+# Mode-aware subscription group-key builder (task-044). Generalizes the former
+# country-only grouper into off/country/prefix modes. Returns the shape
+# {group_order: [...], groups: {key: [tags]}, ungrouped: [...]}.
+#   - mode=country: byte-identical to the legacy flag extractor (regional-
+#     indicator gate; non-flag tags -> ungrouped).
+#   - mode=prefix: group key = first N codepoints of the tag (N = $3). A tag
+#     shorter than N codepoints keys by its WHOLE tag (still groups with
+#     identical short tags); an empty tag -> ungrouped. $3 is coerced via
+#     tonumber, floored to 1; bad/0/empty -> default 2.
+# No Oniguruma jq (explode/implode/slice/index/reduce only).
+sing_box_build_subscription_groups() {
     local subscription_outbound_tags_json="$1"
+    local mode="$2"
+    local prefix_len="$3"
 
-    printf '%s' "$subscription_outbound_tags_json" | jq -c '
+    printf '%s' "$subscription_outbound_tags_json" | jq -c \
+        --arg mode "$mode" \
+        --arg prefix_len "$prefix_len" \
+        --argjson default_len "$SUBSCRIPTION_GROUP_DEFAULT_PREFIX_LEN" '
         def is_regional_indicator: . >= 127462 and . <= 127487;
         def extract_country_flag:
             (. | explode) as $codepoints
@@ -1586,17 +2276,33 @@ sing_box_build_subscription_country_groups() {
               then ($codepoints[0:2] | implode)
               else ""
               end;
+        # extract_prefix($n): group key = first $n codepoints, or "" (ungrouped)
+        # for an empty tag. A short tag keys by its whole self.
+        def extract_prefix($n):
+            (. | explode) as $codepoints
+            | if ($codepoints | length) == 0
+              then ""
+              else ($codepoints[0:$n] | implode)
+              end;
 
-        (if type == "array" then . else [] end) as $tags
+        # Effective prefix length: coerce, floor to 1, fall back to default.
+        (try ($prefix_len | tonumber) catch $default_len) as $raw_len
+        | (if ($raw_len | type) != "number" or $raw_len < 1
+            then $default_len
+            else ($raw_len | floor)
+            end) as $n
+
+        | (if type == "array" then . else [] end) as $tags
         | reduce $tags[] as $tag (
-            {country_order: [], country_groups: {}, ungrouped: []};
-            ($tag | extract_country_flag) as $country_flag
-            | if $country_flag == "" then
+            {group_order: [], groups: {}, ungrouped: []};
+            (if $mode == "prefix" then ($tag | extract_prefix($n))
+             else ($tag | extract_country_flag) end) as $key
+            | if $key == "" then
                 .ungrouped += [$tag]
               else
-                .country_groups[$country_flag] = ((.country_groups[$country_flag] // []) + [$tag])
-                | if (.country_order | index($country_flag)) == null then
-                    .country_order += [$country_flag]
+                .groups[$key] = ((.groups[$key] // []) + [$tag])
+                | if (.group_order | index($key)) == null then
+                    .group_order += [$key]
                   else
                     .
                   end
@@ -1616,6 +2322,61 @@ is_truthy_option() {
         return 1
         ;;
     esac
+}
+
+# Shared per-link member-outbound builder for the selector/urltest/selector_text/
+# urltest_text proxy types. Iterates a whitespace/newline-separated blob of proxy
+# links, creating one outbound per supported link via the facade and collecting
+# their tags. Unsupported schemes are skipped with a warn (the facade echoes the
+# config UNCHANGED and returns non-zero, so a single bad link never wipes the
+# config nor leaves a selector referencing a non-existent outbound). A trailing
+# CR (pasted CRLF blobs) is stripped per link and blank lines are skipped, so the
+# text-list types tolerate pasted multi-line input. POSIX ash, no Oniguruma.
+#
+# Mutates the GLOBAL $config in place (same echo-and-reassign discipline as the
+# subscription branch uses for its in-shell loop) and reports results via two
+# GLOBALS the caller reads after the call:
+#   _member_outbound_tags    comma-joined member outbound tags (empty if none)
+#   _member_default_outbound first member tag (selector default; empty if none)
+# Args: <section> <links_blob> <udp_over_tcp> <label>
+_build_proxy_member_outbounds() {
+    local section="$1"
+    local links_blob="$2"
+    local udp_over_tcp="$3"
+    local label="$4"
+    local link i outbound_tag _new_config cr
+
+    _member_outbound_tags=""
+    _member_default_outbound=""
+    cr="$(printf '\r')"
+
+    i=1
+    for link in $links_blob; do
+        # Tolerate pasted CRLF blobs: strip a trailing CR and skip blank lines.
+        link="${link%"$cr"}"
+        [ -n "$link" ] || continue
+
+        # The facade returns non-zero (config echoed UNCHANGED) for an
+        # unsupported scheme. Only add the member tag when the outbound was
+        # actually created, so the selector/urltest never references a
+        # non-existent outbound; a single bad link is skipped and the remaining
+        # links still build. Reassign $config only on a non-empty result so a
+        # skip never wipes the config.
+        if _new_config="$(sing_box_cf_add_proxy_outbound "$config" "$section-$i" "$link" "$udp_over_tcp")" \
+            && [ -n "$_new_config" ]; then
+            config="$_new_config"
+            outbound_tag="$(get_outbound_tag_by_section "$section-$i")"
+            if [ -z "$_member_outbound_tags" ]; then
+                _member_outbound_tags="$outbound_tag"
+                _member_default_outbound="$outbound_tag"
+            else
+                _member_outbound_tags="$_member_outbound_tags,$outbound_tag"
+            fi
+        else
+            log "$label section '$section' link #$i uses an unsupported scheme; skipping it" "warn"
+        fi
+        i=$((i + 1))
+    done
 }
 
 configure_outbound_handler() {
@@ -1640,7 +2401,21 @@ configure_outbound_handler() {
                 log "Proxy string is not set. Aborted." "fatal"
                 exit 1
             fi
-            config=$(sing_box_cf_add_proxy_outbound "$config" "$section" "$proxy_string" "$udp_over_tcp")
+            # The facade returns non-zero (config echoed UNCHANGED) when the link
+            # uses an unsupported scheme. For a single-URL section that is the
+            # only node, so there is no outbound to fall back to: surface a clear
+            # error and mark the section unavailable (reject route rule) instead
+            # of exiting — the rest of the config still generates and the service
+            # still starts. Reassign $config only on a non-empty result so a
+            # skip (or a defensively-empty echo) never wipes the config.
+            local _new_config
+            if _new_config="$(sing_box_cf_add_proxy_outbound "$config" "$section" "$proxy_string" "$udp_over_tcp")" \
+                && [ -n "$_new_config" ]; then
+                config="$_new_config"
+            else
+                echolog "Proxy link for section '$section' uses an unsupported scheme and was skipped; this section has no usable outbound and its traffic will be rejected until a supported link is configured" "error"
+                mark_section_outbound_unavailable "$section"
+            fi
             ;;
         outbound)
             log "Detected proxy configuration type: outbound" "debug"
@@ -1650,7 +2425,7 @@ configure_outbound_handler() {
             ;;
         selector)
             log "Detected proxy configuration type: selector" "debug"
-            local selector_proxy_links udp_over_tcp i outbound_tags outbound_tag default_outbound
+            local selector_proxy_links udp_over_tcp selector_tag selector_outbounds
             config_get selector_proxy_links "$section" "selector_proxy_links"
             config_get udp_over_tcp "$section" "enable_udp_over_tcp"
 
@@ -1659,27 +2434,21 @@ configure_outbound_handler() {
                 exit 1
             fi
 
-            i=1
-            for link in $selector_proxy_links; do
-                config="$(sing_box_cf_add_proxy_outbound "$config" "$section-$i" "$link" "$udp_over_tcp")"
-                outbound_tag="$(get_outbound_tag_by_section "$section-$i")"
-                if [ -z "$outbound_tags" ]; then
-                    outbound_tags="$outbound_tag"
-                    default_outbound="$outbound_tag"
-                else
-                    outbound_tags="$outbound_tags,$outbound_tag"
-                fi
-                i=$((i + 1))
-            done
+            _build_proxy_member_outbounds "$section" "$selector_proxy_links" "$udp_over_tcp" "Selector"
 
-            selector_tag="$(get_outbound_tag_by_section "$section")"
-            selector_outbounds="$(comma_string_to_json_array "$outbound_tags")"
-            config="$(sing_box_cm_add_selector_outbound "$config" "$selector_tag" "$selector_outbounds" \
-                "$default_outbound" "true")"
+            if [ -z "$_member_outbound_tags" ]; then
+                echolog "Selector section '$section' has no usable links (all unsupported); its traffic will be rejected until a supported link is configured" "error"
+                mark_section_outbound_unavailable "$section"
+            else
+                selector_tag="$(get_outbound_tag_by_section "$section")"
+                selector_outbounds="$(comma_string_to_json_array "$_member_outbound_tags")"
+                config="$(sing_box_cm_add_selector_outbound "$config" "$selector_tag" "$selector_outbounds" \
+                    "$_member_default_outbound" "true")"
+            fi
             ;;
         urltest)
             log "Detected proxy configuration type: urltest" "debug"
-            local urltest_proxy_links udp_over_tcp i urltest_tag selector_tag outbound_tag outbound_tags \
+            local urltest_proxy_links udp_over_tcp urltest_tag selector_tag \
                 urltest_outbounds selector_outbounds urltest_check_interval urltest_tolerance urltest_testing_url
             config_get urltest_proxy_links "$section" "urltest_proxy_links"
             config_get udp_over_tcp "$section" "enable_udp_over_tcp"
@@ -1692,52 +2461,136 @@ configure_outbound_handler() {
                 exit 1
             fi
 
-            i=1
-            for link in $urltest_proxy_links; do
-                config="$(sing_box_cf_add_proxy_outbound "$config" "$section-$i" "$link" "$udp_over_tcp")"
-                outbound_tag="$(get_outbound_tag_by_section "$section-$i")"
-                if [ -z "$outbound_tags" ]; then
-                    outbound_tags="$outbound_tag"
-                else
-                    outbound_tags="$outbound_tags,$outbound_tag"
-                fi
-                i=$((i + 1))
-            done
+            _build_proxy_member_outbounds "$section" "$urltest_proxy_links" "$udp_over_tcp" "URLTest"
 
-            urltest_tag="$(get_outbound_tag_by_section "$section-urltest")"
-            selector_tag="$(get_outbound_tag_by_section "$section")"
-            urltest_outbounds="$(comma_string_to_json_array "$outbound_tags")"
-            selector_outbounds="$(comma_string_to_json_array "$outbound_tags,$urltest_tag")"
-            config="$(sing_box_cm_add_urltest_outbound "$config" "$urltest_tag" "$urltest_outbounds" \
-                "$urltest_testing_url" "$urltest_check_interval" "$urltest_tolerance")"
-            config="$(sing_box_cm_add_selector_outbound "$config" "$selector_tag" "$selector_outbounds" "$urltest_tag" "true")"
+            if [ -z "$_member_outbound_tags" ]; then
+                echolog "URLTest section '$section' has no usable links (all unsupported); its traffic will be rejected until a supported link is configured" "error"
+                mark_section_outbound_unavailable "$section"
+            else
+                urltest_tag="$(get_outbound_tag_by_section "$section-urltest")"
+                selector_tag="$(get_outbound_tag_by_section "$section")"
+                urltest_outbounds="$(comma_string_to_json_array "$_member_outbound_tags")"
+                selector_outbounds="$(comma_string_to_json_array "$_member_outbound_tags,$urltest_tag")"
+                config="$(sing_box_cm_add_urltest_outbound "$config" "$urltest_tag" "$urltest_outbounds" \
+                    "$urltest_testing_url" "$urltest_check_interval" "$urltest_tolerance")"
+                config="$(sing_box_cm_add_selector_outbound "$config" "$selector_tag" "$selector_outbounds" "$urltest_tag" "true")"
+            fi
             ;;
-        subscription)
-            log "Detected proxy configuration type: subscription" "debug"
-            local subscription_url subscription_json_path urltest_tag selector_tag \
-                urltest_outbounds selector_outbounds urltest_check_interval urltest_tolerance \
-                urltest_testing_url subscription_group_by_countries subscription_group_by_countries_raw \
-                subscription_outbound_tags_json service_proxy_address subscription_ready \
-                subscription_filter_include_keywords_json subscription_filter_exclude_keywords_json \
-                subscription_keyword_filter_active
+        selector_text)
+            log "Detected proxy configuration type: selector_text" "debug"
+            local selector_text_links udp_over_tcp selector_tag selector_outbounds
+            config_get selector_text_links "$section" "selector_proxy_links_text"
+            config_get udp_over_tcp "$section" "enable_udp_over_tcp"
 
-            config_get subscription_url "$section" "subscription_url"
+            if [ -z "$selector_text_links" ]; then
+                log "URLTest proxy links is not set. Aborted." "fatal"
+                exit 1
+            fi
+
+            _build_proxy_member_outbounds "$section" "$selector_text_links" "$udp_over_tcp" "Selector"
+
+            if [ -z "$_member_outbound_tags" ]; then
+                echolog "Selector section '$section' has no usable links (all unsupported); its traffic will be rejected until a supported link is configured" "error"
+                mark_section_outbound_unavailable "$section"
+            else
+                selector_tag="$(get_outbound_tag_by_section "$section")"
+                selector_outbounds="$(comma_string_to_json_array "$_member_outbound_tags")"
+                config="$(sing_box_cm_add_selector_outbound "$config" "$selector_tag" "$selector_outbounds" \
+                    "$_member_default_outbound" "true")"
+            fi
+            ;;
+        urltest_text)
+            log "Detected proxy configuration type: urltest_text" "debug"
+            local urltest_text_links udp_over_tcp urltest_tag selector_tag \
+                urltest_outbounds selector_outbounds urltest_check_interval urltest_tolerance urltest_testing_url
+            config_get urltest_text_links "$section" "urltest_proxy_links_text"
+            config_get udp_over_tcp "$section" "enable_udp_over_tcp"
             config_get urltest_check_interval "$section" "urltest_check_interval" "3m"
             config_get urltest_tolerance "$section" "urltest_tolerance" 50
             config_get urltest_testing_url "$section" "urltest_testing_url" "https://www.gstatic.com/generate_204"
-            config_get subscription_group_by_countries_raw "$section" "subscription_group_by_countries" ""
-            if [ -z "$subscription_group_by_countries_raw" ]; then
-                # Backward-compatible alias in case custom builds used another key
-                config_get subscription_group_by_countries_raw "$section" "group_by_countries" ""
+
+            if [ -z "$urltest_text_links" ]; then
+                log "URLTest proxy links is not set. Aborted." "fatal"
+                exit 1
             fi
 
-            if is_truthy_option "$subscription_group_by_countries_raw"; then
-                subscription_group_by_countries=1
+            _build_proxy_member_outbounds "$section" "$urltest_text_links" "$udp_over_tcp" "URLTest"
+
+            if [ -z "$_member_outbound_tags" ]; then
+                echolog "URLTest section '$section' has no usable links (all unsupported); its traffic will be rejected until a supported link is configured" "error"
+                mark_section_outbound_unavailable "$section"
             else
-                subscription_group_by_countries=0
+                urltest_tag="$(get_outbound_tag_by_section "$section-urltest")"
+                selector_tag="$(get_outbound_tag_by_section "$section")"
+                urltest_outbounds="$(comma_string_to_json_array "$_member_outbound_tags")"
+                selector_outbounds="$(comma_string_to_json_array "$_member_outbound_tags,$urltest_tag")"
+                config="$(sing_box_cm_add_urltest_outbound "$config" "$urltest_tag" "$urltest_outbounds" \
+                    "$urltest_testing_url" "$urltest_check_interval" "$urltest_tolerance")"
+                config="$(sing_box_cm_add_selector_outbound "$config" "$selector_tag" "$selector_outbounds" "$urltest_tag" "true")"
+            fi
+            ;;
+        subscription)
+            log "Detected proxy configuration type: subscription" "debug"
+            local subscription_urls_tmp subscription_url subscription_url_count urltest_tag selector_tag \
+                urltest_outbounds selector_outbounds urltest_check_interval urltest_tolerance \
+                urltest_testing_url group_mode group_mode_raw prefix_len prefix_len_raw legacy_group_raw \
+                subscription_outbound_tags_json service_proxy_address subscription_ready \
+                subscription_filter_include_keywords_json subscription_filter_exclude_keywords_json \
+                subscription_keyword_filter_active urlhash subscription_json_path subscription_url_cache_path \
+                cached_subscription_url should_download had_usable_cache merged_json_path merged_node_count \
+                usable_feed_count feed_node_count merged_tmp
+
+            config_get urltest_check_interval "$section" "urltest_check_interval" "3m"
+            config_get urltest_tolerance "$section" "urltest_tolerance" 50
+            config_get urltest_testing_url "$section" "urltest_testing_url" "https://www.gstatic.com/generate_204"
+            # Grouping mode (task-044): off | country | prefix. The new
+            # subscription_group_mode option OUTRANKS the legacy boolean. When
+            # the new option is absent we fall back to the legacy boolean
+            # subscription_group_by_countries (and its older alias
+            # group_by_countries): truthy => country, else off.
+            config_get group_mode_raw "$section" "subscription_group_mode" ""
+            config_get prefix_len_raw "$section" "subscription_group_prefix_len" "$SUBSCRIPTION_GROUP_DEFAULT_PREFIX_LEN"
+
+            if [ -z "$group_mode_raw" ]; then
+                config_get legacy_group_raw "$section" "subscription_group_by_countries" ""
+                if [ -z "$legacy_group_raw" ]; then
+                    config_get legacy_group_raw "$section" "group_by_countries" ""
+                fi
+                if is_truthy_option "$legacy_group_raw"; then
+                    group_mode="country"
+                else
+                    group_mode="off"
+                fi
+            else
+                case "$group_mode_raw" in
+                off | country | prefix)
+                    group_mode="$group_mode_raw"
+                    ;;
+                *)
+                    group_mode="off"
+                    ;;
+                esac
             fi
 
-            log "Subscription country grouping for section '$section': raw='${subscription_group_by_countries_raw:-<empty>}', enabled=$subscription_group_by_countries" "debug"
+            # Sanitize the prefix length: positive integer only, else default.
+            case "$prefix_len_raw" in
+            '' | *[!0-9]*)
+                prefix_len="$SUBSCRIPTION_GROUP_DEFAULT_PREFIX_LEN"
+                ;;
+            *)
+                if [ "$prefix_len_raw" -ge 1 ] 2>/dev/null; then
+                    prefix_len="$prefix_len_raw"
+                else
+                    prefix_len="$SUBSCRIPTION_GROUP_DEFAULT_PREFIX_LEN"
+                fi
+                ;;
+            esac
+
+            if [ "$group_mode" = "prefix" ]; then
+                log "Subscription grouping for section '$section': mode=$group_mode, prefix_len=$prefix_len" "debug"
+            else
+                log "Subscription grouping for section '$section': mode=$group_mode" "debug"
+            fi
 
             # Keyword whitelist/blacklist filtering of subscription nodes by
             # display name. Both are optional UCI lists of opaque match strings.
@@ -1749,62 +2602,138 @@ configure_outbound_handler() {
                 log "Subscription keyword filter enabled for section '$section': include=$subscription_filter_include_keywords_json, exclude=$subscription_filter_exclude_keywords_json" "debug"
             fi
 
-            if [ -z "$subscription_url" ]; then
+            mkdir -p "$TMP_SUBSCRIPTION_FOLDER"
+            ensure_subscription_cache_dir || true
+            migrate_subscription_cache_from_tmp
+            # Always hash per URL; reap any stale legacy bare-"${section}.<ext>".
+            reap_legacy_subscription_cache_files "$section"
+
+            subscription_urls_tmp="$(mktemp "${TMPDIR:-/tmp}/netshift-cfg-urls.XXXXXX")" || {
+                log "Failed to enumerate subscription URLs for section '$section'. Aborted." "fatal"
+                exit 1
+            }
+            get_subscription_urls_for_section "$section" > "$subscription_urls_tmp"
+            subscription_url_count=0
+            while IFS= read -r subscription_url || [ -n "$subscription_url" ]; do
+                [ -n "$subscription_url" ] && subscription_url_count=$((subscription_url_count + 1))
+            done < "$subscription_urls_tmp"
+
+            if [ "$subscription_url_count" -eq 0 ]; then
+                rm -f "$subscription_urls_tmp"
                 log "Subscription URL is not set. Aborted." "fatal"
                 exit 1
             fi
 
-            mkdir -p "$TMP_SUBSCRIPTION_FOLDER"
-            subscription_json_path="$(get_subscription_json_path "$section")"
-            local subscription_url_cache_path cached_subscription_url should_download had_usable_cache
-            subscription_url_cache_path="$(get_subscription_url_cache_path "$section")"
-            should_download=0
-            had_usable_cache=0
+            log "Section '$section' has $subscription_url_count subscription feed(s)" "debug"
 
-            if subscription_cache_is_usable "$subscription_json_path"; then
-                had_usable_cache=1
-            else
-                rm -f "$subscription_json_path"
-                should_download=1
-            fi
+            # ── Per-feed download (best-effort) ─────────────────────────────
+            # Each URL is downloaded/validated/normalized into its own per-URL
+            # cache. One dead/empty feed must NOT abort the others.
+            while IFS= read -r subscription_url || [ -n "$subscription_url" ]; do
+                [ -n "$subscription_url" ] || continue
+                urlhash="$(get_subscription_url_hash "$subscription_url")"
+                subscription_json_path="$(get_subscription_json_path "$section" "$urlhash")"
+                subscription_url_cache_path="$(get_subscription_url_cache_path "$section" "$urlhash")"
+                should_download=0
+                had_usable_cache=0
 
-            if [ -f "$subscription_url_cache_path" ]; then
-                cached_subscription_url="$(cat "$subscription_url_cache_path" 2>/dev/null)"
-            else
-                cached_subscription_url=""
-            fi
-
-            if [ "$cached_subscription_url" != "$subscription_url" ]; then
-                if [ -n "$cached_subscription_url" ]; then
-                    log "Subscription URL changed for section '$section'" "warn"
-                fi
-                if [ "$had_usable_cache" -eq 0 ]; then
-                    should_download=1
+                if subscription_cache_is_usable "$subscription_json_path"; then
+                    had_usable_cache=1
                 else
-                    log "Using cached subscription for section '$section' until a fresh download succeeds" "warn"
+                    rm -f "$subscription_json_path"
+                    should_download=1
                 fi
-            fi
 
-            if [ "$should_download" -eq 1 ]; then
-                log "Downloading subscription for section '$section'"
-                # Config generation runs before sing-box is started. Never use
-                # its local download proxy here; runtime refresh will use it.
-                service_proxy_address="$(get_subscription_download_proxy_address "$section" "bootstrap" 2>/dev/null || echo '')"
+                if [ -f "$subscription_url_cache_path" ]; then
+                    cached_subscription_url="$(cat "$subscription_url_cache_path" 2>/dev/null)"
+                else
+                    cached_subscription_url=""
+                fi
 
-                if ! wait_for_subscription_connectivity "$section" "$subscription_url" "$service_proxy_address" 1 0 5 ||
-                    ! download_subscription_into_cache \
-                        "$section" "$subscription_url" "$subscription_json_path" "$subscription_url_cache_path" "$service_proxy_address"; then
-                    if [ "$had_usable_cache" -eq 1 ]; then
-                        log "Failed to refresh subscription for section '$section', continuing with cached data" "warn"
+                if [ "$cached_subscription_url" != "$subscription_url" ]; then
+                    if [ "$had_usable_cache" -eq 0 ]; then
+                        should_download=1
                     else
-                        log "Failed to download subscription for section '$section'; using a temporary blocked outbound" "warn"
+                        log "Using cached subscription feed for section '$section' (url=$(redact_url_for_log "$subscription_url")) until a fresh download succeeds" "warn"
                     fi
                 fi
-            fi
+
+                if [ "$should_download" -eq 1 ]; then
+                    log "Downloading subscription feed for section '$section' (url=$(redact_url_for_log "$subscription_url"))"
+                    # Config generation runs before sing-box is started. Never
+                    # use its local download proxy here; runtime refresh will.
+                    service_proxy_address="$(get_subscription_download_proxy_address "$section" "bootstrap" 2>/dev/null || echo '')"
+
+                    if ! wait_for_subscription_connectivity "$section" "$subscription_url" "$service_proxy_address" 1 0 5 ||
+                        ! download_subscription_into_cache \
+                            "$section" "$subscription_url" "$subscription_json_path" "$subscription_url_cache_path" "$service_proxy_address" "$urlhash"; then
+                        if [ "$had_usable_cache" -eq 1 ]; then
+                            log "Failed to refresh subscription feed for section '$section' (url=$(redact_url_for_log "$subscription_url")), continuing with cached data" "warn"
+                        else
+                            log "Failed to download subscription feed for section '$section' (url=$(redact_url_for_log "$subscription_url"))" "warn"
+                        fi
+                    fi
+                fi
+            done < "$subscription_urls_tmp"
+
+            # ── Merge all usable per-URL caches into one JSON ───────────────
+            # Concatenate the proxy .outbounds[] of every usable feed into a
+            # single { "outbounds": [...] } temp file, then run the existing
+            # facade ONCE so its keyword filter + global tag-dedup (auto -2/-3
+            # for same-named nodes across feeds) + per-batch sing-box check
+            # bisection + the country-group/selector builder all operate over
+            # the MERGED union, exactly as for a single feed.
+            mkdir -p "$TMP_SUBSCRIPTION_MERGE_FOLDER"
+            merged_json_path="$(mktemp "$TMP_SUBSCRIPTION_MERGE_FOLDER/${section}.merged.XXXXXX")" || {
+                rm -f "$subscription_urls_tmp"
+                log "Failed to create merged subscription file for section '$section'. Aborted." "fatal"
+                exit 1
+            }
+            printf '%s' '{"outbounds":[]}' > "$merged_json_path"
+            usable_feed_count=0
+            while IFS= read -r subscription_url || [ -n "$subscription_url" ]; do
+                [ -n "$subscription_url" ] || continue
+                urlhash="$(get_subscription_url_hash "$subscription_url")"
+                subscription_json_path="$(get_subscription_json_path "$section" "$urlhash")"
+                subscription_cache_is_usable "$subscription_json_path" || {
+                    log "Subscription feed for section '$section' has no usable cache; skipping (url=$(redact_url_for_log "$subscription_url"))" "warn"
+                    continue
+                }
+
+                feed_node_count="$(jq -r '[.outbounds[]? | select(
+                    .type != "selector" and .type != "urltest" and
+                    .type != "direct" and .type != "dns" and .type != "block"
+                )] | length' "$subscription_json_path" 2>/dev/null)"
+                [ -n "$feed_node_count" ] || feed_node_count=0
+
+                # Append this feed's proxy outbounds onto the merged set. No
+                # Oniguruma: pure array concat with --slurpfile.
+                merged_tmp="${merged_json_path}.tmp.$$"
+                if jq -c --slurpfile feed "$subscription_json_path" '
+                    .outbounds += [ $feed[0].outbounds[]? | select(
+                        .type != "selector" and .type != "urltest" and
+                        .type != "direct" and .type != "dns" and .type != "block"
+                    ) ]
+                ' "$merged_json_path" > "$merged_tmp" 2>/dev/null && [ -s "$merged_tmp" ]; then
+                    mv "$merged_tmp" "$merged_json_path"
+                    usable_feed_count=$((usable_feed_count + 1))
+                    log "Subscription feed for section '$section' contributed $feed_node_count node(s) (url=$(redact_url_for_log "$subscription_url"))" "info"
+                else
+                    rm -f "$merged_tmp"
+                    log "Failed to merge subscription feed for section '$section' (url=$(redact_url_for_log "$subscription_url"))" "warn"
+                fi
+            done < "$subscription_urls_tmp"
+            rm -f "$subscription_urls_tmp"
+
+            merged_node_count="$(jq -r '.outbounds | length' "$merged_json_path" 2>/dev/null)"
+            [ -n "$merged_node_count" ] || merged_node_count=0
+            log "Subscription for section '$section': merged $merged_node_count node(s) from $usable_feed_count usable feed(s)" "info"
 
             subscription_ready=0
-            if subscription_cache_is_usable "$subscription_json_path"; then
-                if sing_box_cf_add_subscription_outbounds "$config" "$section" "$subscription_json_path" \
+            # A merged file with >=1 proxy outbound is a real subscription set.
+            if [ "$usable_feed_count" -gt 0 ] && [ "$merged_node_count" -gt 0 ]; then
+                chmod 600 "$merged_json_path" 2>/dev/null
+                if sing_box_cf_add_subscription_outbounds "$config" "$section" "$merged_json_path" \
                     "$subscription_filter_include_keywords_json" "$subscription_filter_exclude_keywords_json" > /dev/null; then
                     if [ -n "$SUBSCRIPTION_OUTBOUND_TAGS" ]; then
                         config="$SING_BOX_CF_LAST_CONFIG"
@@ -1812,6 +2741,7 @@ configure_outbound_handler() {
                     fi
                 fi
             fi
+            rm -f "$merged_json_path"
 
             if [ "$subscription_ready" -eq 0 ]; then
                 # When the keyword filter empties the set, the precise cause is
@@ -1827,39 +2757,82 @@ configure_outbound_handler() {
                     subscription_outbound_tags_json="$(comma_string_to_json_array "$SUBSCRIPTION_OUTBOUND_TAGS")"
                 fi
 
-                if [ "$subscription_group_by_countries" -eq 1 ]; then
-                    local grouping_json country_flag country_group_outbounds country_group_tag \
-                        selector_outbounds_json selector_default ungrouped_outbounds_json grouped_count ungrouped_count
+                if [ "$group_mode" != "off" ]; then
+                    local grouping_json group_key group_outbounds group_tag group_keys_tmp \
+                        selector_outbounds_json selector_default ungrouped_outbounds_json grouped_count ungrouped_count \
+                        group_tags_json group_tags_count fastest_tag
 
-                    grouping_json="$(sing_box_build_subscription_country_groups "$subscription_outbound_tags_json")"
+                    grouping_json="$(sing_box_build_subscription_groups "$subscription_outbound_tags_json" "$group_mode" "$prefix_len")"
                     if [ -z "$grouping_json" ]; then
                         log "Failed to build grouped subscription outbounds for section '$section'. Aborted." "fatal"
                         exit 1
                     fi
 
-                    grouped_count="$(echo "$grouping_json" | jq -r '.country_order | length' 2>/dev/null)"
+                    grouped_count="$(echo "$grouping_json" | jq -r '.group_order | length' 2>/dev/null)"
                     ungrouped_count="$(echo "$grouping_json" | jq -r '.ungrouped | length' 2>/dev/null)"
-                    log "Country grouping prepared for section '$section': groups=$grouped_count, ungrouped=$ungrouped_count" "debug"
+                    log "Subscription grouping prepared for section '$section' (mode=$group_mode): groups=$grouped_count, ungrouped=$ungrouped_count" "debug"
 
                     selector_outbounds_json="[]"
 
-                    for country_flag in $(echo "$grouping_json" | jq -r '.country_order[]' 2>/dev/null); do
-                        country_group_outbounds="$(echo "$grouping_json" | jq -c --arg country_flag "$country_flag" '.country_groups[$country_flag] // []' 2>/dev/null)"
-                        if [ -z "$country_group_outbounds" ] || [ "$country_group_outbounds" = "[]" ]; then
+                    # Iterate group keys WITHOUT word-splitting: prefix-mode keys
+                    # can legitimately contain spaces (e.g. a "letter+space"
+                    # prefix), which a `for k in $(...)` loop would shatter. Use
+                    # the same mktemp + `while read < file` pattern as the URL
+                    # loop above so the body runs in the CURRENT shell and its
+                    # mutations to $config / $selector_outbounds_json survive
+                    # (a `... | while read` body would run in a subshell and lose
+                    # them). One key per line; group keys never contain newlines.
+                    group_keys_tmp="$(mktemp "${TMPDIR:-/tmp}/netshift-cfg-groupkeys.XXXXXX")" || {
+                        log "Failed to enumerate subscription group keys for section '$section'. Aborted." "fatal"
+                        exit 1
+                    }
+                    echo "$grouping_json" | jq -r '.group_order[]' 2>/dev/null > "$group_keys_tmp"
+                    while IFS= read -r group_key || [ -n "$group_key" ]; do
+                        group_outbounds="$(echo "$grouping_json" | jq -c --arg group_key "$group_key" '.groups[$group_key] // []' 2>/dev/null)"
+                        if [ -z "$group_outbounds" ] || [ "$group_outbounds" = "[]" ]; then
                             continue
                         fi
 
-                        country_group_tag="$(sing_box_get_unique_outbound_tag "$config" "$country_flag Fastest")"
-                        config="$(sing_box_cm_add_urltest_outbound "$config" "$country_group_tag" "$country_group_outbounds" \
+                        group_tag="$(sing_box_get_unique_outbound_tag "$config" "$group_key Fastest")"
+                        config="$(sing_box_cm_add_urltest_outbound "$config" "$group_tag" "$group_outbounds" \
                             "$urltest_testing_url" "$urltest_check_interval" "$urltest_tolerance")"
 
                         selector_outbounds_json=$(
-                            printf '%s' "$selector_outbounds_json" | jq -ac --arg tag "$country_group_tag" '. + [$tag]' 2>/dev/null
+                            printf '%s' "$selector_outbounds_json" | jq -ac --arg tag "$group_tag" '. + [$tag]' 2>/dev/null
                         )
-                    done
+                    done < "$group_keys_tmp"
+                    rm -f "$group_keys_tmp"
 
                     if [ -z "$selector_outbounds_json" ]; then
                         selector_outbounds_json="[]"
+                    fi
+
+                    # At this point $selector_outbounds_json holds ONLY the
+                    # per-group urltest tags ("<key> Fastest"), before ungrouped
+                    # nodes are appended below. Capture that group-only list so
+                    # we can build a top-level "Fastest" urltest OVER the groups
+                    # (a urltest of urltests) and default the selector to it.
+                    group_tags_json="$selector_outbounds_json"
+                    group_tags_count="$(printf '%s' "$group_tags_json" | jq -r 'length' 2>/dev/null)"
+                    [ -n "$group_tags_count" ] || group_tags_count=0
+
+                    fastest_tag=""
+                    # Only nest when there are >= 2 groups. With exactly 1 group
+                    # the lone group urltest IS already the fastest (a urltest
+                    # over a single member is redundant), so we skip the extra
+                    # layer and fall back to the lone group as the default. With
+                    # 0 groups (everything ungrouped) there is nothing to nest;
+                    # never emit an empty-member urltest.
+                    if [ "$group_tags_count" -ge 2 ]; then
+                        fastest_tag="$(sing_box_get_unique_outbound_tag "$config" "$SB_SUBSCRIPTION_FASTEST_GROUP_TAG")"
+                        # Reuse the section's urltest probe knobs (testing URL,
+                        # check interval, tolerance) so the extra probe layer's
+                        # cadence stays user-tunable; do NOT hardcode an
+                        # aggressive interval. This adds one more probe layer
+                        # (Fastest tests each group; each group tests its nodes).
+                        config="$(sing_box_cm_add_urltest_outbound "$config" "$fastest_tag" "$group_tags_json" \
+                            "$urltest_testing_url" "$urltest_check_interval" "$urltest_tolerance")"
+                        selector_outbounds_json="$(jq -acn --arg t "$fastest_tag" --argjson rest "$selector_outbounds_json" '[$t] + $rest')"
                     fi
 
                     ungrouped_outbounds_json="$(echo "$grouping_json" | jq -c '.ungrouped // []' 2>/dev/null)"
@@ -1875,7 +2848,16 @@ configure_outbound_handler() {
                         exit 1
                     fi
 
-                    selector_default="$(echo "$selector_outbounds_json" | jq -r '.[0] // ""' 2>/dev/null)"
+                    if [ -n "$fastest_tag" ]; then
+                        # >= 2 groups: the cross-group "Fastest" urltest is the
+                        # default (it was prepended above, so it is also .[0]).
+                        selector_default="$fastest_tag"
+                    else
+                        # 0 or 1 groups: keep the existing "first element"
+                        # default (the lone group urltest, or the first
+                        # ungrouped node).
+                        selector_default="$(echo "$selector_outbounds_json" | jq -r '.[0] // ""' 2>/dev/null)"
+                    fi
                     if [ -z "$selector_default" ] || [ "$selector_default" = "null" ]; then
                         log "Unable to determine default selector outbound for section '$section'. Aborted." "fatal"
                         exit 1
@@ -2020,13 +3002,32 @@ sing_box_configure_route() {
         fi
     fi
 
+    # Stamp every sing-box-originated egress connection with NFT_OUTBOUND_MARK
+    # (route.default_mark). The nft mangle prerouting chain marks ALL LAN traffic
+    # with NFT_FAKEIP_MARK and `ip rule ... fwmark NFT_FAKEIP_MARK lookup
+    # netshift` redirects it to the tproxy path. Without an egress mark,
+    # sing-box's own outbound sockets (especially direct-out, which carries ALL
+    # unmatched traffic) inherit the tproxy SO_MARK (NFT_FAKEIP_MARK), so the
+    # `ip rule` re-captures them into `local default dev lo` -> they loop back
+    # into tproxy and never reach the internet (the 0.8.6 "direct-out i/o
+    # timeout" regression). Marking egress with NFT_OUTBOUND_MARK makes the
+    # `ip rule` (which matches only NFT_FAKEIP_MARK) skip these packets so they
+    # egress via the main table, and the existing `mangle_output meta mark
+    # NFT_OUTBOUND_MARK return` rule keeps them out of the proxy chain. This is
+    # fail-open: unmatched/unproxied traffic always reaches the internet even
+    # when a section's outbound is unreachable. sing-box default_mark is an
+    # integer; convert the hex constant to decimal via ash arithmetic.
+    local default_egress_mark
+    default_egress_mark=$(( NFT_OUTBOUND_MARK ))
+
     local output_network_interface
     config_get output_network_interface "settings" "output_network_interface"
     if [ -z "$output_network_interface" ]; then
-        config=$(sing_box_cm_configure_route "$config" "$route_final" true "$SB_DNS_SERVER_TAG")
+        config=$(sing_box_cm_configure_route "$config" "$route_final" true "$SB_DNS_SERVER_TAG" "" \
+            "$default_egress_mark")
     else
         config=$(sing_box_cm_configure_route "$config" "$route_final" false "$SB_DNS_SERVER_TAG" \
-            "$output_network_interface")
+            "$output_network_interface" "$default_egress_mark")
     fi
 
     local sniff_inbounds sniff_inbounds_csv
@@ -2377,7 +3378,9 @@ configure_user_subnet_list() {
     items="$(parse_domain_or_subnet_string_to_commas_string "$items" "subnets")"
     json_array="$(comma_string_to_json_array "$items")"
     patch_source_ruleset_rules "$ruleset_filepath" "ip_cidr" "$json_array"
-    nft_add_set_elements "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME" "$items"
+    # task-034: feed the same subnets into the nft union set so the prerouting
+    # mangle chain marks them into sing-box (centralized alongside the rule_set).
+    populate_netshift_subnets_from_string "$items"
 }
 
 configure_local_domain_lists() {
@@ -2420,7 +3423,8 @@ import_local_subnets_list_handler() {
     fi
 
     import_plain_subnet_list_to_local_source_ruleset_chunked "$local_subnet_list_filepath" "$ruleset_filepath"
-    nft_add_set_elements_from_file_chunked "$local_subnet_list_filepath" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
+    # task-034: also feed the nft union set (centralized alongside the rule_set).
+    populate_netshift_subnets_from_file "$local_subnet_list_filepath"
 }
 
 configure_remote_domain_or_subnet_list_handler() {
@@ -2617,33 +3621,36 @@ import_community_subnet_lists() {
 import_community_service_subnet_list_handler() {
     local service="$1"
 
+    # Routing for every community service is carried by a sing-box remote rule
+    # set (see configure_community_list_handler -> $SRS_MAIN_URL/<service>.srs).
+    # task-034: the SUBNET-based community services (twitter/meta/telegram/
+    # cloudflare/hetzner/ovh/digitalocean/cloudfront/roblox/discord) route by IP,
+    # not by domain, so their destination IPs would NOT be covered by the FakeIP
+    # mark rule. We therefore (re)populate the nft union set NFT_COMMON_SET_NAME
+    # so the prerouting mangle chain marks them into sing-box. Domain-based
+    # services (youtube, russia_inside, ...) are carried by the FakeIP range
+    # mark rule and need no nft set population here.
+    #
+    # discord is special: it ALSO needs its own dport-restricted mangle rule
+    # (@netshift_discord_subnets udp dport {...}) that a sing-box route rule
+    # cannot express, so its subnets populate BOTH the discord set (for the
+    # dport rule) and the general union set (so TCP/other-UDP discord traffic
+    # is marked too, without the dport restriction).
+    local url is_discord
+    is_discord=0
     case "$service" in
-    "twitter")
-        URL=$SUBNETS_TWITTER
-        ;;
-    "meta")
-        URL=$SUBNETS_META
-        ;;
-    "telegram")
-        URL=$SUBNETS_TELERAM
-        ;;
-    "cloudflare")
-        URL=$SUBNETS_CLOUDFLARE
-        ;;
-    "hetzner")
-        URL=$SUBNETS_HETZNER
-        ;;
-    "ovh")
-        URL=$SUBNETS_OVH
-        ;;
-    "digitalocean")
-        URL=$SUBNETS_DIGITALOCEAN
-        ;;
-    "cloudfront")
-        URL=$SUBNETS_CLOUDFRONT
-        ;;
+    "twitter") url=$SUBNETS_TWITTER ;;
+    "meta") url=$SUBNETS_META ;;
+    "telegram") url=$SUBNETS_TELERAM ;;
+    "cloudflare") url=$SUBNETS_CLOUDFLARE ;;
+    "hetzner") url=$SUBNETS_HETZNER ;;
+    "ovh") url=$SUBNETS_OVH ;;
+    "digitalocean") url=$SUBNETS_DIGITALOCEAN ;;
+    "cloudfront") url=$SUBNETS_CLOUDFRONT ;;
+    "roblox") url=$SUBNETS_ROBLOX ;;
     "discord")
-        URL=$SUBNETS_DISCORD
+        url=$SUBNETS_DISCORD
+        is_discord=1
         if ! nft list set inet "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME" > /dev/null 2>&1; then
             nft_create_ipv4_set "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME"
         fi
@@ -2653,9 +3660,6 @@ import_community_service_subnet_list_handler() {
                 "@$NFT_DISCORD_SET_NAME" udp dport '{ 19000-20000, 50000-65535 }' meta mark set "$NFT_FAKEIP_MARK" counter
         fi
         ;;
-    "roblox")
-        URL=$SUBNETS_ROBLOX
-        ;;
     *) return 0 ;;
     esac
 
@@ -2663,18 +3667,18 @@ import_community_service_subnet_list_handler() {
     tmpfile=$(mktemp)
     http_proxy_address="$(get_service_proxy_address)"
 
-    download_to_file "$URL" "$tmpfile" "$http_proxy_address"
+    download_to_file "$url" "$tmpfile" "$http_proxy_address"
 
     if [ $? -ne 0 ] || [ ! -s "$tmpfile" ]; then
         log "Download $service list failed" "error"
         return 1
     fi
 
-    if [ "$service" = "discord" ]; then
+    if [ "$is_discord" -eq 1 ]; then
         nft_add_set_elements_from_file_chunked "$tmpfile" "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME"
-    else
-        nft_add_set_elements_from_file_chunked "$tmpfile" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
     fi
+    # task-034: feed the union set (centralized with the sing-box .srs rule_set).
+    populate_netshift_subnets_from_file "$tmpfile"
 
     rm -f "$tmpfile"
 }
@@ -2753,11 +3757,18 @@ import_subnets_from_remote_subnet_list_handler() {
     log "Detected file extension: '$file_extension'" "debug"
     case "$file_extension" in
     json)
-        log "Import subnets from a remote JSON list" "info"
+        # JSON/SRS remote subnet lists are ROUTED via a sing-box remote rule set
+        # (configure_remote_domain_or_subnet_list_handler -> sing_box_cm_add_remote_ruleset),
+        # and sing-box manages their updates automatically. But task-034 needs
+        # their destination IPs in the nft union set so the prerouting mangle
+        # chain marks them into sing-box (an .srs/.json ruleset matches IPs that
+        # are NOT in the FakeIP range). So we extract the ip_cidr entries and
+        # feed the union set here.
+        log "Import subnets from a remote JSON list (for nft selective marking)" "info"
         import_subnets_from_remote_json_file "$url"
         ;;
     srs)
-        log "Import subnets from a remote SRS list" "info"
+        log "Import subnets from a remote SRS list (for nft selective marking)" "info"
         import_subnets_from_remote_srs_file "$url"
         ;;
     *)
@@ -2767,6 +3778,9 @@ import_subnets_from_remote_subnet_list_handler() {
     esac
 }
 
+# task-034: download a remote JSON sing-box ruleset, extract its ip_cidr entries
+# and feed the nft union set. Routing is still done by the sing-box remote rule
+# set; this only adds the nft-layer ingress gating. Fail-open on download error.
 import_subnets_from_remote_json_file() {
     local url="$1"
     local json_tmpfile subnets_tmpfile http_proxy_address
@@ -2778,17 +3792,19 @@ import_subnets_from_remote_json_file() {
 
     if [ $? -ne 0 ] || [ ! -s "$json_tmpfile" ]; then
         log "Download $url list failed" "error"
+        rm -f "$json_tmpfile" "$subnets_tmpfile"
         return 1
     fi
 
     extract_ip_cidr_from_json_ruleset_to_file "$json_tmpfile" "$subnets_tmpfile"
-    nft_add_set_elements_from_file_chunked "$subnets_tmpfile" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
+    populate_netshift_subnets_from_file "$subnets_tmpfile"
     rm -f "$json_tmpfile" "$subnets_tmpfile"
 }
 
+# task-034: download a remote binary (.srs) ruleset, decompile to JSON, extract
+# its ip_cidr entries and feed the nft union set. Fail-open on download/decompile.
 import_subnets_from_remote_srs_file() {
     local url="$1"
-
     local binary_tmpfile json_tmpfile subnets_tmpfile http_proxy_address
     binary_tmpfile="$(mktemp)"
     json_tmpfile="$(mktemp)"
@@ -2799,16 +3815,18 @@ import_subnets_from_remote_srs_file() {
 
     if [ $? -ne 0 ] || [ ! -s "$binary_tmpfile" ]; then
         log "Download $url list failed" "error"
+        rm -f "$binary_tmpfile" "$json_tmpfile" "$subnets_tmpfile"
         return 1
     fi
 
     if ! decompile_binary_ruleset "$binary_tmpfile" "$json_tmpfile"; then
         log "Failed to decompile binary rule set file" "error"
+        rm -f "$binary_tmpfile" "$json_tmpfile" "$subnets_tmpfile"
         return 1
     fi
 
     extract_ip_cidr_from_json_ruleset_to_file "$json_tmpfile" "$subnets_tmpfile"
-    nft_add_set_elements_from_file_chunked "$subnets_tmpfile" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
+    populate_netshift_subnets_from_file "$subnets_tmpfile"
     rm -f "$binary_tmpfile" "$json_tmpfile" "$subnets_tmpfile"
 }
 
@@ -2832,7 +3850,8 @@ import_subnets_from_remote_plain_file() {
     ruleset_tag=$(get_ruleset_tag "$section" "remote" "subnets")
     ruleset_filepath="$TMP_RULESET_FOLDER/$ruleset_tag.json"
     import_plain_subnet_list_to_local_source_ruleset_chunked "$tmpfile" "$ruleset_filepath"
-    nft_add_set_elements_from_file_chunked "$tmpfile" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
+    # task-034: also feed the nft union set (centralized with the rule_set).
+    populate_netshift_subnets_from_file "$tmpfile"
 
     rm -f "$tmpfile"
 }
@@ -3241,7 +4260,7 @@ check_nft() {
 
     if [ "$found_hetzner" -eq 1 ] || [ "$found_ovh" -eq 1 ]; then
 
-        local sets="netshift_subnets netshift_domains interfaces netshift_discord_subnets localv4"
+        local sets="netshift_domains interfaces netshift_discord_subnets localv4"
 
         nolog "Sets statistics:"
         for set_name in $sets; do
@@ -3379,8 +4398,13 @@ get_system_info() {
 
     netshift_version="$NETSHIFT_VERSION"
 
-    netshift_latest_version=$(curl -m 3 -s https://api.github.com/repos/yandexru45/netshift/releases/latest | grep '"tag_name":' | cut -d'"' -f4)
-    [ -z "$netshift_latest_version" ] && netshift_latest_version="unknown"
+    # On-demand only: get_system_info must do NO network I/O (the UI calls it on
+    # every Manager/Diagnostic mount). The real latest is fetched only by the
+    # on-demand "component_action netshift check_update" action (and by
+    # global_check, the one-shot SSH diagnostic). The key is kept for backward
+    # compatibility (frontend type + global_check jq read it); "unknown" is the
+    # zero-network sentinel the UI already understands.
+    netshift_latest_version="unknown"
 
     if [ -f /www/luci-static/resources/view/netshift/main.js ]; then
         luci_app_version=$(grep 'var NETSHIFT_LUCI_APP_VERSION' /www/luci-static/resources/view/netshift/main.js | cut -d'"' -f2)
@@ -3572,7 +4596,6 @@ check_nft_rules() {
     local rules_mangle_exist=0
     local rules_mangle_counters=0
     local rules_mangle_output_exist=0
-    local rules_mangle_output_counters=0
     local rules_proxy_exist=0
     local rules_proxy_counters=0
     local rules_other_mark_exist=0
@@ -3610,10 +4633,6 @@ check_nft_rules() {
             mangle_output_output=$(nft list chain inet "$NFT_TABLE_NAME" mangle_output)
             if echo "$mangle_output_output" | grep -q "counter"; then
                 rules_mangle_output_exist=1
-
-                if echo "$mangle_output_output" | grep "counter" | grep -qv "packets 0 bytes 0"; then
-                    rules_mangle_output_counters=1
-                fi
             fi
         fi
 
@@ -3648,7 +4667,7 @@ check_nft_rules() {
         rm -f /tmp/netshift_mark_check.$$
     fi
 
-    echo "{\"table_exist\":$table_exist,\"rules_mangle_exist\":$rules_mangle_exist,\"rules_mangle_counters\":$rules_mangle_counters,\"rules_mangle_output_exist\":$rules_mangle_output_exist,\"rules_mangle_output_counters\":$rules_mangle_output_counters,\"rules_proxy_exist\":$rules_proxy_exist,\"rules_proxy_counters\":$rules_proxy_counters,\"rules_other_mark_exist\":$rules_other_mark_exist}" | jq .
+    echo "{\"table_exist\":$table_exist,\"rules_mangle_exist\":$rules_mangle_exist,\"rules_mangle_counters\":$rules_mangle_counters,\"rules_mangle_output_exist\":$rules_mangle_output_exist,\"rules_proxy_exist\":$rules_proxy_exist,\"rules_proxy_counters\":$rules_proxy_counters,\"rules_other_mark_exist\":$rules_other_mark_exist}" | jq .
 }
 
 check_sing_box() {
@@ -3897,7 +4916,11 @@ global_check() {
     local netshift_version netshift_latest_version luci_app_version sing_box_version openwrt_version device_model sing_box_extended
 
         netshift_version=$(echo "$system_info_json" | jq -r '.netshift_version // "unknown"')
-        netshift_latest_version=$(echo "$system_info_json" | jq -r '.netshift_latest_version // "unknown"')
+        # get_system_info no longer fetches the latest (it does no network I/O).
+        # global_check is a one-shot SSH diagnostic, so fetch the real latest here
+        # itself (shared helper); fall back to "unknown" if GitHub is unreachable.
+        netshift_latest_version=$(updates_netshift_latest_tag)
+        [ -z "$netshift_latest_version" ] && netshift_latest_version="unknown"
         luci_app_version=$(echo "$system_info_json" | jq -r '.luci_app_version // "unknown"')
         sing_box_version=$(echo "$system_info_json" | jq -r '.sing_box_version // "unknown"')
         openwrt_version=$(echo "$system_info_json" | jq -r '.openwrt_version // "unknown"')
@@ -4040,13 +5063,12 @@ global_check() {
     nft_check_json=$(check_nft_rules)
 
     if [ -n "$nft_check_json" ]; then
-        local table_exist rules_mangle_exist rules_mangle_counters rules_mangle_output_exist rules_mangle_output_counters rules_proxy_exist rules_proxy_counters rules_other_mark_exist
+        local table_exist rules_mangle_exist rules_mangle_counters rules_mangle_output_exist rules_proxy_exist rules_proxy_counters rules_other_mark_exist
 
         table_exist=$(echo "$nft_check_json" | jq -r '.table_exist // 0')
         rules_mangle_exist=$(echo "$nft_check_json" | jq -r '.rules_mangle_exist // 0')
         rules_mangle_counters=$(echo "$nft_check_json" | jq -r '.rules_mangle_counters // 0')
         rules_mangle_output_exist=$(echo "$nft_check_json" | jq -r '.rules_mangle_output_exist // 0')
-        rules_mangle_output_counters=$(echo "$nft_check_json" | jq -r '.rules_mangle_output_counters // 0')
         rules_proxy_exist=$(echo "$nft_check_json" | jq -r '.rules_proxy_exist // 0')
         rules_proxy_counters=$(echo "$nft_check_json" | jq -r '.rules_proxy_counters // 0')
         rules_other_mark_exist=$(echo "$nft_check_json" | jq -r '.rules_other_mark_exist // 0')
@@ -4073,12 +5095,6 @@ global_check() {
             print_global "✅ Rules mangle output exist"
         else
             print_global "❌ Rules mangle output exist"
-        fi
-
-        if [ "$rules_mangle_output_counters" -eq 1 ]; then
-            print_global "✅ Rules mangle output counters"
-        else
-            print_global "⚠️  Rules mangle output counters"
         fi
 
         if [ "$rules_proxy_exist" -eq 1 ]; then
@@ -4240,7 +5256,8 @@ Available commands:
     check_dns_available     Check DNS server availability
     global_check            Run global system check
     component_action        Run component action: <component> <action>
-                            (e.g. sing_box install_extended|install_stable|check_update)
+                            (e.g. sing_box install_extended|install_stable|check_update,
+                            subscription clear_cache to wipe all caches + redownload)
     component_action_async  Start component_action in background; echoes a job_id
                             (use with component_action_status to poll the outcome)
     component_action_status Report an async component action by job_id: <job_id>
@@ -4262,6 +5279,13 @@ restart)
     ;;
 main)
     main
+    ;;
+__monitor)
+    # Hidden subcommand (task-035): runs the detached sing-box health monitor.
+    # Launched only by start_sing_box_monitor via setsid with the procd lock fd
+    # (1000) closed, so the long-lived monitor never holds the procd service
+    # lock. Not part of the public CLI / help.
+    monitor_sing_box
     ;;
 list_update)
     list_update

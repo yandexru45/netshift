@@ -30,6 +30,8 @@ export const invalidSubnets = [
   ['IPv6 CIDR too high', '2001:db8::1/129'],
   ['IPv6 CIDR negative', '2001:db8::1/-1'],
   ['IPv6 CIDR not number', '2001:db8::1/abc'],
+  ['IPv6 triple colon with CIDR', ':::/64'],
+  ['IPv6 multiple compressions with CIDR', '1::2::3/64'],
 ];
 
 describe('validateSubnet', () => {

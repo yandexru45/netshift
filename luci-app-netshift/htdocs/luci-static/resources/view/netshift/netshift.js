@@ -17,6 +17,9 @@
 // Diagnostic content
 "require view.netshift.diagnostic as diagnostic";
 
+// Component Manager content
+"require view.netshift.manager as manager";
+
 const EntryPoint = {
   async render() {
     main.injectGlobalStyles();
@@ -28,6 +31,21 @@ const EntryPoint = {
     );
     // Enable tab views
     netshiftMap.tabbed = true;
+
+    // Dashboard tab (first / landing tab)
+    const dashboardSection = netshiftMap.section(
+      form.TypedSection,
+      "dashboard",
+      _("Dashboard"),
+    );
+    dashboardSection.anonymous = true;
+    dashboardSection.addremove = false;
+    dashboardSection.cfgsections = function () {
+      return ["dashboard"];
+    };
+
+    // Render dashboard content
+    dashboard.createDashboardContent(dashboardSection);
 
     // Sections tab
     const sectionsSection = netshiftMap.section(
@@ -58,6 +76,21 @@ const EntryPoint = {
     // Render settings content
     settings.createSettingsContent(settingsSection);
 
+    // Component Manager tab
+    const managerSection = netshiftMap.section(
+      form.TypedSection,
+      "manager",
+      _("Component Manager"),
+    );
+    managerSection.anonymous = true;
+    managerSection.addremove = false;
+    managerSection.cfgsections = function () {
+      return ["manager"];
+    };
+
+    // Render Component Manager content
+    manager.createManagerContent(managerSection);
+
     // Diagnostic tab
     const diagnosticSection = netshiftMap.section(
       form.TypedSection,
@@ -72,21 +105,6 @@ const EntryPoint = {
 
     // Render diagnostic content
     diagnostic.createDiagnosticContent(diagnosticSection);
-
-    // Dashboard tab
-    const dashboardSection = netshiftMap.section(
-      form.TypedSection,
-      "dashboard",
-      _("Dashboard"),
-    );
-    dashboardSection.anonymous = true;
-    dashboardSection.addremove = false;
-    dashboardSection.cfgsections = function () {
-      return ["dashboard"];
-    };
-
-    // Render dashboard content
-    dashboard.createDashboardContent(dashboardSection);
 
     // Inject core service
     main.coreService();

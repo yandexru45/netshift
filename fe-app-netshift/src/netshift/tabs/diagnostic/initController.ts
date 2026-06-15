@@ -316,47 +316,45 @@ async function handleShowSingBoxConfig() {
   }
 }
 
-async function handleInstallSingBox() {
+async function handleClearSubscriptionCache() {
   const diagnosticsActions = store.get().diagnosticsActions;
   store.set({
     diagnosticsActions: {
       ...diagnosticsActions,
-      singBoxInstall: { loading: true },
+      clearSubscriptionCache: { loading: true },
     },
   });
 
-  const isExtended = store.get().diagnosticsSystemInfo.sing_box_extended === 1;
-
   showToast(
-    _('Switching sing-box core, this may take a few minutes…'),
-    'success',
+    _('Clearing subscription cache and re-downloading… this may take a minute'),
+    'info',
   );
 
   try {
-    const result = await NetShiftShellMethods.singBoxComponentAction(
-      isExtended ? 'install_stable' : 'install_extended',
-    );
+    const result = await NetShiftShellMethods.clearSubscriptionCache();
 
     if (result.success) {
-      showToast(
-        _('Sing-box core changed, version: ') + (result.version || ''),
-        'success',
-      );
+      showToast(_('Subscription cache cleared and re-downloaded'), 'success');
     } else {
-      logger.error('[DIAGNOSTIC]', 'handleInstallSingBox - e', result);
-      showToast(result.message || _('Failed to execute!'), 'error');
+      logger.error(
+        '[DIAGNOSTIC]',
+        'handleClearSubscriptionCache - result',
+        result,
+      );
+      showToast(_('Failed to clear subscription cache'), 'error');
     }
   } catch (e) {
-    logger.error('[DIAGNOSTIC]', 'handleInstallSingBox - e', e);
-    showToast(_('Failed to execute!'), 'error');
+    logger.error('[DIAGNOSTIC]', 'handleClearSubscriptionCache - e', e);
+    showToast(_('Failed to clear subscription cache'), 'error');
   } finally {
+    await fetchServicesInfo();
     store.set({
       diagnosticsActions: {
         ...diagnosticsActions,
-        singBoxInstall: { loading: false },
+        clearSubscriptionCache: { loading: false },
       },
     });
-    await fetchSystemInfo();
+    store.reset(['diagnosticsChecks']);
   }
 }
 
@@ -448,15 +446,12 @@ function renderDiagnosticAvailableActionsWidget() {
       onClick: handleShowSingBoxConfig,
       disabled: atLeastOneServiceCommandLoading,
     },
-    singBoxInstall: {
-      loading: diagnosticsActions.singBoxInstall.loading,
+    clearSubscriptionCache: {
+      loading: diagnosticsActions.clearSubscriptionCache.loading,
       visible: true,
-      onClick: handleInstallSingBox,
-      disabled:
-        atLeastOneServiceCommandLoading ||
-        diagnosticsActions.singBoxInstall.loading,
+      onClick: handleClearSubscriptionCache,
+      disabled: atLeastOneServiceCommandLoading,
     },
-    singBoxExtended: store.get().diagnosticsSystemInfo.sing_box_extended,
   });
 
   return preserveScrollForPage(() => {

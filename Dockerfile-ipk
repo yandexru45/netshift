@@ -1,11 +1,11 @@
 FROM itdoginfo/openwrt-sdk-ipk:24.10.6
 
 ARG NETSHIFT_VERSION
+ENV NETSHIFT_VERSION=${NETSHIFT_VERSION}
 
 COPY ./netshift /builder/package/feeds/utilities/netshift
 COPY ./luci-app-netshift /builder/package/feeds/luci/luci-app-netshift
 
-RUN export NETSHIFT_VERSION="v${NETSHIFT_VERSION}" && \
-    make defconfig && \
+RUN make defconfig && \
     make package/netshift/compile V=s -j4 && \
     make package/luci-app-netshift/compile V=s -j4
