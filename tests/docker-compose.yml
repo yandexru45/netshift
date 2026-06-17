@@ -12,7 +12,7 @@
 #             nftv6, selmark, isolation, monfd, unsupported, textlist, diagnostics, subscription, fastest, insecure, rejected,
 #             jobstate, selfheal, dnsdetour, suburlopt, globalproxy, stablecheck,
 #             extcheck, netshiftcheck, latesttag, ghredirect, selfupdate,
-#             backupguard
+#             backupguard, cachepersist
 # ──────────────────────────────────────────────────────────────────
 
 services:
