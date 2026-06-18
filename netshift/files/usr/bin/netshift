@@ -3231,16 +3231,20 @@ configure_routing_for_section_lists() {
     proxy | vpn)
         local global_proxy
         config_get_bool global_proxy "$section" "global_proxy" 0
+        
+        # Skipping routing list configuration if global proxy mode enabled
         if [ "$global_proxy" -eq 1 ]; then
-            route_rule_tag="$SB_EXCLUSION_RULE_TAG"
+            log "Global proxy mode enabled for '$section': skipping routing list configuration." "info"
+            return 0
+        fi
+
+        # Execute original logic if global proxy mode disabled
+        route_rule_tag="$(gen_id)"
+        if subscription_outbound_is_unavailable "$section"; then
+            config="$(sing_box_cm_add_reject_route_rule "$config" "$route_rule_tag" "$SB_TPROXY_INBOUND_TAG")"
         else
-            route_rule_tag="$(gen_id)"
-            if subscription_outbound_is_unavailable "$section"; then
-                config="$(sing_box_cm_add_reject_route_rule "$config" "$route_rule_tag" "$SB_TPROXY_INBOUND_TAG")"
-            else
-                outbound_tag=$(get_outbound_tag_by_section "$section")
-                config=$(sing_box_cm_add_route_rule "$config" "$route_rule_tag" "$SB_TPROXY_INBOUND_TAG" "$outbound_tag")
-            fi
+            outbound_tag=$(get_outbound_tag_by_section "$section")
+            config=$(sing_box_cm_add_route_rule "$config" "$route_rule_tag" "$SB_TPROXY_INBOUND_TAG" "$outbound_tag")
         fi
         ;;
     block)
