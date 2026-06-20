@@ -3023,8 +3023,17 @@ sing_box_configure_route() {
     local output_network_interface
     config_get output_network_interface "settings" "output_network_interface"
     if [ -z "$output_network_interface" ]; then
-        config=$(sing_box_cm_configure_route "$config" "$route_final" true "$SB_DNS_SERVER_TAG" "" \
-            "$default_egress_mark")
+        local _wan_device
+        _wan_device=$(ubus call network.interface.wan status 2>/dev/null | jq -r '.device // empty' 2>/dev/null)
+        if [ -n "$_wan_device" ]; then
+            log "Auto-detected WAN device for sing-box: $_wan_device" "info"
+            config=$(sing_box_cm_configure_route "$config" "$route_final" false "$SB_DNS_SERVER_TAG" \
+                "$_wan_device" "$default_egress_mark")
+        else
+            log "WAN device auto-detection failed, falling back to auto_detect_interface" "warn"
+            config=$(sing_box_cm_configure_route "$config" "$route_final" true "$SB_DNS_SERVER_TAG" "" \
+                "$default_egress_mark")
+        fi
     else
         config=$(sing_box_cm_configure_route "$config" "$route_final" false "$SB_DNS_SERVER_TAG" \
             "$output_network_interface" "$default_egress_mark")
