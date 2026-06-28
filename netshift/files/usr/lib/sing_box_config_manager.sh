@@ -890,6 +890,42 @@ sing_box_cm_set_ws_transport_for_outbound() {
 }
 
 #######################################
+# Set HTTPUpgrade transport settings for an outbound in a sing-box JSON
+# configuration. sing-box's httpupgrade transport carries the Host header in a
+# top-level "host" field (unlike ws, which nests it under headers.Host). When
+# host is empty sing-box falls back to the server address, which matches the
+# common TLS-SNI==server deployment, so host is emitted only when provided.
+#######################################
+sing_box_cm_set_httpupgrade_transport_for_outbound() {
+    local config="$1"
+    local tag="$2"
+    local path="$3"
+    local host="$4"
+
+    [ -n "$path" ] || path="/"
+
+    echo "$config" | jq \
+        --arg tag "$tag" \
+        --arg path "$path" \
+        --arg host "$host" \
+        '.outbounds |= map(
+            if .tag == $tag then
+                . + {
+                    transport: (
+                        {
+                            type: "httpupgrade",
+                            path: $path
+                        }
+                        + (if $host != "" then {host: $host} else {} end)
+                    )
+                }
+            else
+                .
+            end
+        )'
+}
+
+#######################################
 # Set HTTP/2 transport settings for an outbound in a sing-box JSON configuration.
 # Used for VMess net=h2 links (sing-box "http" transport). HTTP/2 transport
 # mandates TLS, so the caller must also set TLS on the outbound.

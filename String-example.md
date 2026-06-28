@@ -31,6 +31,10 @@ vless://fe0f0941-09a9-4e46-bc69-e00190d7bb9c@127.0.0.1:10156?type=ws&encryption=
 vless://599e8659-e2ef-47d9-bf72-2f9b4b673474@127.0.0.1:36567?type=ws&encryption=none&path=%2Fwspath&host=google.com&security=tls&fp=chrome&alpn=h2%2Chttp%2F1.1&allowInsecure=1&sni=google.com#vless-websocket-tls-insecure
 vless://4d21ce62-8723-4c4d-93e3-d586b107aa40@127.0.0.1:51394?type=ws&encryption=none&path=%2Fwspath&host=google.com&security=tls&fp=chrome&alpn=h2%2Chttp%2F1.1&sni=google.com&ech=AF3%2BDQBZAAAgACD7fjrtDMlcigKXFBKoLn6UDB9%2BWR6HBZpY96DlBiD%2BIwAkAAEAAQABAAIAAQADAAIAAQACAAIAAgADAAMAAQADAAIAAwADAApnb29nbGUuY29tAAA%3D#vless-websocket-tls-ech
 
+# HTTPUpgrade
+vless://9d3f1c0a-2b4e-4f6a-8c1d-7e9a0b2c3d4e@127.0.0.1:23145?type=httpupgrade&encryption=none&path=%2Fhupath&host=google.com&security=tls&sni=google.com#vless-httpupgrade-tls
+trojan://trojanpass@127.0.0.1:23146?type=httpupgrade&security=tls&sni=google.com&path=%2Fhupath#trojan-httpupgrade-tls
+
 # gRPC
 vless://974b39e3-f7bf-42b9-933c-16699c635e77@127.0.0.1:15633?type=grpc&encryption=none&serviceName=TunService&authority=&security=none#vless-gRPC-none
 vless://651e7eca-5152-46f1-baf2-d502e0af7b27@127.0.0.1:28535?type=grpc&encryption=none&serviceName=TunService&authority=authority&security=reality&pbk=nhZ7NiKfcqESa5ZeBFfsq9o18W-OWOAHLln9UmuVXSk&fp=chrome&sni=google.com&sid=11cbaeaa&spx=%2F#vless-gRPC-reality

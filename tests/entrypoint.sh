@@ -1255,6 +1255,43 @@ case "$xray_uri" in
 esac
 rm -f "$xray_src"
 
+# ── (3c) httpupgrade transport via a vless URL ?type=httpupgrade ─────────────
+#         httpupgrade is an upstream sing-box transport (shipped since 1.8, no
+#         extended core required), so the transport MUST be applied regardless
+#         of the sing-box-extended gate. The Host header falls back to the sni
+#         when ?host= is absent, matching the common TLS-fronted deployment
+#         where the Host equals the TLS SNI.
+out_hu=$(sing_box_cf_add_proxy_outbound "$base" "hup" "vless://99999999-aaaa-bbbb-cccc-dddddddddddd@h.example.com:443?type=httpupgrade&security=tls&sni=h.example.com&path=/hu" "0")
+printf '%s' "$out_hu" | jq -e '.outbounds[0].transport.type=="httpupgrade"' >/dev/null 2>&1 \
+    && echo 'us-httpupgrade-url-type:OK' || echo 'us-httpupgrade-url-type:FAIL'
+printf '%s' "$out_hu" | jq -e '.outbounds[0].transport.path=="/hu"' >/dev/null 2>&1 \
+    && echo 'us-httpupgrade-url-path:OK' || echo 'us-httpupgrade-url-path:FAIL'
+# host omitted in the link → falls back to the sni.
+printf '%s' "$out_hu" | jq -e '.outbounds[0].transport.host=="h.example.com"' >/dev/null 2>&1 \
+    && echo 'us-httpupgrade-url-host-from-sni:OK' || echo 'us-httpupgrade-url-host-from-sni:FAIL'
+# No extended gate: with extended OFF the transport is STILL applied (contrast
+# with xhttp/splithttp above, which require the extended core).
+is_sing_box_extended() { return 1; }
+out_hu_off=$(sing_box_cf_add_proxy_outbound "$base" "hupo" "vless://99999999-aaaa-bbbb-cccc-dddddddddddd@h.example.com:443?type=httpupgrade&security=tls&sni=h.example.com&path=/hu" "0")
+printf '%s' "$out_hu_off" | jq -e '.outbounds[0].transport.type=="httpupgrade"' >/dev/null 2>&1 \
+    && echo 'us-httpupgrade-no-extended-gate:OK' || echo 'us-httpupgrade-no-extended-gate:FAIL'
+is_sing_box_extended() { return 0; }
+# Whole-chain: the httpupgrade outbound passes a real sing-box check (stock core
+# accepts httpupgrade, so this asserts OK rather than SKIP).
+hu_full="/tmp/us-hu-full-$$.json"
+printf '%s' "$out_hu" | jq '{
+    log: { level: "error" },
+    inbounds: [],
+    outbounds: (.outbounds + [ { type: "direct", tag: "direct-out" } ]),
+    route: { final: "direct-out" }
+}' > "$hu_full" 2>/dev/null
+if sing-box -c "$hu_full" check > /dev/null 2>&1; then
+    echo 'us-httpupgrade-singbox-check:OK'
+else
+    echo 'us-httpupgrade-singbox-check:FAIL'
+fi
+rm -f "$hu_full"
+
 rm -f "$WARN_LOG"
 echo 'DONE'
 USEOF

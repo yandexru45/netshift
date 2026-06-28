@@ -363,6 +363,18 @@ _add_outbound_transport() {
         xhttp_mode=$(url_get_query_param "$url" "mode")
         config=$(sing_box_cm_set_xhttp_transport_for_outbound "$config" "$outbound_tag" "$xhttp_path" "$xhttp_host" "$xhttp_mode")
         ;;
+    httpupgrade)
+        # sing-box's httpupgrade transport (upstream since 1.8, no extended core
+        # required). The Host header lives in a top-level "host" field; when the
+        # link omits it we fall back to the sni so the Host matches the TLS SNI,
+        # which is how most TLS-fronted httpupgrade deployments are set up.
+        local httpupgrade_path httpupgrade_host httpupgrade_sni
+        httpupgrade_path=$(url_get_query_param "$url" "path")
+        httpupgrade_host=$(url_get_query_param "$url" "host")
+        httpupgrade_sni=$(url_get_query_param "$url" "sni")
+        [ -n "$httpupgrade_host" ] || httpupgrade_host="$httpupgrade_sni"
+        config=$(sing_box_cm_set_httpupgrade_transport_for_outbound "$config" "$outbound_tag" "$httpupgrade_path" "$httpupgrade_host")
+        ;;
     *)
         log "Unknown transport '$transport' detected." "error"
         ;;
