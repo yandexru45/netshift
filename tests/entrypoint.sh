@@ -6732,6 +6732,141 @@ DRVEOF
 }
 
 # ─────────────────────────────────────────────────────────────────
+# Test: sing-box cache persistence (selected subscription server survives reboot)
+#
+# ROOT CAUSE under test: the live sing-box cache DB (settings.cache_path) is
+# tmpfs-backed (/tmp/sing-box/cache.db) so a reboot wipes it — and with it the
+# selector choice sing-box persists there (the subscription server the user
+# picked, kept by outbound tag). The fix snapshots the live DB to the overlay
+# (NETSHIFT_CACHE_BACKUP) on a clean stop / after a selection, and restores it
+# on start. This test awk-extracts the SHIPPED helpers verbatim and asserts the
+# snapshot/restore contract end to end:
+#   (1) backup is a no-op until the live DB exists,
+#   (2) backup snapshots the live DB byte-for-byte (atomic tmp+mv, no tmp leak),
+#   (3) restore NEVER clobbers a live DB that survived (reload path: tmpfs intact),
+#   (4) reboot (live gone, snapshot present) -> live restored byte-for-byte,
+#   (5) fresh install (neither present) -> restore is a no-op.
+# ─────────────────────────────────────────────────────────────────
+test_cache_persistence() {
+    header "sing-box Cache Persistence (selected server survives reboot)"
+
+    local bin="${NETSHIFT_SRC}/usr/bin/netshift"
+    local const="${NETSHIFT_LIB_DIR}/constants.sh"
+    if [ ! -r "$bin" ] || [ ! -r "$const" ]; then
+        fail "bin / constants.sh not found"
+        return
+    fi
+
+    local work="/tmp/netshift-cachepersist-$$"
+    rm -rf "$work"
+    mkdir -p "$work"
+
+    local drv="$work/driver.sh"
+    cat > "$drv" << 'CPEOF'
+. "CONST_LIB"
+log() { :; }
+
+W="DRV_WORK"
+# Re-pin the overlay snapshot + state dir at temp paths. constants.sh set them to
+# /etc/netshift/*; the helpers read these globals at call time, so overriding
+# AFTER sourcing is enough.
+NETSHIFT_STATE_DIR="$W/state"
+NETSHIFT_CACHE_BACKUP="$NETSHIFT_STATE_DIR/cache.db"
+LIVE="$W/tmp/sing-box/cache.db"
+
+# Table-driven config_get stub: cache_path -> $LIVE, else the provided default.
+config_get() {
+    case "$3" in
+        cache_path) eval "$1=\"$LIVE\"" ;;
+        *) eval "$1=\"\${4:-}\"" ;;
+    esac
+    return 0
+}
+
+# awk-extract the SHIPPED helpers verbatim (each ends at its column-0 `}`).
+eval "$(awk '/^get_sing_box_cache_path\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
+eval "$(awk '/^restore_sing_box_cache\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
+eval "$(awk '/^backup_sing_box_cache\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
+
+# get_sing_box_cache_path returns the configured live path.
+[ "$(get_sing_box_cache_path)" = "$LIVE" ] \
+    && echo 'cache-path-resolved:OK' || echo 'cache-path-resolved:FAIL'
+
+# ── (1) backup is a no-op until the live DB exists ─────────────────────────────
+backup_sing_box_cache
+[ ! -e "$NETSHIFT_CACHE_BACKUP" ] \
+    && echo 'cache-backup-noop-without-live:OK' || echo 'cache-backup-noop-without-live:FAIL'
+
+# ── (2) backup snapshots the live DB byte-for-byte ─────────────────────────────
+mkdir -p "$(dirname "$LIVE")"
+printf 'SELECTED-NODE-CACHE-v1\n' > "$LIVE"
+backup_sing_box_cache
+if [ -f "$NETSHIFT_CACHE_BACKUP" ] && cmp -s "$LIVE" "$NETSHIFT_CACHE_BACKUP"; then
+    echo 'cache-backup-snapshots-live:OK'
+else
+    echo 'cache-backup-snapshots-live:FAIL'
+fi
+# the atomic tmp+mv must leave no stray tmp file behind
+if ls "$NETSHIFT_CACHE_BACKUP".tmp.* >/dev/null 2>&1; then
+    echo 'cache-backup-no-tmp-leak:FAIL'
+else
+    echo 'cache-backup-no-tmp-leak:OK'
+fi
+
+# ── (2b) a second backup of an UNCHANGED live DB must skip the flash write ─────
+# A real write goes through tmp+mv (new inode); a skipped one leaves the inode
+# untouched. Compare inodes to prove the cmp-guard short-circuited.
+ino_before="$(ls -i "$NETSHIFT_CACHE_BACKUP" | awk '{print $1}')"
+backup_sing_box_cache
+ino_after="$(ls -i "$NETSHIFT_CACHE_BACKUP" | awk '{print $1}')"
+[ "$ino_before" = "$ino_after" ] \
+    && echo 'cache-backup-skips-unchanged:OK' || echo 'cache-backup-skips-unchanged:FAIL'
+
+# ── (3) restore must NOT clobber a live DB that survived (reload path) ─────────
+printf 'FRESHER-LIVE-STATE-v2\n' > "$LIVE"
+restore_sing_box_cache
+if grep -q 'FRESHER-LIVE-STATE-v2' "$LIVE" 2>/dev/null; then
+    echo 'cache-restore-keeps-live:OK'
+else
+    echo 'cache-restore-keeps-live:FAIL'
+fi
+
+# ── (4) reboot: live DB gone, snapshot present -> restored byte-for-byte ───────
+rm -rf "$(dirname "$LIVE")"
+restore_sing_box_cache
+if [ -f "$LIVE" ] && cmp -s "$LIVE" "$NETSHIFT_CACHE_BACKUP"; then
+    echo 'cache-restore-on-reboot:OK'
+else
+    echo 'cache-restore-on-reboot:FAIL'
+fi
+
+# ── (5) fresh install: neither live nor snapshot -> restore is a no-op ─────────
+rm -rf "$NETSHIFT_STATE_DIR" "$(dirname "$LIVE")"
+restore_sing_box_cache
+[ ! -e "$LIVE" ] \
+    && echo 'cache-restore-noop-fresh:OK' || echo 'cache-restore-noop-fresh:FAIL'
+
+echo 'DONE'
+CPEOF
+    sed -i "s|CONST_LIB|$const|g; s|BIN_PATH|$bin|g; s|DRV_WORK|$work|g" "$drv"
+
+    local out="$work/out.txt"
+    local saw_done=0 line
+    ash "$drv" > "$out" 2>/dev/null || true
+    while IFS= read -r line; do
+        case "$line" in
+            *:OK)   pass "${line%:OK}" ;;
+            *:FAIL) fail "$line" ;;
+            DONE)   saw_done=1 ;;
+            *) ;;
+        esac
+    done < "$out"
+    [ "$saw_done" = "1" ] && pass "cache-persistence-driver-completed:OK" \
+        || fail "cache-persistence-driver-completed:FAIL (driver aborted early)"
+    rm -rf "$work"
+}
+
+# ─────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────
 main() {
@@ -6776,6 +6911,7 @@ main() {
             test_github_redirect_tag
             test_self_update_netshift
             test_backup_integrity
+            test_cache_persistence
             ;;
         deps)        test_deps ;;
         syntax)      test_syntax ;;
@@ -6805,12 +6941,13 @@ main() {
         ghredirect)  test_github_redirect_tag ;;
         selfupdate)  test_self_update_netshift ;;
         backupguard) test_backup_integrity ;;
+        cachepersist) test_cache_persistence ;;
         jq)          test_jq_helpers ;;
         cm)          test_config_manager ;;
         sb)          test_sing_box_config ;;
         *)
             echo "Unknown test: $target"
-            echo "Available: all deps syntax config helpers jq cm sb nft nftv6 selmark isolation monfd unsupported textlist diagnostics subscription fastest insecure rejected jobstate selfheal dnsdetour suburlopt globalproxy stablecheck extcheck netshiftcheck latesttag ghredirect selfupdate backupguard"
+            echo "Available: all deps syntax config helpers jq cm sb nft nftv6 selmark isolation monfd unsupported textlist diagnostics subscription fastest insecure rejected jobstate selfheal dnsdetour suburlopt globalproxy stablecheck extcheck netshiftcheck latesttag ghredirect selfupdate backupguard cachepersist"
             exit 1
             ;;
     esac

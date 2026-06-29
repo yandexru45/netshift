@@ -862,6 +862,72 @@ start_subscription_startup_retry_worker() {
     log "Started deferred startup recovery worker with PID $!" "warn"
 }
 
+# --- sing-box runtime cache persistence (selected server survives reboot) ----
+# The live sing-box cache DB (settings.cache_path) is tmpfs-backed by default, so
+# a reboot wipes the user's selected subscription server: sing-box persists the
+# selector choice into this DB and restores it on the next start. We snapshot the
+# DB to the overlay (NETSHIFT_CACHE_BACKUP) on a clean stop and after an explicit
+# selection, and restore it on start. The subscription nodes themselves are
+# persisted separately (SUBSCRIPTION_CACHE_FOLDER), so the restored choice (kept
+# by outbound tag) resolves against the freshly regenerated config without a
+# re-download; if the feed changed and the tag is gone, sing-box transparently
+# falls back to the selector default.
+
+# Resolve the configured live cache DB path (single source for backup/restore so
+# they always agree with sing_box_configure_experimental).
+get_sing_box_cache_path() {
+    local cache_path
+    config_get cache_path "settings" "cache_path" "/tmp/sing-box/cache.db"
+    printf '%s' "$cache_path"
+}
+
+# Restore the overlay snapshot into the live (tmpfs) location BEFORE sing-box
+# starts. Only when the live DB is ABSENT (a reboot wiped tmpfs) and a snapshot
+# exists — never clobber a live DB that already holds fresher in-RAM state (the
+# reload/restart path, where tmpfs survived).
+restore_sing_box_cache() {
+    local cache_path cache_dir
+    cache_path="$(get_sing_box_cache_path)"
+    [ -n "$cache_path" ] || return 0
+    [ -e "$cache_path" ] && return 0
+    [ -f "$NETSHIFT_CACHE_BACKUP" ] || return 0
+
+    cache_dir="$(dirname "$cache_path")"
+    mkdir -p "$cache_dir" 2>/dev/null
+    if cp "$NETSHIFT_CACHE_BACKUP" "$cache_path" 2>/dev/null; then
+        log "Restored sing-box cache from $NETSHIFT_CACHE_BACKUP (selected server preserved across reboot)" "info"
+    else
+        log "Failed to restore sing-box cache from $NETSHIFT_CACHE_BACKUP" "warn"
+    fi
+}
+
+# Snapshot the live cache DB to the overlay (atomic tmp+mv so a crash mid-copy
+# never leaves a truncated snapshot). No-op until the live DB exists. Called on a
+# clean stop and after a successful selection change. Writes to flash are rare
+# (stop + explicit user selection), never on FakeIP churn.
+backup_sing_box_cache() {
+    local cache_path tmp
+    cache_path="$(get_sing_box_cache_path)"
+    [ -n "$cache_path" ] && [ -f "$cache_path" ] || return 0
+
+    # Skip the flash write when the snapshot is already byte-identical (a reload
+    # / WAN-flap that changed neither the selection nor the FakeIP state) so the
+    # overlay is written only on a real change, not on every reload.
+    if [ -f "$NETSHIFT_CACHE_BACKUP" ] && cmp -s "$cache_path" "$NETSHIFT_CACHE_BACKUP"; then
+        return 0
+    fi
+
+    mkdir -p "$NETSHIFT_STATE_DIR" 2>/dev/null
+    tmp="${NETSHIFT_CACHE_BACKUP}.tmp.$$"
+    if cp "$cache_path" "$tmp" 2>/dev/null && mv "$tmp" "$NETSHIFT_CACHE_BACKUP" 2>/dev/null; then
+        chmod 600 "$NETSHIFT_CACHE_BACKUP" 2>/dev/null
+        log "Backed up sing-box cache to $NETSHIFT_CACHE_BACKUP" "debug"
+    else
+        rm -f "$tmp" 2>/dev/null
+        log "Failed to back up sing-box cache to $NETSHIFT_CACHE_BACKUP" "warn"
+    fi
+}
+
 start_main() {
     log "Starting netshift"
 
@@ -905,6 +971,9 @@ start_main() {
     sing_box_init_config
     config_foreach add_cron_job "section"
     config_foreach add_subscription_cron_job "section"
+    # Bring back the persisted selector choice (+ FakeIP state) before sing-box
+    # reads its cache, so a reboot keeps the user's selected subscription server.
+    restore_sing_box_cache
     /etc/init.d/sing-box start
 
     if [ "$subscription_startup_blocked" -ne 0 ]; then
@@ -949,6 +1018,10 @@ stop_main() {
 
     log "Stop sing-box"
     /etc/init.d/sing-box stop
+
+    # sing-box has exited and flushed its cache DB: snapshot it to the overlay so
+    # the selected subscription server survives the next reboot (tmpfs wipe).
+    backup_sing_box_cache
 }
 
 start() {
@@ -4872,6 +4945,11 @@ clash_api() {
         case "$http_code" in
         204)
             jq -n --arg group "$group_tag" --arg proxy "$proxy_tag" '{success:true,group:$group,proxy:$proxy}'
+            # sing-box has persisted the new choice to its (tmpfs) cache DB;
+            # snapshot it to the overlay now so the pick survives even an unclean
+            # reboot (no clean stop). log() goes to syslog, so it cannot corrupt
+            # the JSON response already emitted above.
+            backup_sing_box_cache
             ;;
         404)
             jq -n --arg group "$group_tag" '{success:false,error:"group_not_found",message:($group + " does not exist")}'
