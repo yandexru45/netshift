@@ -99,6 +99,20 @@ function createSettingsContent(section) {
 
   o = section.taboption(
     "dns",
+    widgets.DeviceSelect,
+    "dns_output_interface",
+    _("DNS Output Interface"),
+    _(
+      "Optional: network interface for upstream DNS egress. Leave empty to auto-detect (LAN interface when DNS server is a private IP such as AdGuard on 192.168.x.x).",
+    ),
+  );
+  o.noaliases = true;
+  o.multiple = false;
+  o.rmempty = true;
+  o.optional = true;
+
+  o = section.taboption(
+    "dns",
     form.Flag,
     "dns_via_outbound",
     _("Route main DNS through proxy/VPN"),

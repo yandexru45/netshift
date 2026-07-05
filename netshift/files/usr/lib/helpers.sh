@@ -17,6 +17,20 @@ is_ipv4_ip_or_ipv4_cidr() {
     is_ipv4 "$1" || is_ipv4_cidr "$1"
 }
 
+# RFC 1918 private IPv4 (10/8, 172.16/12, 192.168/16). Used to route LAN DNS
+# upstream through a bind_interface outbound so route.default_interface (WAN)
+# does not block reachability to resolvers such as AdGuard on the local subnet.
+is_rfc1918_ipv4() {
+    local ip="$1"
+
+    is_ipv4 "$ip" || return 1
+    case "$ip" in
+    10.* | 192.168.*) return 0 ;;
+    172.1[6-9].* | 172.2[0-9].* | 172.3[0-1].*) return 0 ;;
+    esac
+    return 1
+}
+
 is_domain() {
     local str="$1"
     local regex='^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$'
