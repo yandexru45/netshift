@@ -118,6 +118,10 @@ SB_FAKEIP_DNS_SERVER_TAG="fakeip-server"
 SB_FAKEIP_INET4_RANGE="198.18.0.0/15"
 SB_FAKEIP_INET6_RANGE="fd00:ec3a::/32"
 SB_BOOTSTRAP_SERVER_TAG="bootstrap-dns-server"
+# Interface-bound direct outbound for LAN/private DNS upstream (AdGuard etc.).
+# sing-box dials the resolver with bind_interface so route.default_interface
+# (WAN) does not prevent reaching 192.168.x.x / 10.x.x.x resolvers.
+SB_DNS_LAN_OUTBOUND_TAG="dns-lan-out"
 SB_FAKEIP_DNS_RULE_TAG="fakeip-dns-rule-tag"
 SB_INVERT_FAKEIP_DNS_RULE_TAG="invert-fakeip-dns-rule-tag"
 # Inbounds

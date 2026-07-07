@@ -2960,13 +2960,40 @@ sing_box_configure_dns() {
         dns_domain_resolver=$SB_BOOTSTRAP_SERVER_TAG
     fi
 
+    local main_dns_lan_bind bootstrap_dns_lan_bind dns_lan_bind_interface
+    local bootstrap_detour=""
+    main_dns_lan_bind="$(_get_dns_upstream_lan_bind_interface "$dns_server" 1)"
+    bootstrap_dns_lan_bind="$(_get_dns_upstream_lan_bind_interface "$bootstrap_dns_server" 0)"
+    dns_lan_bind_interface="$main_dns_lan_bind"
+    if [ -z "$dns_lan_bind_interface" ]; then
+        dns_lan_bind_interface="$bootstrap_dns_lan_bind"
+    fi
+
     # Only the MAIN DNS server may carry a detour. Bootstrap stays direct (it
     # resolves the DoH/DoT hostname before the tunnel is up) and FakeIP stays
     # direct. An empty tag means no detour -> byte-identical to the off path.
+    # LAN/private upstreams bind to a source interface outbound so
+    # route.default_interface (WAN) does not block 192.168.x.x resolvers.
     local dns_detour_tag
-    dns_detour_tag="$(_get_dns_detour_tag)"
+    if [ -n "$dns_lan_bind_interface" ]; then
+        config=$(sing_box_cm_add_interface_outbound "$config" "$SB_DNS_LAN_OUTBOUND_TAG" "$dns_lan_bind_interface" "")
+        if [ -n "$main_dns_lan_bind" ]; then
+            dns_detour_tag="$SB_DNS_LAN_OUTBOUND_TAG"
+            config_get_bool dns_via_outbound_lan_warn "settings" "dns_via_outbound" 0
+            if [ "$dns_via_outbound_lan_warn" -eq 1 ]; then
+                log "Private/LAN DNS upstream; using bind_interface '$main_dns_lan_bind' instead of proxy detour" "warn"
+            fi
+        else
+            dns_detour_tag="$(_get_dns_detour_tag)"
+        fi
+    else
+        dns_detour_tag="$(_get_dns_detour_tag)"
+    fi
 
-    config=$(sing_box_cm_add_udp_dns_server "$config" "$SB_BOOTSTRAP_SERVER_TAG" "$bootstrap_dns_server" 53)
+    if [ -n "$bootstrap_dns_lan_bind" ]; then
+        bootstrap_detour="$SB_DNS_LAN_OUTBOUND_TAG"
+    fi
+    config=$(sing_box_cm_add_udp_dns_server "$config" "$SB_BOOTSTRAP_SERVER_TAG" "$bootstrap_dns_server" 53 "" "$bootstrap_detour")
     config=$(sing_box_cf_add_dns_server "$config" "$dns_type" "$SB_DNS_SERVER_TAG" "$dns_server" "$dns_domain_resolver" "$dns_detour_tag")
     if netshift_ipv6_enabled; then
         config=$(sing_box_cm_add_fakeip_dns_server "$config" "$SB_FAKEIP_DNS_SERVER_TAG" "$SB_FAKEIP_INET4_RANGE" "$SB_FAKEIP_INET6_RANGE")
@@ -3889,6 +3916,33 @@ _determine_first_outbound_section() {
 
     if section_has_configured_outbound "$section"; then
         [ -z "$first_section" ] && first_section="$section"
+    fi
+}
+
+# Resolve the OS interface sing-box should bind when dialing a LAN/private DNS
+# upstream address. Echoes the interface name, or an EMPTY string when the
+# address should use default routing (typically WAN via default_interface).
+# When for_main=1, settings.dns_output_interface overrides auto-detection.
+# Bootstrap upstreams never read dns_output_interface (main-DNS-only override).
+_get_dns_upstream_lan_bind_interface() {
+    local server="$1" for_main="$2"
+    local dns_output_interface server_address source_network_interfaces iface
+
+    if [ "$for_main" -eq 1 ]; then
+        config_get dns_output_interface "settings" "dns_output_interface"
+        if [ -n "$dns_output_interface" ]; then
+            echo "$dns_output_interface"
+            return 0
+        fi
+    fi
+
+    server_address="$(url_get_host "$server")"
+    if is_rfc1918_ipv4 "$server_address"; then
+        config_get source_network_interfaces "settings" "source_network_interfaces" "br-lan"
+        for iface in $source_network_interfaces; do
+            echo "$iface"
+            return 0
+        done
     fi
 }
 

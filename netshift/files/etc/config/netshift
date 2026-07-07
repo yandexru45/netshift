@@ -2,6 +2,10 @@ config settings 'settings'
         option dns_type 'udp'
         option dns_server '77.88.8.8'
         option bootstrap_dns_server '77.88.8.8'
+        # Optional: force DNS upstream egress via this interface (e.g. br-lan for
+        # AdGuard on the LAN). When unset, a private dns_server / bootstrap IP
+        # auto-binds to the first source_network_interfaces entry (default br-lan).
+        #option dns_output_interface 'br-lan'
         option dns_rewrite_ttl '60'
         list source_network_interfaces 'br-lan'
         option enable_output_network_interface '0'

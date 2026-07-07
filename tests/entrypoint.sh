@@ -256,6 +256,13 @@ url_is_ipv6_literal 'https://example.com:8080/path' && echo 'ipv6-literal-neg:FA
 # Test is_ipv4_ip_or_ipv4_cidr
 is_ipv4_ip_or_ipv4_cidr '10.0.0.0/8' && echo 'ipv4cidr:OK' || echo 'ipv4cidr:FAIL'
 
+# Test is_rfc1918_ipv4
+is_rfc1918_ipv4 '192.168.1.102' && echo 'rfc1918-lan:OK' || echo 'rfc1918-lan:FAIL'
+is_rfc1918_ipv4 '10.0.0.1' && echo 'rfc1918-10:OK' || echo 'rfc1918-10:FAIL'
+is_rfc1918_ipv4 '172.16.0.1' && echo 'rfc1918-172:OK' || echo 'rfc1918-172:FAIL'
+is_rfc1918_ipv4 '1.1.1.1' && echo 'rfc1918-public:FAIL' || echo 'rfc1918-public:OK'
+is_rfc1918_ipv4 '172.15.0.1' && echo 'rfc1918-nonprivate:FAIL' || echo 'rfc1918-nonprivate:OK'
+
 # Test generate_hwid (needs WAN MAC)
 generate_hwid 2>/dev/null && echo 'hwid:OK' || echo 'hwid:SKIP'
 
@@ -5177,18 +5184,49 @@ else
     echo 'dns-off-byte-parity:FAIL'
 fi
 
+# ── LAN/private DNS upstream: bind_interface outbound + detour (AdGuard etc.) ─
+LAN_OUT="dns-lan-out"
+cfg_lan="$base_config"
+cfg_lan=$(sing_box_cm_add_interface_outbound "$cfg_lan" "$LAN_OUT" "br-lan" "")
+cfg_lan=$(sing_box_cm_add_udp_dns_server "$cfg_lan" "$BOOT" "77.88.8.8" 53)
+cfg_lan=$(sing_box_cf_add_dns_server "$cfg_lan" "udp" "$MAIN" "192.168.1.102" "" "$LAN_OUT")
+cfg_lan=$(sing_box_cm_add_fakeip_dns_server "$cfg_lan" "$FAKE" "198.18.0.0/15")
+
+echo "$cfg_lan" | jq -e --arg t "$LAN_OUT" \
+    '(.outbounds[] | select(.tag==$t) | .bind_interface) == "br-lan"' >/dev/null 2>&1 \
+    && echo 'dns-lan-outbound-bind:OK' || echo 'dns-lan-outbound-bind:FAIL'
+echo "$cfg_lan" | jq -e --arg t "$MAIN" --arg d "$LAN_OUT" \
+    '(.dns.servers[] | select(.tag==$t) | .detour) == $d' >/dev/null 2>&1 \
+    && echo 'dns-lan-server-detour:OK' || echo 'dns-lan-server-detour:FAIL'
+echo "$cfg_lan" | jq -e --arg t "$MAIN" \
+    '(.dns.servers[] | select(.tag==$t) | .server) == "192.168.1.102"' >/dev/null 2>&1 \
+    && echo 'dns-lan-server-address:OK' || echo 'dns-lan-server-address:FAIL'
+
+# RFC1918 bootstrap shares the same LAN outbound detour.
+cfg_lan_bootstrap="$base_config"
+cfg_lan_bootstrap=$(sing_box_cm_add_interface_outbound "$cfg_lan_bootstrap" "$LAN_OUT" "br-lan" "")
+cfg_lan_bootstrap=$(sing_box_cm_add_udp_dns_server "$cfg_lan_bootstrap" "$BOOT" "192.168.1.102" 53 "" "$LAN_OUT")
+cfg_lan_bootstrap=$(sing_box_cf_add_dns_server "$cfg_lan_bootstrap" "udp" "$MAIN" "1.1.1.1" "" "")
+echo "$cfg_lan_bootstrap" | jq -e --arg t "$BOOT" --arg d "$LAN_OUT" \
+    '(.dns.servers[] | select(.tag==$t) | .detour) == $d' >/dev/null 2>&1 \
+    && echo 'dns-lan-bootstrap-detour:OK' || echo 'dns-lan-bootstrap-detour:FAIL'
+
 # ── Both configs must pass sing-box check (whole-chain validation). ──────────
 if command -v sing-box > /dev/null 2>&1; then
     echo "$cfg_on" > /tmp/dnsdetour-on.json
     echo "$cfg_off" > /tmp/dnsdetour-off.json
+    echo "$cfg_lan" > /tmp/dnsdetour-lan.json
     sing-box -c /tmp/dnsdetour-on.json check >/dev/null 2>&1 \
         && echo 'dns-on-singbox-check:OK' || echo 'dns-on-singbox-check:FAIL'
     sing-box -c /tmp/dnsdetour-off.json check >/dev/null 2>&1 \
         && echo 'dns-off-singbox-check:OK' || echo 'dns-off-singbox-check:FAIL'
-    rm -f /tmp/dnsdetour-on.json /tmp/dnsdetour-off.json
+    sing-box -c /tmp/dnsdetour-lan.json check >/dev/null 2>&1 \
+        && echo 'dns-lan-singbox-check:OK' || echo 'dns-lan-singbox-check:FAIL'
+    rm -f /tmp/dnsdetour-on.json /tmp/dnsdetour-off.json /tmp/dnsdetour-lan.json
 else
     echo 'dns-on-singbox-check:SKIP'
     echo 'dns-off-singbox-check:SKIP'
+    echo 'dns-lan-singbox-check:SKIP'
 fi
 
 # ── Fail-safe cascade: exercise _get_dns_detour_tag VERBATIM from the bin. ───
