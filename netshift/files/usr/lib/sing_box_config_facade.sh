@@ -101,15 +101,33 @@ sing_box_cf_add_proxy_outbound() {
         )"
         ;;
     vless)
-        local tag host port uuid flow packet_encoding
+        local tag host port uuid flow packet_encoding encryption
         tag=$(get_outbound_tag_by_section "$section")
         host=$(url_get_host "$url")
         port=$(url_get_port "$url")
         uuid=$(url_get_userinfo "$url")
         flow=$(url_get_query_param "$url" "flow")
         packet_encoding=$(url_get_query_param "$url" "packetEncoding")
+        # VLESS Encryption: the mlkem768x25519plus... handshake travels in
+        # the encryption= param. Ordinary links carry "none" there, which
+        # the manager drops, so nothing changes for them.
+        encryption=$(url_get_query_param "$url" "encryption")
 
-        config=$(sing_box_cm_add_vless_outbound "$config" "$tag" "$host" "$port" "$uuid" "$flow" "" "$packet_encoding")
+        # `encryption` is a sing-box-extended field (extended-2.0.0 and newer);
+        # stock sing-box and older extended builds decode configs strictly, so
+        # emitting it there would fail `sing-box check` for the WHOLE config.
+        # Skip only this link instead, with the same contract as the `*)` arm:
+        # config echoed UNCHANGED, non-zero return. The url/selector/urltest
+        # callers add a member tag only on success, so no group ever references
+        # an outbound that was not created. Ordinary links are not gated.
+        if [ -n "$encryption" ] && [ "$encryption" != "none" ] &&
+            ! is_sing_box_extended_at_least "2.0.0"; then
+            log "VLESS Encryption requires sing-box-extended 2.0.0 or newer. Install sing-box-extended and retry." "error"
+            echo "$config"
+            return 1
+        fi
+
+        config=$(sing_box_cm_add_vless_outbound "$config" "$tag" "$host" "$port" "$uuid" "$flow" "" "$packet_encoding" "$encryption")
         config=$(_add_outbound_security "$config" "$tag" "$url")
         config=$(_add_outbound_transport "$config" "$tag" "$url")
         ;;

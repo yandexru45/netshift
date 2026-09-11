@@ -1462,6 +1462,220 @@ USEOF
 }
 
 # ─────────────────────────────────────────────────────────────────
+# Test: VLESS Encryption passthrough + extended gate
+# ─────────────────────────────────────────────────────────────────
+# A vless:// link may carry the ML-KEM-768 + X25519 handshake in encryption=.
+# The facade passes it to the outbound's `encryption` field, which exists only
+# in sing-box-extended 2.0.0 and newer. Stock sing-box and older extended builds
+# decode configs strictly, so the field there would fail `sing-box check` for
+# the WHOLE config. The gate skips just that link (config UNCHANGED, non-zero
+# rc, like the `*)` arm), so url/selector/urltest never reference an outbound
+# that was not created. Ordinary links (encryption=none or absent) are never
+# gated and their JSON is unchanged.
+#
+# Drives the REAL gate through get_sing_box_version, the REAL facade/manager/
+# helpers and the SHIPPED _build_proxy_member_outbounds (awk-extracted). All
+# values are synthetic placeholders.
+test_vless_encryption() {
+    header "VLESS Encryption passthrough + extended gate"
+
+    local lib="${NETSHIFT_LIB_DIR}"
+    local bin="${NETSHIFT_SRC}/usr/bin/netshift"
+    local facade_lib="$lib/sing_box_config_facade.sh"
+    if [ ! -r "$facade_lib" ] || [ ! -r "$bin" ]; then
+        fail "facade lib / bin not found"
+        return
+    fi
+
+    # The facade sources helpers + manager from /usr/lib/netshift.
+    mkdir -p /usr/lib/netshift
+    ln -sf "$lib/helpers.sh" /usr/lib/netshift/helpers.sh
+    ln -sf "$lib/sing_box_config_manager.sh" /usr/lib/netshift/sing_box_config_manager.sh
+
+    local drv="/tmp/test-vless-enc-$$.sh"
+    local out="/tmp/test-vless-enc-out-$$.txt"
+    cat > "$drv" << 'VEEOF'
+. "CONST_LIB"
+. "FACADE_LIB"
+
+LOG_FILE="/tmp/ve-log-$$.log"
+: > "$LOG_FILE"
+log()     { printf '%s|%s\n' "${2:-info}" "$1" >> "$LOG_FILE"; }
+echolog() { printf '%s|%s\n' "${2:-info}" "$1" >> "$LOG_FILE"; }
+nolog()   { :; }
+
+# Drive the real gate through the version string it reads.
+SB_VER=""
+get_sing_box_version() { echo "$SB_VER"; }
+
+eval "$(awk '/^_build_proxy_member_outbounds\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
+
+base='{"outbounds":[]}'
+KEY='mlkem768x25519plus.native.0rtt.AAAAsyntheticKEYforTEST-_0123'
+PQ="vless://11111111-2222-3333-4444-555555555555@pq.example.com:28872?encryption=$KEY&type=tcp&security=none#pq"
+PLAIN="vless://66666666-7777-8888-9999-aaaaaaaaaaaa@plain.example.com:443?encryption=none&type=tcp&security=tls&sni=plain.example.com#plain"
+BARE="vless://66666666-7777-8888-9999-aaaaaaaaaaaa@plain.example.com:443?type=tcp&security=tls&sni=plain.example.com#bare"
+
+# ── (1) the release after "-extended-" decides, not the upstream version ────
+for v in 1.13.14-extended-2.5.0 1.13.18-extended-2.6.5 1.12.22-extended-2.0.0 1.12.22-extended-2.0.0-rc.1; do
+    is_sing_box_extended_at_least "2.0.0" "$v" \
+        && echo "ve-min-accepts-$v:OK" || echo "ve-min-accepts-$v:FAIL"
+done
+# extended-1.6.2 ships on sing-box 1.13.11 and still lacks the field.
+for v in 1.13.11-extended-1.6.2 1.12.12-extended-1.5.0 1.13.14 1.12.0; do
+    is_sing_box_extended_at_least "2.0.0" "$v" \
+        && echo "ve-min-rejects-$v:FAIL" || echo "ve-min-rejects-$v:OK"
+done
+
+# ── (2) extended >= 2.0.0: the key reaches the outbound ─────────────────────
+SB_VER="1.13.14-extended-2.5.0"
+out_pq=$(sing_box_cf_add_proxy_outbound "$base" "pq" "$PQ" "0")
+rc=$?
+[ "$rc" = "0" ] && echo 've-ext-pq-rc0:OK' || echo "ve-ext-pq-rc0:FAIL (rc=$rc)"
+printf '%s' "$out_pq" | jq -e --arg k "$KEY" '.outbounds[0].encryption == $k' >/dev/null 2>&1 \
+    && echo 've-ext-pq-field:OK' || echo 've-ext-pq-field:FAIL'
+out_plain=$(sing_box_cf_add_proxy_outbound "$base" "plain" "$PLAIN" "0")
+printf '%s' "$out_plain" | jq -e '.outbounds[0] | has("encryption") | not' >/dev/null 2>&1 \
+    && echo 've-ext-none-omitted:OK' || echo 've-ext-none-omitted:FAIL'
+out_bare=$(sing_box_cf_add_proxy_outbound "$base" "bare" "$BARE" "0")
+printf '%s' "$out_bare" | jq -e '.outbounds[0] | has("encryption") | not' >/dev/null 2>&1 \
+    && echo 've-ext-absent-omitted:OK' || echo 've-ext-absent-omitted:FAIL'
+
+# ── (3) stock: the PQ link is skipped, ordinary links are untouched ─────────
+SB_VER="1.13.14"
+: > "$LOG_FILE"
+out_st=$(sing_box_cf_add_proxy_outbound "$base" "pq" "$PQ" "0")
+rc=$?
+[ "$rc" != "0" ] && echo 've-stock-pq-skip-rc:OK' || echo 've-stock-pq-skip-rc:FAIL (rc=0)'
+[ "$out_st" = "$base" ] && echo 've-stock-pq-config-unchanged:OK' \
+    || echo "ve-stock-pq-config-unchanged:FAIL ($out_st)"
+grep -q '^error|VLESS Encryption requires sing-box-extended' "$LOG_FILE" \
+    && echo 've-stock-pq-logged:OK' || echo 've-stock-pq-logged:FAIL'
+out_st_plain=$(sing_box_cf_add_proxy_outbound "$base" "plain" "$PLAIN" "0")
+rc=$?
+if [ "$rc" = "0" ] && printf '%s' "$out_st_plain" |
+    jq -e '(.outbounds | length) == 1 and (.outbounds[0] | has("encryption") | not)' >/dev/null 2>&1; then
+    echo 've-stock-plain-unaffected:OK'
+else
+    echo "ve-stock-plain-unaffected:FAIL (rc=$rc)"
+fi
+
+# ── (4) older extended without the field is gated too ───────────────────────
+SB_VER="1.13.11-extended-1.6.2"
+sing_box_cf_add_proxy_outbound "$base" "pq" "$PQ" "0" > /dev/null 2>&1
+rc=$?
+[ "$rc" != "0" ] && echo 've-ext162-pq-skip:OK' || echo 've-ext162-pq-skip:FAIL (rc=0)'
+
+# ── (5) urltest on stock: only the ordinary member, and the config checks ───
+SB_VER="1.13.14"
+config="$base"
+_build_proxy_member_outbounds "vt" "$PQ
+$PLAIN" "0" "URLTest"
+[ "$_member_outbound_tags" = "vt-2-out" ] && echo 've-stock-members-no-dangling:OK' \
+    || echo "ve-stock-members-no-dangling:FAIL ($_member_outbound_tags)"
+printf '%s' "$config" | jq -e '[.outbounds[].tag] == ["vt-2-out"]' >/dev/null 2>&1 \
+    && echo 've-stock-members-outbounds:OK' || echo 've-stock-members-outbounds:FAIL'
+ve_full="/tmp/ve-full-$$.json"
+printf '%s' "$config" | jq --arg m "$_member_outbound_tags" '{
+    log: { level: "error" },
+    inbounds: [],
+    outbounds: (.outbounds + [
+        { type: "urltest", tag: "vt-urltest", outbounds: ($m | split(",")) },
+        { type: "direct", tag: "direct-out" } ]),
+    route: { final: "vt-urltest" }
+}' > "$ve_full" 2>/dev/null
+if command -v sing-box > /dev/null 2>&1; then
+    sing-box -c "$ve_full" check > /dev/null 2>&1 \
+        && echo 've-stock-urltest-check:OK' || echo 've-stock-urltest-check:FAIL'
+else
+    echo 've-stock-urltest-check:SKIP'
+fi
+
+# urltest on extended keeps both members; a real check is only meaningful when
+# the container core itself carries the field.
+SB_VER="1.13.14-extended-2.5.0"
+config="$base"
+_build_proxy_member_outbounds "vx" "$PQ
+$PLAIN" "0" "URLTest"
+[ "$_member_outbound_tags" = "vx-1-out,vx-2-out" ] && echo 've-ext-members-both:OK' \
+    || echo "ve-ext-members-both:FAIL ($_member_outbound_tags)"
+real_ver="$(sing-box version 2>/dev/null | head -n1 | awk '{print $NF}')"
+if [ -n "$real_ver" ] && is_sing_box_extended_at_least "2.0.0" "$real_ver"; then
+    printf '%s' "$config" | jq --arg m "$_member_outbound_tags" '{
+        log: { level: "error" },
+        inbounds: [],
+        outbounds: (.outbounds + [
+            { type: "urltest", tag: "vx-urltest", outbounds: ($m | split(",")) },
+            { type: "direct", tag: "direct-out" } ]),
+        route: { final: "vx-urltest" }
+    }' > "$ve_full" 2>/dev/null
+    sing-box -c "$ve_full" check > /dev/null 2>&1 \
+        && echo 've-ext-urltest-check:OK' || echo 've-ext-urltest-check:FAIL'
+else
+    echo 've-ext-urltest-check:SKIP'
+fi
+rm -f "$ve_full"
+
+# ── (6) Xray-JSON subscriptions carry the key into the URI ──────────────────
+xsrc="/tmp/ve-xray-$$.json"
+cat > "$xsrc" << XJSON
+{ "outbounds": [
+  { "protocol": "vless", "tag": "xpq",
+    "settings": { "vnext": [ { "address": "xpq.example.com", "port": 28872,
+      "users": [ { "id": "11111111-2222-3333-4444-555555555555", "encryption": "$KEY" } ] } ] },
+    "streamSettings": { "network": "tcp", "security": "none" } },
+  { "protocol": "vless", "tag": "xplain",
+    "settings": { "vnext": [ { "address": "xplain.example.com", "port": 443,
+      "users": [ { "id": "66666666-7777-8888-9999-aaaaaaaaaaaa" } ] } ] },
+    "streamSettings": { "network": "tcp", "security": "tls",
+      "tlsSettings": { "serverName": "xplain.example.com" } } }
+] }
+XJSON
+xuris="$(xray_json_to_uri_lines "$xsrc" 2>/dev/null)"
+pq_line="$(printf '%s\n' "$xuris" | grep 'xpq.example.com')"
+plain_line="$(printf '%s\n' "$xuris" | grep 'xplain.example.com')"
+case "$pq_line" in
+*"encryption=$KEY"*) echo 've-xray-pq-encryption:OK' ;;
+*) echo "ve-xray-pq-encryption:FAIL ($pq_line)" ;;
+esac
+case "$plain_line" in
+*"encryption=none"*) echo 've-xray-plain-none:OK' ;;
+*) echo "ve-xray-plain-none:FAIL ($plain_line)" ;;
+esac
+SB_VER="1.13.14-extended-2.5.0"
+rt=$(sing_box_cf_add_proxy_outbound "$base" "rt" "$pq_line" "0")
+printf '%s' "$rt" | jq -e --arg k "$KEY" '.outbounds[0].encryption == $k' >/dev/null 2>&1 \
+    && echo 've-xray-roundtrip:OK' || echo 've-xray-roundtrip:FAIL'
+rm -f "$xsrc"
+
+rm -f "$LOG_FILE"
+echo 'DONE'
+VEEOF
+    sed -i "s|CONST_LIB|$lib/constants.sh|g; s|FACADE_LIB|$facade_lib|g; s|BIN_PATH|$bin|g" "$drv"
+
+    # Consume tokens in the CURRENT shell (while read < file, no pipe) so
+    # pass/fail/skip mutate the real counters. FAIL lines carry details after
+    # the token ("...:FAIL (rc=0)"), so match the token, not the line end.
+    sh "$drv" > "$out" 2>/dev/null || true
+    local saw_done=0 line
+    while IFS= read -r line; do
+        case "$line" in
+            *:OK)    pass "$line" ;;
+            *:FAIL*) fail "$line" ;;
+            *:SKIP*) skip "$line" ;;
+            DONE)    saw_done=1 ;;
+            *) ;;
+        esac
+    done < "$out"
+    if [ "$saw_done" = "1" ]; then
+        pass "ve-driver-completed:OK"
+    else
+        fail "ve-driver-completed:FAIL (driver aborted early)"
+    fi
+    rm -f "$drv" "$out"
+}
+
+# ─────────────────────────────────────────────────────────────────
 # Test: Text-list Selector / URLTest (task-051)
 #
 # Drives the SHIPPED configure_outbound_handler (awk-extracted verbatim) for the
@@ -7151,6 +7365,7 @@ main() {
             test_section_isolation
             test_monitor_fd_hygiene
             test_unsupported_skip
+            test_vless_encryption
             test_text_list_outbound
             test_ruleset_chunk_size
             test_diagnostics
@@ -7181,6 +7396,7 @@ main() {
         isolation)   test_section_isolation ;;
         monfd)       test_monitor_fd_hygiene ;;
         unsupported) test_unsupported_skip ;;
+        vlessenc)    test_vless_encryption ;;
         textlist)    test_text_list_outbound ;;
         chunkcheck)  test_ruleset_chunk_size ;;
         diagnostics) test_diagnostics ;;
@@ -7205,7 +7421,7 @@ main() {
         sb)          test_sing_box_config ;;
         *)
             echo "Unknown test: $target"
-            echo "Available: all deps syntax config helpers jq cm sb nft nftv6 selmark isolation monfd unsupported textlist chunkcheck diagnostics subscription fastest insecure rejected jobstate selfheal dnsdetour suburlopt globalproxy stablecheck extcheck netshiftcheck latesttag ghredirect selfupdate backupguard"
+            echo "Available: all deps syntax config helpers jq cm sb nft nftv6 selmark isolation monfd unsupported vlessenc textlist chunkcheck diagnostics subscription fastest insecure rejected jobstate selfheal dnsdetour suburlopt globalproxy stablecheck extcheck netshiftcheck latesttag ghredirect selfupdate backupguard"
             exit 1
             ;;
     esac
