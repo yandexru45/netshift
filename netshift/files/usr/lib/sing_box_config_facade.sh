@@ -113,6 +113,20 @@ sing_box_cf_add_proxy_outbound() {
         # the manager drops, so nothing changes for them.
         encryption=$(url_get_query_param "$url" "encryption")
 
+        # `encryption` is a sing-box-extended field (extended-2.0.0 and newer);
+        # stock sing-box and older extended builds decode configs strictly, so
+        # emitting it there would fail `sing-box check` for the WHOLE config.
+        # Skip only this link instead, with the same contract as the `*)` arm:
+        # config echoed UNCHANGED, non-zero return. The url/selector/urltest
+        # callers add a member tag only on success, so no group ever references
+        # an outbound that was not created. Ordinary links are not gated.
+        if [ -n "$encryption" ] && [ "$encryption" != "none" ] &&
+            ! is_sing_box_extended_at_least "2.0.0"; then
+            log "VLESS Encryption requires sing-box-extended 2.0.0 or newer. Install sing-box-extended and retry." "error"
+            echo "$config"
+            return 1
+        fi
+
         config=$(sing_box_cm_add_vless_outbound "$config" "$tag" "$host" "$port" "$uuid" "$flow" "" "$packet_encoding" "$encryption")
         config=$(_add_outbound_security "$config" "$tag" "$url")
         config=$(_add_outbound_transport "$config" "$tag" "$url")

@@ -732,6 +732,26 @@ is_sing_box_extended() {
     return 1
 }
 
+# Returns 0 if the given (or detected) sing-box version is an "extended" build
+# at or above the given extended release. Extended cores report e.g.
+# "1.13.14-extended-2.5.0": the part after "-extended-" is the fork's own
+# release, and fields are added there independently of the upstream version in
+# front of it (v1.13.11-extended-1.6.2 exists and still lacks VLESS
+# Encryption, which arrived in extended-2.0.0). Stock cores always fail.
+# Pre-releases of the required release pass: "2.0.0-rc.1" sorts after "2.0.0".
+# Arguments:
+#   $1 - minimum extended release (e.g. "2.0.0")
+#   $2 - optional sing-box version string (defaults to get_sing_box_version)
+is_sing_box_extended_at_least() {
+    local required="$1"
+    local version="${2:-}"
+
+    [ -n "$version" ] || version="$(get_sing_box_version)"
+
+    is_sing_box_extended "$version" || return 1
+    is_min_package_version "${version##*-extended-}" "$required"
+}
+
 # Generates a deterministic HWID based on WAN MAC address and device model
 # Format: xxxx-xxxx-xxxx-xxxx
 # Same router always produces the same HWID
@@ -1183,7 +1203,7 @@ describe_subscription_validation_failure() {
 # NOT declare `streamSettings.sockopt.dialerProxy` (a chained / multi-hop
 # upstream that cannot be expressed as a single share link). The resulting URIs
 # carry the standard query params the facade already understands
-# (security/sni/fp/pbk/sid/flow/type/path/host/mode/alpn), so they flow through
+# (encryption/security/sni/fp/pbk/sid/flow/type/path/host/mode/alpn), so they flow through
 # the existing sing_box_cf_add_proxy_outbound path unchanged. The outbound tag
 # (or the config `remarks`) becomes the URI fragment so the node keeps a
 # human-readable name.
@@ -1272,7 +1292,12 @@ xray_json_to_uri_lines() {
           # Build the query param list per protocol, dropping empties.
           | (
               if $ob.protocol == "vless" then
-                ([ "encryption=none",
+                # VLESS Encryption keys (mlkem768x25519plus...) live in the
+                # user entry; carry them over so the facade can emit them.
+                # Plain VLESS has "none" there or no field at all.
+                ([ ("encryption="
+                    + (safe($user.encryption)
+                       | if . == "" then "none" else . end)),
                    ("type=" + $net),
                    kv("flow"; $user.flow),
                    (if $sec != "" then ("security=" + $sec) else empty end),
