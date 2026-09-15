@@ -7124,6 +7124,330 @@ DRVEOF
     rm -rf "$work"
 }
 
+test_hot_reload() {
+    header "Subscription Update Without NetShift Restart (sing-box SIGHUP)"
+
+    if ! command -v jq > /dev/null 2>&1; then
+        skip "jq not available"
+        return
+    fi
+
+    local bin="${NETSHIFT_SRC}/usr/bin/netshift"
+    local lib="${NETSHIFT_LIB_DIR}"
+    if [ ! -r "$bin" ] || [ ! -r "$lib/rulesets.sh" ] || \
+        [ ! -r "$lib/sing_box_config_manager.sh" ] || [ ! -r "$lib/helpers.jq" ]; then
+        skip "netshift bin / rulesets.sh / sing_box_config_manager.sh / helpers.jq not found"
+        return
+    fi
+
+    # The config manager imports helpers.jq from /usr/lib/netshift.
+    mkdir -p /usr/lib/netshift
+    ln -sf "$lib/helpers.jq" /usr/lib/netshift/helpers.jq
+
+    local drv="/tmp/netshift-hotreload-$$.sh"
+    local out="/tmp/netshift-hotreload-$$.out"
+    cat > "$drv" << 'HREOF'
+log() { :; }
+echolog() { :; }
+nolog() { :; }
+
+. "LIB_DIR/constants.sh"
+. "LIB_DIR/helpers.sh"
+. "LIB_DIR/rulesets.sh"
+. "LIB_DIR/sing_box_config_manager.sh"
+
+# Functions under test come VERBATIM from the shipped bin.
+extract() {
+    awk -v f="$1" '$0 ~ "^"f"\\(\\) \\{"{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH"
+}
+
+HR_DIR="/tmp/netshift-hotreload-state-$$"
+rm -rf "$HR_DIR"
+mkdir -p "$HR_DIR"
+
+# ── prepare_source_ruleset: local rule sets survive a rebuild ──────────
+# A full restart wipes TMP_RULESET_FOLDER before the config is generated, but a
+# rebuild without a restart finds the rule-set files of the running sing-box.
+# The rule set must still be referenced by the new config, and a tag prepared
+# twice in one build (several plain remote lists) must be added only once.
+eval "$(extract prepare_source_ruleset)"
+
+TMP_RULESET_FOLDER="$HR_DIR/rulesets"
+mkdir -p "$TMP_RULESET_FOLDER"
+ud_path="$TMP_RULESET_FOLDER/main-user-domains-ruleset.json"
+rd_path="$TMP_RULESET_FOLDER/main-remote-domains-ruleset.json"
+
+base_config() {
+    config='{"route":{"rules":[],"rule_set":[]},"dns":{"rules":[]}}'
+    config=$(sing_box_cm_add_route_rule "$config" "main-route-rule" "tproxy-in" "main-out")
+    config=$(sing_box_cm_add_dns_route_rule "$config" "fakeip-server" "$SB_FAKEIP_DNS_RULE_TAG")
+}
+rule_set_defs() {
+    printf '%s' "$config" | jq --arg t "$1" '[.route.rule_set[] | select(.tag == $t)] | length'
+}
+rule_set_path() {
+    printf '%s' "$config" | jq -r --arg t "$1" '.route.rule_set[] | select(.tag == $t) | .path'
+}
+route_refs() {
+    printf '%s' "$config" | jq --arg t "$1" '[.route.rules[] | select(.__service_tag == "main-route-rule")
+        | (.rule_set // []) | if type == "array" then .[] else . end | select(. == $t)] | length'
+}
+dns_refs() {
+    printf '%s' "$config" | jq --arg t "$1" '[.dns.rules[] | select(.__service_tag == "fakeip-dns-rule-tag")
+        | (.rule_set // []) | if type == "array" then .[] else . end | select(. == $t)] | length'
+}
+
+# CASE P1: fresh build, no file yet -> file created, rule set referenced once.
+rm -f "$ud_path"
+base_config
+prepare_source_ruleset "main" "user" "domains" "main-route-rule"
+if [ "$(rule_set_defs main-user-domains-ruleset)" = "1" ] && \
+    [ "$(rule_set_path main-user-domains-ruleset)" = "$ud_path" ] && \
+    [ "$(route_refs main-user-domains-ruleset)" = "1" ] && \
+    [ "$(dns_refs main-user-domains-ruleset)" = "1" ] && \
+    [ "$(jq -c . "$ud_path" 2>/dev/null)" = '{"version":3,"rules":[]}' ]; then
+    echo 'hr-prepare-fresh-file-referenced:OK'
+else
+    echo "hr-prepare-fresh-file-referenced(defs=$(rule_set_defs main-user-domains-ruleset) route=$(route_refs main-user-domains-ruleset) dns=$(dns_refs main-user-domains-ruleset)):FAIL"
+fi
+
+# CASE P2: rebuild while the rule-set file already exists -> still referenced,
+#          and the file content used by the running sing-box is kept.
+printf '%s' '{"version":3,"rules":[{"domain_suffix":["example.com"]}]}' > "$ud_path"
+base_config
+prepare_source_ruleset "main" "user" "domains" "main-route-rule"
+if [ "$(rule_set_defs main-user-domains-ruleset)" = "1" ] && \
+    [ "$(route_refs main-user-domains-ruleset)" = "1" ] && \
+    [ "$(dns_refs main-user-domains-ruleset)" = "1" ]; then
+    echo 'hr-prepare-existing-file-referenced:OK'
+else
+    echo "hr-prepare-existing-file-referenced(defs=$(rule_set_defs main-user-domains-ruleset) route=$(route_refs main-user-domains-ruleset) dns=$(dns_refs main-user-domains-ruleset)):FAIL"
+fi
+if [ "$(jq -c . "$ud_path" 2>/dev/null)" = '{"version":3,"rules":[{"domain_suffix":["example.com"]}]}' ]; then
+    echo 'hr-prepare-existing-file-content-kept:OK'
+else
+    echo "hr-prepare-existing-file-content-kept(got '$(cat "$ud_path" 2>/dev/null)'):FAIL"
+fi
+
+# CASE P3: the same tag prepared twice in one fresh build -> one definition.
+rm -f "$rd_path"
+base_config
+prepare_source_ruleset "main" "remote" "domains" "main-route-rule"
+prepare_source_ruleset "main" "remote" "domains" "main-route-rule"
+if [ "$(rule_set_defs main-remote-domains-ruleset)" = "1" ] && \
+    [ "$(route_refs main-remote-domains-ruleset)" = "1" ] && \
+    [ "$(dns_refs main-remote-domains-ruleset)" = "1" ]; then
+    echo 'hr-prepare-same-tag-fresh-once:OK'
+else
+    echo "hr-prepare-same-tag-fresh-once(defs=$(rule_set_defs main-remote-domains-ruleset) route=$(route_refs main-remote-domains-ruleset)):FAIL"
+fi
+
+# CASE P4: the same tag prepared twice in a rebuild with the file present.
+printf '%s' '{"version":3,"rules":[{"domain_suffix":["example.org"]}]}' > "$rd_path"
+base_config
+prepare_source_ruleset "main" "remote" "domains" "main-route-rule"
+prepare_source_ruleset "main" "remote" "domains" "main-route-rule"
+if [ "$(rule_set_defs main-remote-domains-ruleset)" = "1" ] && \
+    [ "$(route_refs main-remote-domains-ruleset)" = "1" ] && \
+    [ "$(dns_refs main-remote-domains-ruleset)" = "1" ]; then
+    echo 'hr-prepare-same-tag-existing-once:OK'
+else
+    echo "hr-prepare-same-tag-existing-once(defs=$(rule_set_defs main-remote-domains-ruleset) route=$(route_refs main-remote-domains-ruleset)):FAIL"
+fi
+
+# ── reload_sing_box_config_in_place ───────────────────────────────────
+# Stubs replace only the process boundary (pidof/kill), the full restart and
+# the heavy config generator. The generator stub behaves like the real one:
+# it writes the config, or exits the shell when sing-box rejects it.
+eval "$(extract reload_sing_box_config_in_place)"
+
+hr_cfg="$HR_DIR/config.json"
+config_get() {
+    case "$2:$3" in
+    settings:config_path) eval "$1=\"\$hr_cfg\"" ;;
+    *) eval "$1=\"\${4:-}\"" ;;
+    esac
+}
+pidof() {
+    [ "$1" = "sing-box" ] && [ -n "$HR_PID" ] || return 1
+    printf '%s\n' "$HR_PID"
+}
+kill() {
+    printf '%s\n' "$*" >> "$HR_DIR/kill.log"
+    return "$HR_KILL_RC"
+}
+restart() {
+    printf 'restart\n' >> "$HR_DIR/restart.log"
+    return 0
+}
+sing_box_init_config() {
+    printf 'build\n' >> "$HR_DIR/build.log"
+    [ "$HR_BUILD_OK" = "1" ] || exit 1
+    printf '%s' "$HR_NEW_CONFIG" > "$hr_cfg"
+}
+hr_reset() {
+    rm -f "$HR_DIR/kill.log" "$HR_DIR/restart.log" "$HR_DIR/build.log"
+    printf '%s' '{"generation":1}' > "$hr_cfg"
+    HR_PID="4242"
+    HR_KILL_RC=0
+    HR_BUILD_OK=1
+    HR_NEW_CONFIG='{"generation":2}'
+}
+hr_count() {
+    if [ -f "$HR_DIR/$1.log" ]; then wc -l < "$HR_DIR/$1.log" | tr -d ' '; else echo 0; fi
+}
+hr_kills() {
+    cat "$HR_DIR/kill.log" 2>/dev/null
+}
+
+# CASE R1: sing-box is not running -> stock full restart, no build, no signal.
+hr_reset
+HR_PID=""
+reload_sing_box_config_in_place
+rc=$?
+if [ "$rc" -eq 0 ] && [ "$(hr_count restart)" = "1" ] && [ "$(hr_count build)" = "0" ] && [ -z "$(hr_kills)" ]; then
+    echo 'hr-reload-not-running-restarts:OK'
+else
+    echo "hr-reload-not-running-restarts(rc=$rc restart=$(hr_count restart) build=$(hr_count build) kill='$(hr_kills)'):FAIL"
+fi
+
+# CASE R2: the rebuilt config is rejected -> the caller survives, no signal,
+#          no restart, the running config file is untouched, non-zero rc.
+hr_reset
+HR_BUILD_OK=0
+reload_sing_box_config_in_place
+rc=$?
+if [ "$rc" -ne 0 ] && [ "$(hr_count build)" = "1" ] && [ "$(hr_count restart)" = "0" ] && \
+    [ -z "$(hr_kills)" ] && [ "$(cat "$hr_cfg")" = '{"generation":1}' ]; then
+    echo 'hr-reload-build-failure-keeps-running-config:OK'
+else
+    echo "hr-reload-build-failure-keeps-running-config(rc=$rc build=$(hr_count build) restart=$(hr_count restart) kill='$(hr_kills)'):FAIL"
+fi
+
+# CASE R3: the rebuilt config is identical -> nothing to reload.
+hr_reset
+HR_NEW_CONFIG='{"generation":1}'
+reload_sing_box_config_in_place
+rc=$?
+if [ "$rc" -eq 0 ] && [ "$(hr_count build)" = "1" ] && [ "$(hr_count restart)" = "0" ] && [ -z "$(hr_kills)" ]; then
+    echo 'hr-reload-unchanged-config-no-signal:OK'
+else
+    echo "hr-reload-unchanged-config-no-signal(rc=$rc build=$(hr_count build) restart=$(hr_count restart) kill='$(hr_kills)'):FAIL"
+fi
+
+# CASE R4: the rebuilt config changed -> SIGHUP to the running sing-box only.
+hr_reset
+reload_sing_box_config_in_place
+rc=$?
+if [ "$rc" -eq 0 ] && [ "$(hr_count build)" = "1" ] && [ "$(hr_count restart)" = "0" ] && [ "$(hr_kills)" = "-HUP 4242" ]; then
+    echo 'hr-reload-changed-config-sighup:OK'
+else
+    echo "hr-reload-changed-config-sighup(rc=$rc build=$(hr_count build) restart=$(hr_count restart) kill='$(hr_kills)'):FAIL"
+fi
+
+# CASE R5: the signal cannot be delivered -> fall back to the full restart.
+hr_reset
+HR_KILL_RC=1
+reload_sing_box_config_in_place
+rc=$?
+if [ "$rc" -eq 0 ] && [ "$(hr_count restart)" = "1" ] && [ "$(hr_kills)" = "-HUP 4242" ]; then
+    echo 'hr-reload-signal-failure-restarts:OK'
+else
+    echo "hr-reload-signal-failure-restarts(rc=$rc restart=$(hr_count restart) kill='$(hr_kills)'):FAIL"
+fi
+
+# ── subscription_update applies a changed feed without a restart ──────
+eval "$(extract subscription_update)"
+
+TMP_SUBSCRIPTION_FOLDER="$HR_DIR/sub-tmp"
+SUBSCRIPTION_CACHE_FOLDER="$HR_DIR/sub-cache"
+mkdir -p "$SUBSCRIPTION_CACHE_FOLDER"
+config_foreach() { "$1" "main"; }
+config_get() {
+    case "$3" in
+    connection_type) eval "$1=proxy" ;;
+    proxy_config_type) eval "$1=subscription" ;;
+    *) eval "$1=\"\${4:-}\"" ;;
+    esac
+}
+ensure_subscription_cache_dir() { :; }
+reap_legacy_subscription_cache_files() { :; }
+get_subscription_urls_for_section() { printf '%s\n' "https://feed.example.com/sub"; }
+get_subscription_url_hash() { printf 'feedhash'; }
+get_subscription_json_path() { printf '%s' "$SUBSCRIPTION_CACHE_FOLDER/$1.$2.json"; }
+get_subscription_url_cache_path() { printf '%s' "$SUBSCRIPTION_CACHE_FOLDER/$1.$2.url"; }
+get_subscription_download_proxy_address() { :; }
+wait_for_subscription_connectivity() { return 0; }
+redact_url_for_log() { printf '%s' "$1"; }
+subscription_cache_is_usable() { return 0; }
+download_subscription_into_cache() {
+    printf '%s' '{"outbounds":[{"type":"vless","tag":"node-1"}]}' > "$3"
+    return "$HR_DOWNLOAD_RC"
+}
+reload_sing_box_config_in_place() {
+    printf 'reload\n' >> "$HR_DIR/reload.log"
+    return "$HR_RELOAD_RC"
+}
+
+# CASE U1: a changed feed is applied by reloading sing-box, not by a restart.
+rm -f "$HR_DIR/reload.log" "$HR_DIR/restart.log"
+HR_DOWNLOAD_RC=0
+HR_RELOAD_RC=0
+subscription_update > /dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 0 ] && [ "$(hr_count reload)" = "1" ] && [ "$(hr_count restart)" = "0" ]; then
+    echo 'hr-update-changed-feed-reloads-without-restart:OK'
+else
+    echo "hr-update-changed-feed-reloads-without-restart(rc=$rc reload=$(hr_count reload) restart=$(hr_count restart)):FAIL"
+fi
+
+# CASE U2: an unchanged feed touches neither sing-box nor NetShift.
+rm -f "$HR_DIR/reload.log" "$HR_DIR/restart.log"
+HR_DOWNLOAD_RC=2
+subscription_update > /dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 0 ] && [ "$(hr_count reload)" = "0" ] && [ "$(hr_count restart)" = "0" ]; then
+    echo 'hr-update-unchanged-feed-no-reload:OK'
+else
+    echo "hr-update-unchanged-feed-no-reload(rc=$rc reload=$(hr_count reload) restart=$(hr_count restart)):FAIL"
+fi
+
+# CASE U3: a failed reload is reported to the caller.
+rm -f "$HR_DIR/reload.log" "$HR_DIR/restart.log"
+HR_DOWNLOAD_RC=0
+HR_RELOAD_RC=1
+subscription_update > /dev/null 2>&1
+rc=$?
+if [ "$rc" -ne 0 ] && [ "$(hr_count reload)" = "1" ]; then
+    echo 'hr-update-reload-failure-propagates:OK'
+else
+    echo "hr-update-reload-failure-propagates(rc=$rc reload=$(hr_count reload)):FAIL"
+fi
+
+rm -rf "$HR_DIR"
+echo DONE
+HREOF
+    sed -i -e "s|BIN_PATH|$bin|g" -e "s|LIB_DIR|$lib|g" "$drv"
+
+    sh "$drv" > "$out" 2>&1 || true
+
+    local line saw_done=0
+    while IFS= read -r line; do
+        case "$line" in
+            *:OK) pass "${line%:OK}" ;;
+            *:FAIL) fail "$line" ;;
+            DONE) saw_done=1 ;;
+        esac
+    done < "$out"
+    if [ "$saw_done" = "1" ]; then
+        pass "hr-driver-completed"
+    else
+        fail "hr-driver-completed:FAIL (driver aborted early)" "$(tail -5 "$out" 2>/dev/null)"
+    fi
+
+    rm -f "$drv" "$out"
+}
+
 # ─────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────
@@ -7170,6 +7494,7 @@ main() {
             test_github_redirect_tag
             test_self_update_netshift
             test_backup_integrity
+            test_hot_reload
             ;;
         deps)        test_deps ;;
         syntax)      test_syntax ;;
@@ -7200,12 +7525,13 @@ main() {
         ghredirect)  test_github_redirect_tag ;;
         selfupdate)  test_self_update_netshift ;;
         backupguard) test_backup_integrity ;;
+        hotreload)   test_hot_reload ;;
         jq)          test_jq_helpers ;;
         cm)          test_config_manager ;;
         sb)          test_sing_box_config ;;
         *)
             echo "Unknown test: $target"
-            echo "Available: all deps syntax config helpers jq cm sb nft nftv6 selmark isolation monfd unsupported textlist chunkcheck diagnostics subscription fastest insecure rejected jobstate selfheal dnsdetour suburlopt globalproxy stablecheck extcheck netshiftcheck latesttag ghredirect selfupdate backupguard"
+            echo "Available: all deps syntax config helpers jq cm sb nft nftv6 selmark isolation monfd unsupported textlist chunkcheck diagnostics subscription fastest insecure rejected jobstate selfheal dnsdetour suburlopt globalproxy stablecheck extcheck netshiftcheck latesttag ghredirect selfupdate backupguard hotreload"
             exit 1
             ;;
     esac
