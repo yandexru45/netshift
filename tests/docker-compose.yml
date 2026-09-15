@@ -13,7 +13,7 @@
 #             chunkcheck, diagnostics, subscription, fastest, insecure, rejected,
 #             jobstate, selfheal, dnsdetour, suburlopt, globalproxy, stablecheck,
 #             extcheck, netshiftcheck, latesttag, ghredirect, selfupdate,
-#             backupguard
+#             backupguard, hotreload
 # ──────────────────────────────────────────────────────────────────
 
 services:

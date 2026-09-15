@@ -1904,6 +1904,47 @@ list_update() {
     fi
 }
 
+# Applies a rebuilt sing-box config without restarting netshift. sing-box
+# reloads its config on SIGHUP inside the same process, so the nft rules, ip
+# rules and dnsmasq setup (none of which depend on subscription contents) stay
+# in place and only proxied connections are re-established. Falls back to a
+# full restart when sing-box is not running or cannot be signalled. A config
+# that fails validation is not applied: sing-box keeps the running one.
+reload_sing_box_config_in_place() {
+    local sing_box_pid config_path hash_before hash_after
+
+    sing_box_pid="$(pidof sing-box 2>/dev/null | awk '{print $1}')"
+    if [ -z "$sing_box_pid" ]; then
+        echolog "ℹ️ sing-box is not running; restarting netshift"
+        restart
+        return $?
+    fi
+
+    config_get config_path "settings" "config_path"
+    hash_before="$(md5sum "$config_path" 2>/dev/null | awk '{print $1}')"
+
+    # sing_box_save_config exits the shell when sing-box rejects the config, so
+    # rebuild in a subshell to keep this process running.
+    if ! (sing_box_init_config); then
+        echolog "❌ Failed to build a valid sing-box config; sing-box keeps the running config"
+        return 1
+    fi
+
+    hash_after="$(md5sum "$config_path" 2>/dev/null | awk '{print $1}')"
+    if [ "$hash_before" = "$hash_after" ]; then
+        echolog "ℹ️ sing-box config is unchanged; nothing to reload"
+        return 0
+    fi
+
+    if ! kill -HUP "$sing_box_pid" 2>/dev/null; then
+        echolog "⚠️ Failed to signal sing-box; restarting netshift"
+        restart
+        return $?
+    fi
+
+    echolog "🔄 sing-box reloaded the updated config without a netshift restart"
+}
+
 subscription_update() {
     echolog "🔄 Starting subscription update..."
 
@@ -2064,12 +2105,12 @@ subscription_update() {
         return 0
     fi
 
-    echolog "🔄 Restarting netshift to apply updated subscriptions..."
-    restart
-    restart_rc=$?
-    if [ "$restart_rc" -ne 0 ]; then
-        echolog "❌ Subscription was downloaded, but netshift restart failed"
-        return "$restart_rc"
+    echolog "🔄 Applying updated subscriptions..."
+    reload_sing_box_config_in_place
+    apply_rc=$?
+    if [ "$apply_rc" -ne 0 ]; then
+        echolog "❌ Subscription was downloaded, but applying it failed"
+        return "$apply_rc"
     fi
 
     if [ "$failed_sections" -gt 0 ]; then
@@ -2083,7 +2124,7 @@ subscription_update() {
 # Wipes ALL per-feed subscription cache files under SUBSCRIPTION_CACHE_FOLDER
 # (the four "${section}.<md5(url)>.{json,url,rejected,user_agent}" sidecars per
 # feed), then re-runs subscription_update verbatim so every feed is re-downloaded
-# fresh, re-validated, and the service restarts on change. Deleting the .json
+# fresh, re-validated, and applied on change. Deleting the .json
 # defeats the unchanged guard and deleting the .rejected defeats the rejected-hash
 # veto, so the redownload is a genuine full reset.
 #
@@ -3320,23 +3361,35 @@ prepare_source_ruleset() {
     log "Preparing a $name $type rule set for '$section' section" "debug"
     ruleset_tag=$(get_ruleset_tag "$section" "$name" "$type")
     ruleset_filepath="$TMP_RULESET_FOLDER/$ruleset_tag.json"
+
+    # Several lists of one section (e.g. plain remote lists) share a tag, so the
+    # rule set is added to the config once per build. The file itself may already
+    # exist when the config is rebuilt for a running sing-box without a restart
+    # (reload_sing_box_config_in_place); it is reused rather than left out.
+    if printf '%s' "$config" | jq -e --arg tag "$ruleset_tag" \
+        'any(.route.rule_set[]?; .tag == $tag)' > /dev/null 2>&1; then
+        log "Source rule set $ruleset_tag is already in the config, skipping." "debug"
+        return 0
+    fi
+
     create_source_rule_set "$ruleset_filepath"
     case $? in
-    0)
-        config=$(sing_box_cm_add_local_ruleset "$config" "$ruleset_tag" "source" "$ruleset_filepath")
-        config=$(sing_box_cm_patch_route_rule "$config" "$route_rule_tag" "rule_set" "$ruleset_tag")
-        case "$type" in
-        domains)
-            config=$(sing_box_cm_patch_dns_route_rule "$config" "$SB_FAKEIP_DNS_RULE_TAG" "rule_set" "$ruleset_tag")
-            ;;
-        subnets) ;;
-        *)
-            log "Unsupported remote rule set type: $type" "error"
-            return 1
-            ;;
-        esac
+    0) ;;
+    3) log "Source rule set $ruleset_filepath already exists, reusing it." "debug" ;;
+    *) return 1 ;;
+    esac
+
+    config=$(sing_box_cm_add_local_ruleset "$config" "$ruleset_tag" "source" "$ruleset_filepath")
+    config=$(sing_box_cm_patch_route_rule "$config" "$route_rule_tag" "rule_set" "$ruleset_tag")
+    case "$type" in
+    domains)
+        config=$(sing_box_cm_patch_dns_route_rule "$config" "$SB_FAKEIP_DNS_RULE_TAG" "rule_set" "$ruleset_tag")
         ;;
-    3) log "Source rule set $ruleset_filepath already exists, skipping." "debug" ;;
+    subnets) ;;
+    *)
+        log "Unsupported remote rule set type: $type" "error"
+        return 1
+        ;;
     esac
 }
 
