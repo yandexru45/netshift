@@ -318,11 +318,12 @@ main() {
             fi
             download_release_asset "$RELEASES_DOWNLOAD_BASE/$release_tag/$filename" "$filename"
         done
-        # RU i18n only if already installed (mirrors the install flow below).
-        if pkg_is_installed luci-i18n-netshift-ru; then
-            filename="luci-i18n-netshift-ru-${release_tag}.${ext}"
-            download_release_asset "$RELEASES_DOWNLOAD_BASE/$release_tag/$filename" "$filename"
-        fi
+        # RU i18n is always downloaded: the install flow below upgrades it when
+        # already installed and otherwise asks whether to install it. Skipping the
+        # download on a fresh install silently dropped that prompt. A failed
+        # download is not fatal (download_release_asset only returns 1).
+        filename="luci-i18n-netshift-ru-${release_tag}.${ext}"
+        download_release_asset "$RELEASES_DOWNLOAD_BASE/$release_tag/$filename" "$filename"
     else
         # FALLBACK: scrape the api.github.com release JSON for .ipk/.apk URLs.
         if command -v curl >/dev/null 2>&1; then
