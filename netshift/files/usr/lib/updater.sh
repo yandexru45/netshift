@@ -1245,9 +1245,14 @@ _updates_install_sing_box_stable_core() {
         updates_log "Updating apk package lists"
         apk update </dev/null >/dev/null 2>&1 || true
         updates_log "Installing stable sing-box via apk"
-        if ! apk add --allow-downgrade sing-box </dev/null >/dev/null 2>&1; then
-            # apk fix is a best-effort recovery; its result still decides success.
-            apk fix sing-box </dev/null >/dev/null 2>&1 || installed=0
+        # apk-tools 3 has no --allow-downgrade. `apk fix --reinstall` rewrites the
+        # package files in place, but when the installed build is no longer in
+        # the feed index (the feed was rebuilt since) it skips the package and
+        # still exits 0 ("[APK unavailable, skipped]"). So check that the core
+        # actually changed, and fall back to the package file from the feed.
+        if ! apk fix --reinstall sing-box </dev/null >/dev/null 2>&1 ||
+            is_sing_box_extended "$(get_sing_box_version)"; then
+            updates_apk_reinstall_sing_box_from_file "$tmp_dir" || installed=0
         fi
     elif command -v opkg >/dev/null 2>&1; then
         updates_log "Updating opkg package lists"
@@ -1273,12 +1278,10 @@ _updates_install_sing_box_stable_core() {
         return 1
     fi
 
-    updates_restart_netshift
+    # Validate the switch before restarting anything: the binary must no longer
+    # be an "extended" build. If it still is, the install did not land — restore
+    # the backup and leave the running NetShift alone.
     new_version="$(get_sing_box_version)"
-
-    # Validate the rollback actually took effect: the running binary must no
-    # longer be an "extended" build. If it still is, the install did not land —
-    # restore the backup so the router keeps a known-good core.
     if is_sing_box_extended "$new_version"; then
         updates_stable_rollback "$backup_binary" "$backup_cronet" "$backup_binary_size" "$backup_cronet_size"
         rm -rf "$tmp_dir"
@@ -1294,11 +1297,46 @@ _updates_install_sing_box_stable_core() {
         rm -f "$UPDATES_LIBCRONET_LIB" 2>/dev/null || true
     fi
 
-    # Drop the backup only now that the install is confirmed good.
+    # Drop the backup only now that the install is confirmed good, and before
+    # the restart regenerates and checks the sing-box config: the backup is a
+    # full copy of the extended binary held in RAM (tmpfs).
     rm -rf "$tmp_dir"
+    updates_restart_netshift
     updates_log "Stable sing-box installed: ${new_version:-unknown}"
     echo "{\"success\":true,\"version\":\"$new_version\"}"
     return 0
+}
+
+# Reinstalls sing-box from its package file in the configured feeds, for when
+# `apk fix --reinstall` skips it. `apk fetch` verifies the file against the
+# signed feed index; feed packages carry no signature of their own, hence
+# --allow-untrusted. --force-reinstall covers a file whose build is already
+# installed. Installing a file pins its hash in the apk world, so the previous
+# sing-box entry is restored afterwards, or dropped if there was none (netshift
+# depends on sing-box, so the package stays installed).
+updates_apk_reinstall_sing_box_from_file() {
+    local dir="$1"
+    local pkg="" world_entry rc=0
+
+    apk fetch sing-box -o "$dir" </dev/null >/dev/null 2>&1 || return 1
+    for pkg in "$dir"/sing-box-*.apk; do
+        break
+    done
+    [ -f "$pkg" ] || return 1
+
+    world_entry="$(grep -E '^sing-box([<>=~]|$)' "$UPDATES_APK_WORLD" 2>/dev/null | head -n1)"
+
+    updates_log "Installing stable sing-box from the feed package file"
+    apk add --allow-untrusted --force-reinstall "$pkg" </dev/null >/dev/null 2>&1 || rc=1
+    rm -f "$pkg"
+
+    if [ -n "$world_entry" ]; then
+        apk add "$world_entry" </dev/null >/dev/null 2>&1 || true
+    else
+        apk del sing-box </dev/null >/dev/null 2>&1 || true
+    fi
+
+    return "$rc"
 }
 
 # Restores the tmpfs backup of /usr/bin/sing-box (and libcronet.so) into place.
