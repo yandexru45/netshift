@@ -88,6 +88,9 @@ UPDATES_RESOLV_BACKUP="/tmp/netshift-resolv.conf.bak"
 # locations; tests override them.
 UPDATES_SING_BOX_BIN="/usr/bin/sing-box"
 UPDATES_LIBCRONET_LIB="/usr/lib/libcronet.so"
+# apk world file; the stable reinstall from a package file restores the
+# sing-box entry in it.
+UPDATES_APK_WORLD="/etc/apk/world"
 # Component Manager — NetShift self-update (task-017). The GitHub latest-release
 # API for NetShift itself (same endpoint install.sh and get_system_info use);
 # the self-update worker downloads the release .ipk/.apk assets from it.
