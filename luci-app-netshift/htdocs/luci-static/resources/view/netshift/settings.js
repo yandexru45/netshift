@@ -134,6 +134,7 @@ function createSettingsContent(section) {
       if (
         sec[".type"] === "section" &&
         sec["connection_type"] !== "block" &&
+        sec["connection_type"] !== "dns" &&
         sec["connection_type"] !== "exclusion"
       ) {
         this.keylist.push(secName);
@@ -392,6 +393,7 @@ function createSettingsContent(section) {
       if (
         sec[".type"] === "section" &&
         sec["connection_type"] !== "block" &&
+        sec["connection_type"] !== "dns" &&
         sec["connection_type"] !== "exclusion" &&
         sec["disabled"] !== "1"
       ) {
