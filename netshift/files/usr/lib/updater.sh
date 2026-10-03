@@ -646,6 +646,38 @@ updates_resolve_sing_box_extended_arch_suffix() {
     esac
 }
 
+# The service proxy (local mixed inbound -> the selected proxy section) when the
+# user asked for component downloads to go through it
+# (settings.download_components_via_proxy); empty otherwise. GitHub is often
+# blocked or rate-limited for the router's own address, so the core, the packages
+# and the release lookups may need the tunnel.
+updates_components_proxy_address() {
+    local enabled
+
+    config_get_bool enabled "settings" "download_components_via_proxy" 0
+    [ "$enabled" -eq 1 ] || return 0
+
+    # The inbound exists for this flag on its own (service_proxy_needed); whether
+    # the lists use it is a separate switch.
+    echo "$SB_SERVICE_MIXED_INBOUND_ADDRESS:$SB_SERVICE_MIXED_INBOUND_PORT"
+}
+
+# HTTP GET for release lookups: through the service proxy first when components
+# are configured to use it, then directly (the proxy may be down, e.g. while
+# sing-box is being replaced). Echoes the body; non-zero on failure.
+updates_http_get() {
+    local url="$1"
+    local proxy body
+
+    proxy="$(updates_components_proxy_address)"
+    if [ -n "$proxy" ] && body="$(updates_http_get_once "$url" "$proxy")" && [ -n "$body" ]; then
+        printf '%s' "$body"
+        return 0
+    fi
+
+    updates_http_get_once "$url" ""
+}
+
 # Performs a single HTTP GET, optionally through an http proxy. Sends a
 # User-Agent (the GitHub API rejects requests without one) and uses curl's
 # -f/--fail so HTTP errors (403 rate-limit, 404, ...) become a non-zero exit
@@ -689,13 +721,16 @@ updates_fetch_github_releases() {
     local url response proxy
     url="https://api.github.com/repos/${repo}/releases?per_page=30"
 
-    response="$(updates_http_get_once "$url" "")"
+    response="$(updates_http_get "$url")"
     if updates_response_is_release_array "$response"; then
         printf '%s' "$response"
         return 0
     fi
 
-    proxy="$(get_service_proxy_address 2>/dev/null || true)"
+    # With download_components_via_proxy the proxy was already tried first (and the
+    # direct request after it); this retry is for the lists-only proxy setup.
+    proxy=""
+    [ -n "$(updates_components_proxy_address)" ] || proxy="$(get_service_proxy_address 2>/dev/null || true)"
     if [ -n "$proxy" ]; then
         updates_log "Direct GitHub API request failed; retrying via service proxy $proxy" "warn"
         response="$(updates_http_get_once "$url" "$proxy")"
@@ -865,6 +900,22 @@ updates_extract_sing_box_binary() {
 updates_download_to_file() {
     local url="$1"
     local dest="$2"
+    local proxy
+
+    # Through the service proxy first when components are configured to use it;
+    # a failure falls through to the direct download below.
+    proxy="$(updates_components_proxy_address)"
+    if [ -n "$proxy" ]; then
+        if command -v curl >/dev/null 2>&1 &&
+            curl -m 120 -fsSL -x "http://$proxy" "$url" -o "$dest" && [ -s "$dest" ]; then
+            return 0
+        fi
+        if command -v wget >/dev/null 2>&1 &&
+            http_proxy="http://$proxy" https_proxy="http://$proxy" wget -q -O "$dest" "$url" && [ -s "$dest" ]; then
+            return 0
+        fi
+        updates_log "Download via the service proxy $proxy failed; trying a direct connection" "warn"
+    fi
 
     if command -v curl >/dev/null 2>&1; then
         curl -m 120 -fsSL "$url" -o "$dest" && [ -s "$dest" ] && return 0
@@ -2707,7 +2758,16 @@ updates_self_update_netshift() {
 # no redirect). Stubbable in tests.
 updates_github_resolve_redirect() {
     local url="$1"
+    local proxy redirect
     command -v curl >/dev/null 2>&1 || return 1
+    proxy="$(updates_components_proxy_address)"
+    if [ -n "$proxy" ]; then
+        redirect="$(curl -sI -o /dev/null -w '%{redirect_url}' --connect-timeout 5 -m 15 -A 'netshift-updater' -x "http://$proxy" "$url" 2>/dev/null)"
+        if [ -n "$redirect" ]; then
+            printf '%s' "$redirect"
+            return 0
+        fi
+    fi
     curl -sI -o /dev/null -w '%{redirect_url}' --connect-timeout 5 -m 15 -A 'netshift-updater' "$url" 2>/dev/null
 }
 
@@ -2741,7 +2801,7 @@ updates_netshift_latest_tag() {
     fi
 
     # FALLBACK: api.github.com (rate-limited) parsed with jq.
-    response="$(updates_http_get_once "$NETSHIFT_RELEASE_API_URL" "")"
+    response="$(updates_http_get "$NETSHIFT_RELEASE_API_URL")"
     if [ -z "$response" ]; then
         return 1
     fi
@@ -2816,7 +2876,7 @@ _updates_self_update_download_assets() {
     fi
 
     # FALLBACK: scrape the API release JSON for direct asset URLs.
-    response="$(updates_http_get_once "$NETSHIFT_RELEASE_API_URL" "")"
+    response="$(updates_http_get "$NETSHIFT_RELEASE_API_URL")"
     if [ -z "$response" ]; then
         return 1
     fi
