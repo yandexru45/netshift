@@ -39,6 +39,7 @@ check_required_file "$NETSHIFT_LIB/autoupdate.sh"
 check_required_file "$NETSHIFT_LIB/applyconfig.sh"
 check_required_file "$NETSHIFT_LIB/failover.sh"
 check_required_file "$NETSHIFT_LIB/filterpreview.sh"
+check_required_file "$NETSHIFT_LIB/routerstats.sh"
 . /lib/functions.sh
 . /lib/config/uci.sh
 . /lib/functions/network.sh
@@ -68,6 +69,7 @@ check_required_file "$NETSHIFT_LIB/filterpreview.sh"
 . "$NETSHIFT_LIB/naive.sh"
 . "$NETSHIFT_LIB/corecaps.sh"
 . "$NETSHIFT_LIB/autoupdate.sh"
+. "$NETSHIFT_LIB/routerstats.sh"
 
 config_load "$NETSHIFT_CONFIG"
 
@@ -9310,6 +9312,7 @@ Available commands:
                             Time each DNS server (the configured ones by default) the way its queries go;
                             with --section the given servers go the way of that section's own DNS
     get_subscription_info   Print the traffic and expiry the subscription panels report as JSON
+    get_router_stats        Print uptime, load, memory, free space and temperature as JSON
     clash_api               Clash API interface for managing proxies and groups
     show_config             Display current NetShift configuration
     show_version            Show NetShift version
@@ -9446,6 +9449,9 @@ dns_benchmark)
     ;;
 get_subscription_info)
     get_subscription_info
+    ;;
+get_router_stats)
+    get_router_stats
     ;;
 clash_api)
     clash_api "$2" "$3" "$4"

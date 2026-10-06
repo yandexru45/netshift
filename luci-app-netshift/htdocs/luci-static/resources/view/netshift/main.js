@@ -669,8 +669,8 @@ function validateHysteria2Url(url) {
     const portEntries = cleanedPort.split(",");
     const isValidPortNumber = (value) => {
       if (!/^\d+$/.test(value)) return false;
-      const num = Number(value);
-      return num >= 1 && num <= 65535;
+      const num2 = Number(value);
+      return num2 >= 1 && num2 <= 65535;
     };
     const isValidPortEntry = (entry) => {
       if (!entry) return false;
@@ -1177,6 +1177,7 @@ var NetShift;
     AvailableMethods2["GET_PIN_GUARD_EVENTS"] = "get_pin_guard_events";
     AvailableMethods2["DNS_BENCHMARK"] = "dns_benchmark";
     AvailableMethods2["GET_SUBSCRIPTION_INFO"] = "get_subscription_info";
+    AvailableMethods2["GET_ROUTER_STATS"] = "get_router_stats";
     AvailableMethods2["CHECK_NFT_RULES"] = "check_nft_rules";
     AvailableMethods2["GET_STATUS"] = "get_status";
     AvailableMethods2["CHECK_SING_BOX"] = "check_sing_box";
@@ -1396,6 +1397,7 @@ var NetShiftShellMethods = {
     { nobatch: true, timeout: DNS_BENCHMARK_TIMEOUT }
   ),
   getSubscriptionInfo: async () => callBaseMethod(NetShift.AvailableMethods.GET_SUBSCRIPTION_INFO),
+  getRouterStats: async () => callBaseMethod(NetShift.AvailableMethods.GET_ROUTER_STATS),
   checkNftRules: async () => callBaseMethod(
     NetShift.AvailableMethods.CHECK_NFT_RULES
   ),
@@ -4344,6 +4346,11 @@ function render() {
       ),
       // Subscription refresh toolbar (hidden without subscription sections)
       E("div", { id: "dashboard-sections-toolbar" }),
+      E(
+        "div",
+        { id: "dashboard-widget-router" },
+        renderWidget({ loading: true, failed: false, title: "", items: [] })
+      ),
       // All outbounds
       E(
         "div",
@@ -4374,6 +4381,65 @@ function render() {
       )
     ]
   );
+}
+
+// src/helpers/routerStats.ts
+var num = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+function parseRouterStats(input) {
+  let data = input;
+  if (typeof input === "string") {
+    try {
+      data = JSON.parse(input);
+    } catch {
+      return null;
+    }
+  }
+  if (!data || typeof data !== "object") {
+    return null;
+  }
+  const raw = data;
+  if (typeof raw.uptime_seconds !== "number") {
+    return null;
+  }
+  const load = Array.isArray(raw.load) ? raw.load : [];
+  return {
+    uptime_seconds: num(raw.uptime_seconds),
+    load: [num(load[0]), num(load[1]), num(load[2])],
+    cpu_cores: Math.max(1, num(raw.cpu_cores)),
+    ram_total_mb: num(raw.ram_total_mb),
+    ram_available_mb: num(raw.ram_available_mb),
+    flash_free_mb: num(raw.flash_free_mb),
+    tmp_free_mb: num(raw.tmp_free_mb),
+    temperature_c: typeof raw.temperature_c === "number" ? raw.temperature_c : null
+  };
+}
+function formatUptime(seconds, units) {
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor(seconds % 86400 / 3600);
+  const minutes = Math.floor(seconds % 3600 / 60);
+  if (days > 0) {
+    return `${days} ${units.d} ${hours} ${units.h}`;
+  }
+  if (hours > 0) {
+    return `${hours} ${units.h} ${minutes} ${units.min}`;
+  }
+  if (minutes > 0) {
+    return `${minutes} ${units.min}`;
+  }
+  return `${seconds} ${units.s}`;
+}
+function ramUsedPercent(stats) {
+  if (stats.ram_total_mb <= 0) {
+    return 0;
+  }
+  const used = stats.ram_total_mb - stats.ram_available_mb;
+  return Math.min(
+    100,
+    Math.max(0, Math.round(used / stats.ram_total_mb * 100))
+  );
+}
+function loadPercent(stats) {
+  return Math.round(stats.load[0] / stats.cpu_cores * 100);
 }
 
 // src/helpers/updateNotice.ts
@@ -4530,6 +4596,74 @@ async function fetchSubscriptionInfo() {
     });
   } catch (e) {
     logger.error("[DASHBOARD]", "fetchSubscriptionInfo: failed", e);
+  }
+}
+var ROUTER_STATS_INTERVAL = 1e4;
+var routerStatsTimer;
+async function renderRouterStats() {
+  const container = document.getElementById("dashboard-widget-router");
+  if (!container) {
+    return;
+  }
+  try {
+    const response = await NetShiftShellMethods.getRouterStats();
+    const stats = response.success ? parseRouterStats(response.data) : null;
+    if (!stats) {
+      container.replaceChildren();
+      return;
+    }
+    container.replaceChildren(
+      renderWidget({
+        loading: false,
+        failed: false,
+        title: _("Router"),
+        items: [
+          {
+            key: _("Uptime"),
+            value: formatUptime(stats.uptime_seconds, {
+              d: _("d"),
+              h: _("h"),
+              min: _("min"),
+              s: _("s")
+            })
+          },
+          {
+            key: _("Load"),
+            value: `${stats.load[0].toFixed(2)} (${loadPercent(stats)}%)`
+          },
+          {
+            key: _("Memory"),
+            value: `${ramUsedPercent(stats)}% (${stats.ram_available_mb} ${_("MB free")})`
+          },
+          {
+            key: _("Flash free"),
+            value: `${stats.flash_free_mb} ${_("MB")}`
+          },
+          ...stats.temperature_c !== null ? [
+            {
+              key: _("Temperature"),
+              value: `${stats.temperature_c} \xB0C`
+            }
+          ] : []
+        ]
+      })
+    );
+  } catch (e) {
+    logger.error("[DASHBOARD]", "renderRouterStats: failed", e);
+  }
+}
+function startRouterStats() {
+  stopRouterStats();
+  void renderRouterStats();
+  routerStatsTimer = window.setInterval(
+    () => void renderRouterStats(),
+    ROUTER_STATS_INTERVAL
+  );
+}
+function stopRouterStats() {
+  if (routerStatsTimer !== void 0) {
+    window.clearInterval(routerStatsTimer);
+    routerStatsTimer = void 0;
   }
 }
 async function connectToClashSockets() {
@@ -4941,6 +5075,7 @@ async function onStoreUpdate(next, prev, diff) {
 }
 async function onPageMount() {
   onPageUnmount();
+  startRouterStats();
   store.subscribe(onStoreUpdate);
   store.set({
     sectionsWidget: {
@@ -4954,6 +5089,7 @@ async function onPageMount() {
 }
 function onPageUnmount() {
   store.unsubscribe(onStoreUpdate);
+  stopRouterStats();
   store.reset([
     "bandwidthWidget",
     "trafficTotalWidget",
@@ -9163,6 +9299,7 @@ return baseclass.extend({
   filterConnections,
   findStaticLease,
   formatSnapshotTime,
+  formatUptime,
   getClashUIUrl,
   getClashWsUrl,
   getCoreCapabilities,
@@ -9180,6 +9317,7 @@ return baseclass.extend({
   listedDeviceIps,
   loadCoreCapabilities,
   loadDashboardViewPrefs,
+  loadPercent,
   logLineMessage,
   logger,
   maskIP,
@@ -9193,12 +9331,14 @@ return baseclass.extend({
   parseLanInfo,
   parsePinGuardEvents,
   parseQueryString,
+  parseRouterStats,
   parseSnapshots,
   parseSubscriptionInfo,
   parseUpdateNotice,
   parseValueList,
   preserveScrollForPage,
   prettyBytes,
+  ramUsedPercent,
   recentPinGuardEvents,
   saveDashboardViewPrefs,
   setCoreCapabilities,

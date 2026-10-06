@@ -17,28 +17,28 @@
     "call": "✔ Enabled",
     "key": "✔ Enabled",
     "places": [
-      "src/netshift/tabs/dashboard/initController.ts:565"
+      "src/netshift/tabs/dashboard/initController.ts:652"
     ]
   },
   {
     "call": "✔ Running",
     "key": "✔ Running",
     "places": [
-      "src/netshift/tabs/dashboard/initController.ts:576"
+      "src/netshift/tabs/dashboard/initController.ts:663"
     ]
   },
   {
     "call": "✘ Disabled",
     "key": "✘ Disabled",
     "places": [
-      "src/netshift/tabs/dashboard/initController.ts:566"
+      "src/netshift/tabs/dashboard/initController.ts:653"
     ]
   },
   {
     "call": "✘ Stopped",
     "key": "✘ Stopped",
     "places": [
-      "src/netshift/tabs/dashboard/initController.ts:577"
+      "src/netshift/tabs/dashboard/initController.ts:664"
     ]
   },
   {
@@ -52,7 +52,7 @@
     "call": "A dead server was left",
     "key": "A dead server was left",
     "places": [
-      "src/netshift/tabs/dashboard/initController.ts:778"
+      "src/netshift/tabs/dashboard/initController.ts:868"
     ]
   },
   {
@@ -66,7 +66,7 @@
     "call": "A newer version is available",
     "key": "A newer version is available",
     "places": [
-      "src/netshift/tabs/dashboard/initController.ts:710"
+      "src/netshift/tabs/dashboard/initController.ts:800"
     ]
   },
   {
@@ -94,7 +94,7 @@
     "call": "Active Connections",
     "key": "Active Connections",
     "places": [
-      "src/netshift/tabs/dashboard/initController.ts:527"
+      "src/netshift/tabs/dashboard/initController.ts:614"
     ]
   },
   {
@@ -215,7 +215,7 @@
     "call": "All subscriptions updated",
     "key": "All subscriptions updated",
     "places": [
-      "src/netshift/tabs/dashboard/initController.ts:326"
+      "src/netshift/tabs/dashboard/initController.ts:413"
     ]
   },
   {
@@ -757,7 +757,7 @@
     "call": "Core switch failed",
     "key": "Core switch failed",
     "places": [
-      "src/netshift/methods/shell/index.ts:314",
+      "src/netshift/methods/shell/index.ts:316",
       "src/netshift/methods/shell/pollSingBoxComponentAction.ts:93"
     ]
   },
@@ -808,6 +808,7 @@
     "call": "d",
     "key": "d",
     "places": [
+      "src/netshift/tabs/dashboard/initController.ts:137",
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/connections.js:24"
     ]
   },
@@ -1200,8 +1201,8 @@
     "call": "Downlink",
     "key": "Downlink",
     "places": [
-      "src/netshift/tabs/dashboard/initController.ts:461",
-      "src/netshift/tabs/dashboard/initController.ts:495"
+      "src/netshift/tabs/dashboard/initController.ts:548",
+      "src/netshift/tabs/dashboard/initController.ts:582"
     ]
   },
   {
@@ -1649,7 +1650,7 @@
     "call": "Failed to clear subscription cache",
     "key": "Failed to clear subscription cache",
     "places": [
-      "src/netshift/methods/shell/index.ts:474",
+      "src/netshift/methods/shell/index.ts:476",
       "src/netshift/tabs/diagnostic/initController.ts:354",
       "src/netshift/tabs/diagnostic/initController.ts:358"
     ]
@@ -1703,16 +1704,16 @@
     "call": "Failed to update subscription",
     "key": "Failed to update subscription",
     "places": [
-      "src/netshift/tabs/dashboard/initController.ts:307",
-      "src/netshift/tabs/dashboard/initController.ts:313"
+      "src/netshift/tabs/dashboard/initController.ts:394",
+      "src/netshift/tabs/dashboard/initController.ts:400"
     ]
   },
   {
     "call": "Failed to update subscriptions",
     "key": "Failed to update subscriptions",
     "places": [
-      "src/netshift/tabs/dashboard/initController.ts:334",
-      "src/netshift/tabs/dashboard/initController.ts:340"
+      "src/netshift/tabs/dashboard/initController.ts:421",
+      "src/netshift/tabs/dashboard/initController.ts:427"
     ]
   },
   {
@@ -1754,6 +1755,13 @@
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:160",
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:1139",
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:527"
+    ]
+  },
+  {
+    "call": "Flash free",
+    "key": "Flash free",
+    "places": [
+      "src/netshift/tabs/dashboard/initController.ts:152"
     ]
   },
   {
@@ -1872,6 +1880,7 @@
     "call": "h",
     "key": "h",
     "places": [
+      "src/netshift/tabs/dashboard/initController.ts:138",
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/connections.js:24"
     ]
   },
@@ -2679,6 +2688,13 @@
     ]
   },
   {
+    "call": "Load",
+    "key": "Load",
+    "places": [
+      "src/netshift/tabs/dashboard/initController.ts:144"
+    ]
+  },
+  {
     "call": "Loading...",
     "key": "Loading...",
     "places": [
@@ -2758,16 +2774,38 @@
     ]
   },
   {
+    "call": "MB",
+    "key": "MB",
+    "places": [
+      "src/netshift/tabs/dashboard/initController.ts:153"
+    ]
+  },
+  {
+    "call": "MB free",
+    "key": "MB free",
+    "places": [
+      "src/netshift/tabs/dashboard/initController.ts:149"
+    ]
+  },
+  {
+    "call": "Memory",
+    "key": "Memory",
+    "places": [
+      "src/netshift/tabs/dashboard/initController.ts:148"
+    ]
+  },
+  {
     "call": "Memory Usage",
     "key": "Memory Usage",
     "places": [
-      "src/netshift/tabs/dashboard/initController.ts:531"
+      "src/netshift/tabs/dashboard/initController.ts:618"
     ]
   },
   {
     "call": "min",
     "key": "min",
     "places": [
+      "src/netshift/tabs/dashboard/initController.ts:139",
       "src/netshift/tabs/diagnostic/helpers/getEnvironmentItems.ts:44",
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/connections.js:24"
     ]
@@ -2869,8 +2907,8 @@
     "call": "NetShift",
     "key": "NetShift",
     "places": [
-      "src/netshift/tabs/dashboard/initController.ts:563",
-      "src/netshift/tabs/dashboard/initController.ts:704"
+      "src/netshift/tabs/dashboard/initController.ts:650",
+      "src/netshift/tabs/dashboard/initController.ts:794"
     ]
   },
   {
@@ -3549,6 +3587,13 @@
     ]
   },
   {
+    "call": "Router",
+    "key": "Router",
+    "places": [
+      "src/netshift/tabs/dashboard/initController.ts:132"
+    ]
+  },
+  {
     "call": "Router DNS is not routed through sing-box",
     "key": "Router DNS is not routed through sing-box",
     "places": [
@@ -3631,6 +3676,7 @@
     "call": "s",
     "key": "s",
     "places": [
+      "src/netshift/tabs/dashboard/initController.ts:140",
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/connections.js:24"
     ]
   },
@@ -3834,7 +3880,7 @@
     "call": "Self-update failed",
     "key": "Self-update failed",
     "places": [
-      "src/netshift/methods/shell/index.ts:549"
+      "src/netshift/methods/shell/index.ts:551"
     ]
   },
   {
@@ -3877,7 +3923,7 @@
     "call": "Services info",
     "key": "Services info",
     "places": [
-      "src/netshift/tabs/dashboard/initController.ts:560"
+      "src/netshift/tabs/dashboard/initController.ts:647"
     ]
   },
   {
@@ -3929,8 +3975,8 @@
     "call": "Sing-box",
     "key": "Sing-box",
     "places": [
-      "src/netshift/tabs/dashboard/initController.ts:574",
-      "src/netshift/tabs/dashboard/initController.ts:705",
+      "src/netshift/tabs/dashboard/initController.ts:661",
+      "src/netshift/tabs/dashboard/initController.ts:795",
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:437"
     ]
   },
@@ -4115,7 +4161,7 @@
     "call": "stopped answering, the automatic choice is on again",
     "key": "stopped answering, the automatic choice is on again",
     "places": [
-      "src/netshift/tabs/dashboard/initController.ts:783"
+      "src/netshift/tabs/dashboard/initController.ts:873"
     ]
   },
   {
@@ -4172,7 +4218,7 @@
     "call": "Subscription updated",
     "key": "Subscription updated",
     "places": [
-      "src/netshift/tabs/dashboard/initController.ts:303"
+      "src/netshift/tabs/dashboard/initController.ts:390"
     ]
   },
   {
@@ -4235,7 +4281,7 @@
     "call": "System info",
     "key": "System info",
     "places": [
-      "src/netshift/tabs/dashboard/initController.ts:524"
+      "src/netshift/tabs/dashboard/initController.ts:611"
     ]
   },
   {
@@ -4271,6 +4317,13 @@
     "key": "TCP ports that always go directly",
     "places": [
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:769"
+    ]
+  },
+  {
+    "call": "Temperature",
+    "key": "Temperature",
+    "places": [
+      "src/netshift/tabs/dashboard/initController.ts:158"
     ]
   },
   {
@@ -4667,7 +4720,7 @@
     "call": "Traffic",
     "key": "Traffic",
     "places": [
-      "src/netshift/tabs/dashboard/initController.ts:458",
+      "src/netshift/tabs/dashboard/initController.ts:545",
       "src/netshift/tabs/dashboard/partials/renderSections.ts:145",
       "src/netshift/tabs/dashboard/partials/renderSections.ts:146",
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/connections.js:85",
@@ -4699,7 +4752,7 @@
     "call": "Traffic Total",
     "key": "Traffic Total",
     "places": [
-      "src/netshift/tabs/dashboard/initController.ts:488"
+      "src/netshift/tabs/dashboard/initController.ts:575"
     ]
   },
   {
@@ -4807,7 +4860,7 @@
     "call": "Update it in the Component Manager tab.",
     "key": "Update it in the Component Manager tab.",
     "places": [
-      "src/netshift/tabs/dashboard/initController.ts:721"
+      "src/netshift/tabs/dashboard/initController.ts:811"
     ]
   },
   {
@@ -4849,7 +4902,7 @@
     "call": "Updating all subscriptions… this may take a minute",
     "key": "Updating all subscriptions… this may take a minute",
     "places": [
-      "src/netshift/tabs/dashboard/initController.ts:320"
+      "src/netshift/tabs/dashboard/initController.ts:407"
     ]
   },
   {
@@ -4863,8 +4916,8 @@
     "call": "Uplink",
     "key": "Uplink",
     "places": [
-      "src/netshift/tabs/dashboard/initController.ts:460",
-      "src/netshift/tabs/dashboard/initController.ts:491"
+      "src/netshift/tabs/dashboard/initController.ts:547",
+      "src/netshift/tabs/dashboard/initController.ts:578"
     ]
   },
   {
@@ -4872,6 +4925,13 @@
     "key": "Upstream and bootstrap DNS resolvers, and optional DNS-over-proxy",
     "places": [
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:22"
+    ]
+  },
+  {
+    "call": "Uptime",
+    "key": "Uptime",
+    "places": [
+      "src/netshift/tabs/dashboard/initController.ts:135"
     ]
   },
   {

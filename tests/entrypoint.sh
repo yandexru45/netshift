@@ -136,6 +136,7 @@ test_syntax() {
         "$lib/naive.sh" \
         "$lib/corecaps.sh" \
         "$lib/autoupdate.sh" \
+        "$lib/routerstats.sh" \
         "$lib/applyconfig.sh" \
         "$lib/failover.sh" \
         "$lib/filterpreview.sh"; do
@@ -23184,6 +23185,79 @@ DRVEOF
     else
         fail "the errors of XHTTP, VMess and VLESS Encryption name the installed core"
     fi
+    rm -rf "$work"
+}
+
+test_router_stats() {
+    header "Router stats: uptime, load, memory, space, temperature (routerstats.sh)"
+
+    if ! command -v jq > /dev/null 2>&1; then
+        skip "jq not installed"
+        return
+    fi
+
+    local lib="${NETSHIFT_LIB_DIR}"
+    if [ ! -r "$lib/routerstats.sh" ]; then
+        fail "routerstats.sh not found"
+        return
+    fi
+
+    local work="/tmp/netshift-rstats-$$"
+    rm -rf "$work"
+    mkdir -p "$work/proc" "$work/sys/class/thermal/thermal_zone0" "$work/sys/class/thermal/thermal_zone1" "$work/sys/class/hwmon/hwmon0"
+
+    local out
+    out="$(
+        ROUTER_STATS_PROC="$work/proc"
+        ROUTER_STATS_SYS="$work/sys"
+        . "$lib/routerstats.sh"
+        df() { printf 'Filesystem 1024-blocks Used Available Capacity Mounted\nX 100000 1 %s 1%% %s\n' "$([ "$2" = "/tmp" ] && echo 51200 || echo 10240)" "$2"; }
+
+        printf '3600.55 7000.00\n' > "$work/proc/uptime"
+        printf '0.52 0.40 0.31 1/100 1234\n' > "$work/proc/loadavg"
+        printf 'MemTotal:        262144 kB\nMemFree:          20000 kB\nMemAvailable:    131072 kB\nBuffers: 1 kB\nCached: 2 kB\n' > "$work/proc/meminfo"
+        printf 'processor\t: 0\nprocessor\t: 1\n' > "$work/proc/cpuinfo"
+        printf '48000\n' > "$work/sys/class/thermal/thermal_zone0/temp"
+        printf '61000\n' > "$work/sys/class/thermal/thermal_zone1/temp"
+        printf '40000\n' > "$work/sys/class/hwmon/hwmon0/temp1_input"
+
+        echo "full=$(get_router_stats)"
+
+        # no MemAvailable (an old kernel): free + buffers + cache
+        printf 'MemTotal:        262144 kB\nMemFree:          20480 kB\nBuffers:           1024 kB\nCached:            2048 kB\n' > "$work/proc/meminfo"
+        echo "old-kernel=$(get_router_stats | jq -c '.ram_available_mb')"
+
+        # a sensor that does not work, or reports nonsense, is not a temperature
+        printf '0\n' > "$work/sys/class/thermal/thermal_zone0/temp"
+        printf '999999000\n' > "$work/sys/class/thermal/thermal_zone1/temp"
+        printf 'N/A\n' > "$work/sys/class/hwmon/hwmon0/temp1_input"
+        echo "broken-sensors=$(get_router_stats | jq -c '.temperature_c')"
+        # degrees, not thousandths
+        printf '55\n' > "$work/sys/class/thermal/thermal_zone0/temp"
+        echo "plain-degrees=$(get_router_stats | jq -c '.temperature_c')"
+        rm -rf "$work/sys/class"
+        echo "no-sensor=$(get_router_stats | jq -c '.temperature_c')"
+
+        # unreadable proc files give zeros, not an error
+        rm -f "$work/proc/uptime" "$work/proc/loadavg" "$work/proc/meminfo" "$work/proc/cpuinfo"
+        echo "empty=$(get_router_stats | jq -c '[.uptime_seconds, .load, .ram_total_mb, .cpu_cores]')"
+    )"
+
+    _rs() {
+        if printf '%s\n' "$out" | grep -qxF -- "$2"; then
+            pass "$1"
+        else
+            fail "$1" "wanted [$2] in: $(printf '%s' "$out" | tr '\n' '~')"
+        fi
+    }
+
+    _rs "everything is read" 'full={"uptime_seconds":3600,"load":[0.52,0.40,0.31],"cpu_cores":2,"ram_total_mb":256,"ram_available_mb":128,"flash_free_mb":10,"tmp_free_mb":50,"temperature_c":61}'
+    _rs "an old kernel's free memory is free + buffers + cache" "old-kernel=23"
+    _rs "a sensor that does not work is no temperature" "broken-sensors=null"
+    _rs "degrees are taken as they are" "plain-degrees=55"
+    _rs "no sensor, no temperature" "no-sensor=null"
+    _rs "unreadable files give zeros" "empty=[0,[0,0,0],0,1]"
+
     rm -rf "$work"
 }
 

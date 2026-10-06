@@ -740,6 +740,9 @@ msgstr "Предпросмотр фильтров"
 msgid "First server only"
 msgstr "Только первый сервер"
 
+msgid "Flash free"
+msgstr "Свободно во флеш"
+
 msgid "Flow offloading is enabled"
 msgstr "Включён Flow Offloading"
 
@@ -1127,6 +1130,9 @@ msgstr "Расписание обновления списков и способ
 msgid "Lists & Updates"
 msgstr "Списки и обновления"
 
+msgid "Load"
+msgstr "Нагрузка"
+
 msgid "Loading..."
 msgstr "Загрузка..."
 
@@ -1159,6 +1165,15 @@ msgstr "Сработавший список"
 
 msgid "Matches no list, goes through the global proxy section"
 msgstr "Не входит ни в один список, идёт через секцию глобального прокси"
+
+msgid "MB"
+msgstr "МБ"
+
+msgid "MB free"
+msgstr "МБ свободно"
+
+msgid "Memory"
+msgstr "Память"
 
 msgid "Memory Usage"
 msgstr "Использование памяти"
@@ -1484,6 +1499,9 @@ msgstr "Направлять весь несовпавший трафик чер
 msgid "Route BitTorrent traffic directly, bypassing the proxy or VPN. Some providers block subscriptions when they detect torrent traffic."
 msgstr "Направлять трафик BitTorrent напрямую, минуя прокси или VPN. Некоторые провайдеры блокируют подписки, обнаружив торрент-трафик."
 
+msgid "Router"
+msgstr "Роутер"
+
 msgid "Router DNS is not routed through sing-box"
 msgstr "DNS роутера не проходит через sing-box"
 
@@ -1790,6 +1808,9 @@ msgstr "TCP"
 msgid "TCP ports that always go directly"
 msgstr "TCP-порты, которые всегда идут напрямую"
 
+msgid "Temperature"
+msgstr "Температура"
+
 msgid "Test latency"
 msgstr "Тестирование задержки"
 
@@ -2032,6 +2053,9 @@ msgstr "Исходящий"
 
 msgid "Upstream and bootstrap DNS resolvers, and optional DNS-over-proxy"
 msgstr "Вышестоящий и начальный (bootstrap) DNS-резолверы и опциональный DNS через прокси"
+
+msgid "Uptime"
+msgstr "Работает"
 
 msgid "UPX"
 msgstr "UPX"

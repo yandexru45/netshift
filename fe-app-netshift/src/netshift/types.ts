@@ -67,6 +67,7 @@ export namespace NetShift {
     GET_PIN_GUARD_EVENTS = 'get_pin_guard_events',
     DNS_BENCHMARK = 'dns_benchmark',
     GET_SUBSCRIPTION_INFO = 'get_subscription_info',
+    GET_ROUTER_STATS = 'get_router_stats',
     CHECK_NFT_RULES = 'check_nft_rules',
     GET_STATUS = 'get_status',
     CHECK_SING_BOX = 'check_sing_box',

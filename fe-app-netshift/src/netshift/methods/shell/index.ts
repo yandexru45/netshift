@@ -167,6 +167,8 @@ export const NetShiftShellMethods = {
     ),
   getSubscriptionInfo: async () =>
     callBaseMethod<unknown>(NetShift.AvailableMethods.GET_SUBSCRIPTION_INFO),
+  getRouterStats: async () =>
+    callBaseMethod<unknown>(NetShift.AvailableMethods.GET_ROUTER_STATS),
   checkNftRules: async () =>
     callBaseMethod<NetShift.NftRulesCheckResult>(
       NetShift.AvailableMethods.CHECK_NFT_RULES,
