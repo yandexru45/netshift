@@ -973,15 +973,15 @@
     ]
   },
   {
-    "call": "Enter domain names separated by commas, spaces, or newlines. You can add comments using //",
-    "key": "Enter domain names separated by commas, spaces, or newlines. You can add comments using //",
+    "call": "Enter domain names separated by commas, spaces, or newlines. You can add comments using //. Prefixes: full: (exact host), keyword: (part of the name), regex: (regular expression, no spaces or commas)",
+    "key": "Enter domain names separated by commas, spaces, or newlines. You can add comments using //. Prefixes: full: (exact host), keyword: (part of the name), regex: (regular expression, no spaces or commas)",
     "places": [
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:975"
     ]
   },
   {
-    "call": "Enter domain names without protocols, e.g. example.com or sub.example.com",
-    "key": "Enter domain names without protocols, e.g. example.com or sub.example.com",
+    "call": "Enter domain names without protocols, e.g. example.com or sub.example.com. Prefixes: full: (exact host), keyword: (part of the name), regex: (regular expression)",
+    "key": "Enter domain names without protocols, e.g. example.com or sub.example.com. Prefixes: full: (exact host), keyword: (part of the name), regex: (regular expression)",
     "places": [
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:946"
     ]
@@ -1315,7 +1315,7 @@
     "places": [
       "src/validators/validateDomain.ts:18",
       "src/validators/validateDomain.ts:27",
-      "src/validators/validateDomain.ts:42"
+      "src/validators/validateDomain.ts:48"
     ]
   },
   {
@@ -1449,6 +1449,13 @@
     "key": "Invalid port number. Must be between 1 and 65535",
     "places": [
       "src/validators/validateShadowsocksUrl.ts:85"
+    ]
+  },
+  {
+    "call": "Invalid regular expression",
+    "key": "Invalid regular expression",
+    "places": [
+      "src/validators/validateDomain.ts:88"
     ]
   },
   {
@@ -1740,6 +1747,13 @@
     "key": "Kept in the configuration file as it is typed.",
     "places": [
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:1300"
+    ]
+  },
+  {
+    "call": "Keyword may contain only letters, digits, dots, dashes and underscores",
+    "key": "Keyword may contain only letters, digits, dots, dashes and underscores",
+    "places": [
+      "src/validators/validateDomain.ts:69"
     ]
   },
   {
@@ -2219,6 +2233,13 @@
     "key": "Regional options cannot be used together",
     "places": [
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:871"
+    ]
+  },
+  {
+    "call": "Regular expression must not contain spaces or commas",
+    "key": "Regular expression must not contain spaces or commas",
+    "places": [
+      "src/validators/validateDomain.ts:81"
     ]
   },
   {
@@ -3237,6 +3258,8 @@
       "src/validators/validateDnsPool.ts:57",
       "src/validators/validateDomain.ts:13",
       "src/validators/validateDomain.ts:30",
+      "src/validators/validateDomain.ts:75",
+      "src/validators/validateDomain.ts:91",
       "src/validators/validateHysteriaUrl.ts:120",
       "src/validators/validateIp.ts:8",
       "src/validators/validateIp.ts:91",
