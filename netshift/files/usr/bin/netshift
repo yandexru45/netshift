@@ -30,6 +30,7 @@ check_required_file "$NETSHIFT_LIB/update_notice.sh"
 check_required_file "$NETSHIFT_LIB/snapshots.sh"
 check_required_file "$NETSHIFT_LIB/pinguard.sh"
 check_required_file "$NETSHIFT_LIB/dnsbench.sh"
+check_required_file "$NETSHIFT_LIB/naive.sh"
 . /lib/functions.sh
 . /lib/config/uci.sh
 . /lib/functions/network.sh
@@ -50,6 +51,7 @@ check_required_file "$NETSHIFT_LIB/dnsbench.sh"
 . "$NETSHIFT_LIB/snapshots.sh"
 . "$NETSHIFT_LIB/pinguard.sh"
 . "$NETSHIFT_LIB/dnsbench.sh"
+. "$NETSHIFT_LIB/naive.sh"
 
 config_load "$NETSHIFT_CONFIG"
 
@@ -1304,6 +1306,7 @@ stop_main() {
 
     log "Stop sing-box"
     /etc/init.d/sing-box stop
+    naive_sidecars_stop
 }
 
 start() {
@@ -2254,6 +2257,8 @@ create_nft_rules() {
         nft add rule inet "$NFT_TABLE_NAME" mangle_output ip6 daddr "@$NFT_LOCALV6_SET_NAME" return
     fi
     nft add rule inet "$NFT_TABLE_NAME" mangle_output meta mark "$NFT_OUTBOUND_MARK" counter return
+    # The NaiveProxy sidecar clients dial their server themselves and carry no mark.
+    nft add rule inet "$NFT_TABLE_NAME" mangle_output meta skuid "$NAIVE_CLIENT_UID" counter return
 
     # Same generator as the prerouting chain, minus the iifname selector (this
     # traffic did not arrive on a LAN interface).
@@ -3661,6 +3666,9 @@ sing_box_configure_service() {
 sing_box_init_config() {
     local config='{"log":{},"dns":{},"ntp":{},"certificate":{},"endpoints":[],"inbounds":[],"outbounds":[],"route":{},"services":[],"experimental":{}}'
 
+    # NaiveProxy clients are listed while the outbounds are built
+    naive_sidecars_reset
+
     sing_box_configure_log
     sing_box_configure_inbounds
     sing_box_configure_outbounds
@@ -3670,6 +3678,8 @@ sing_box_init_config() {
     sing_box_additional_inbounds
     sing_box_reject_unmatched_for_broken_chain
     sing_box_save_config
+    # after a configuration sing-box accepted: the clients it sends traffic to
+    naive_sidecars_apply
 }
 
 sing_box_configure_log() {
