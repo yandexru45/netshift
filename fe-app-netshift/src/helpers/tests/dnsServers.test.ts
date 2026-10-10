@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { dnsServersFromOptions, dnsServersToOptions } from '../dnsServers';
+import {
+  dnsRoutesFromOptions,
+  dnsRouteSection,
+  dnsRouteVia,
+  dnsRoutesToOptions,
+  dnsServersFromOptions,
+  dnsServersToOptions,
+} from '../dnsServers';
 
 describe('dnsServersFromOptions', () => {
   it('puts the main server first, then the pool', () => {
@@ -79,5 +86,82 @@ describe('dnsServersToOptions', () => {
     expect(dnsServersToOptions(['8.8.8.8'])).toBeNull();
     expect(dnsServersToOptions(['ftp://8.8.8.8'])).toBeNull();
     expect(dnsServersToOptions(['udp://'])).toBeNull();
+  });
+});
+
+describe('dnsRoutesFromOptions / dnsRoutesToOptions', () => {
+  it('reads the entries of dns_server_route', () => {
+    expect(
+      dnsRoutesFromOptions([
+        'doh://dns.google/dns-query tunnel',
+        'udp://1.1.1.1 direct',
+        'dot://dns.quad9.net via:second',
+      ]),
+    ).toEqual({
+      'doh://dns.google/dns-query': 'tunnel',
+      'udp://1.1.1.1': 'direct',
+      'dot://dns.quad9.net': 'via:second',
+    });
+  });
+
+  it('skips entries that are not "<server> <route>"', () => {
+    expect(
+      dnsRoutesFromOptions([
+        'udp://1.1.1.1',
+        'udp://1.1.1.1 default',
+        'udp://1.1.1.1 via:',
+        ' tunnel',
+        '',
+      ]),
+    ).toEqual({});
+  });
+
+  it('knows the section of a route', () => {
+    expect(dnsRouteSection('via:second')).toBe('second');
+    expect(dnsRouteSection('via:')).toBeNull();
+    expect(dnsRouteSection('direct')).toBeNull();
+    expect(dnsRouteVia('main')).toBe('via:main');
+  });
+
+  it('writes only what differs from the backend default, in list order', () => {
+    expect(
+      dnsRoutesToOptions(['udp://9.9.9.9', 'udp://1.1.1.1', 'dot://x'], {
+        'udp://1.1.1.1': 'via:main',
+        'udp://9.9.9.9': 'via:second',
+        'dot://x': 'direct',
+        'udp://gone': 'via:main',
+      }),
+    ).toEqual(['udp://9.9.9.9 via:second', 'udp://1.1.1.1 via:main']);
+  });
+
+  it('writes "direct" when the old global switch would send the server through the tunnel', () => {
+    expect(
+      dnsRoutesToOptions(
+        ['udp://1.1.1.1', 'dot://x'],
+        { 'udp://1.1.1.1': 'direct', 'dot://x': 'tunnel' },
+        'tunnel',
+      ),
+    ).toEqual(['udp://1.1.1.1 direct']);
+  });
+
+  it('writes nothing when no server has its own route', () => {
+    expect(dnsRoutesToOptions(['udp://1.1.1.1'], {})).toEqual([]);
+  });
+
+  it('ignores a route it does not know', () => {
+    expect(
+      dnsRoutesToOptions(['udp://1.1.1.1'], { 'udp://1.1.1.1': 'weird' }),
+    ).toEqual([]);
+  });
+
+  it('round-trips', () => {
+    const entries = ['udp://1.1.1.1 via:main', 'dot://dns.google via:second'];
+
+    expect(
+      dnsRoutesToOptions(
+        ['udp://1.1.1.1', 'dot://dns.google'],
+        dnsRoutesFromOptions(entries),
+      ),
+    ).toEqual(entries);
   });
 });

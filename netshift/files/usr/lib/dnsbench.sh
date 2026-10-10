@@ -231,7 +231,8 @@ dns_bench_through_tunnel() {
 # dns_benchmark <server>...: with no arguments, the servers of the settings (the main
 # one and the pool). Prints {"results":[{"server","ms"}]} in the order asked.
 dns_benchmark() {
-    local bootstrap dir server index=0 result="[]" ms dns_type dns_server detour via valid_count=0 line
+    local bootstrap dir server index=0 result="[]" ms dns_type dns_server via valid_count=0 line
+    local tag tunnel_servers tunnel_positions tunnel_done tunnel_count position
 
     config_get bootstrap "settings" "bootstrap_dns_server" "77.88.8.8"
 
@@ -263,45 +264,86 @@ dns_benchmark() {
 
     dir="$(mktemp -d)" || return 1
 
-    # The servers of the main DNS are reached through the tunnel when DNS goes through
-    # an outbound: from the router itself a resolver inside the tunnel does not exist.
-    via="direct"
-    detour=""
-    if command -v _get_dns_detour_tag > /dev/null 2>&1; then
-        detour="$(_get_dns_detour_tag 2> /dev/null)"
-    fi
-    if [ -n "$detour" ] && [ "$valid_count" -gt 0 ]; then
-        if dns_bench_through_tunnel "$detour" "$bootstrap" "$@" > "$dir/tunnel.out" 2> /dev/null; then
-            via="tunnel"
-            while read -r index ms; do
-                printf '%s\n' "$ms" > "$dir/$index.ms"
-            done < "$dir/tunnel.out"
-        fi
-    fi
-
-    if [ "$via" = "direct" ]; then
+    # A server that goes through the tunnel (the global switch, or its own entry in
+    # dns_server_route) is timed through it: from the router itself a resolver inside
+    # the tunnel does not exist. The others are asked from the router. Servers that go
+    # through DIFFERENT outbounds (via:<section> of different sections) are timed in
+    # groups, one short-lived sing-box per outbound, so that each is measured by its own way.
+    : > "$dir/tunnel.map"
+    if command -v dns_routes_init > /dev/null 2>&1; then
+        dns_routes_init
         index=0
         for server in "$@"; do
             index=$((index + 1))
-            (
-                ms="$(dns_bench_one "$server" "$bootstrap")" || ms=""
-                printf '%s\n' "$ms" > "$dir/$index.ms"
-            ) &
+            tag="$(dns_server_detour_tag "$server")"
+            [ -n "$tag" ] || continue
+            printf '%s\t%s\t%s\n' "$index" "$tag" "$server" >> "$dir/tunnel.map"
         done
-        wait
+    fi
+
+    tunnel_done=""
+    if [ -s "$dir/tunnel.map" ] && [ "$valid_count" -gt 0 ]; then
+        cut -f2 "$dir/tunnel.map" | awk '!seen[$0]++' > "$dir/tunnel.tags"
+        while IFS= read -r tag; do
+            tunnel_servers=""
+            tunnel_positions=""
+            while IFS="$(printf '\t')" read -r position row_tag server; do
+                [ "$row_tag" = "$tag" ] || continue
+                tunnel_servers="$tunnel_servers $server"
+                tunnel_positions="$tunnel_positions $position"
+            done < "$dir/tunnel.map"
+            # shellcheck disable=SC2086
+            if dns_bench_through_tunnel "$tag" "$bootstrap" $tunnel_servers > "$dir/tunnel.out" 2> /dev/null < /dev/null; then
+                while read -r index ms; do
+                    position="$(printf '%s\n' $tunnel_positions | sed -n "${index}p")"
+                    [ -n "$position" ] || continue
+                    printf '%s\n' "$ms" > "$dir/$position.ms"
+                done < "$dir/tunnel.out"
+                tunnel_done="$tunnel_done $tunnel_positions"
+            fi
+        done < "$dir/tunnel.tags"
     fi
 
     index=0
+    for server in "$@"; do
+        index=$((index + 1))
+        case " $tunnel_done " in
+        *" $index "*) continue ;;
+        esac
+        (
+            ms="$(dns_bench_one "$server" "$bootstrap")" || ms=""
+            printf '%s\n' "$ms" > "$dir/$index.ms"
+        ) &
+    done
+    wait
+
+    index=0
+    tunnel_count=0
     for server in "$@"; do
         index=$((index + 1))
         ms="$(cat "$dir/$index.ms" 2> /dev/null)"
         case "$ms" in
         '' | *[!0-9]*) ms="" ;;
         esac
-        result="$(printf '%s' "$result" | jq -c --arg server "$server" --arg ms "$ms" \
-            '. + [{server: $server, ms: (if $ms == "" then null else ($ms | tonumber) end)}]')"
+        via="direct"
+        case " $tunnel_done " in
+        *" $index "*)
+            via="tunnel"
+            tunnel_count=$((tunnel_count + 1))
+            ;;
+        esac
+        result="$(printf '%s' "$result" | jq -c --arg server "$server" --arg ms "$ms" --arg via "$via" \
+            '. + [{server: $server, ms: (if $ms == "" then null else ($ms | tonumber) end), via: $via}]')"
     done
     rm -rf "$dir"
+
+    if [ "$tunnel_count" -eq 0 ]; then
+        via="direct"
+    elif [ "$tunnel_count" -eq "$valid_count" ]; then
+        via="tunnel"
+    else
+        via="mixed"
+    fi
 
     jq -n -c --argjson results "$result" --arg via "$via" '{via: $via, results: $results}'
 }

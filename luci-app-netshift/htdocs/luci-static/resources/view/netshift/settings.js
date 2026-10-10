@@ -1,6 +1,7 @@
 "use strict";
 "require form";
 "require uci";
+"require ui";
 "require baseclass";
 "require tools.widgets as widgets";
 "require view.netshift.main as main";
@@ -38,45 +39,105 @@ function createSettingsContent(section) {
   );
 
   // --- DNS tab ---
-  // One ordered list of DNS servers: the first is the main one, the others are
-  // the pool used by the mode below. It is stored in the options the backend has
-  // always read (dns_type + dns_server for the main server, dns_pool_server for
-  // the rest), so an older config opens as it is and nothing is migrated.
+  // One table of DNS servers: the first row is the main server, the others are the
+  // pool used by the mode below. Every row says how its queries go (directly, or
+  // through a section's proxy/VPN) and shows how fast the server answers.
+  // Stored in the options the backend has always read (dns_type + dns_server for the
+  // main server, dns_pool_server for the rest) plus dns_server_route, so an older
+  // config opens as it is and nothing is migrated.
   let o = section.taboption(
     "dns",
-    form.DynamicList,
+    form.Value,
     "dns_servers",
     _("DNS servers"),
     _(
-      "scheme://host[:port][/path], where scheme is udp, tcp, dot, doh, doh3 or doq. The first one is the main server. Pick a ready-made server or type your own.",
+      "scheme://host[:port][/path], where scheme is udp, tcp, dot, doh, doh3 or doq. The first server is the main one. Choose for each server whether its queries go directly or through the proxy/VPN of a section (bootstrap DNS always stays direct). The time is measured from the router, through the tunnel for the servers that go through one, with the routes saved last.",
     ),
   );
-  Object.entries(main.DNS_POOL_PRESETS).forEach(([key, label]) => {
-    o.value(key, label);
-  });
-  o.rmempty = false;
-  let knownCount = null;
+  o.rmempty = true;
+  o.forcewrite = true;
+  o.rows = null;
+
+  // The proxy/VPN sections a server can be sent through.
+  const tunnelSections = () =>
+    uci
+      .sections("netshift", "section")
+      .filter(
+        (sec) =>
+          sec.connection_type !== "block" &&
+          sec.connection_type !== "dns" &&
+          sec.connection_type !== "exclusion" &&
+          sec.disabled !== "1",
+      )
+      .map((sec) => sec[".name"]);
+
+  // What a server without an entry does: the old global switch decides.
+  const backendDefaultRoute = (section_id) =>
+    uci.get("netshift", section_id, "dns_via_outbound") === "1"
+      ? "tunnel"
+      : "direct";
+
+  // The section the older "tunnel" route (and the old switch) points at.
+  const defaultTunnelSection = (section_id) => {
+    const wanted = uci.get("netshift", section_id, "dns_outbound_section");
+    const names = tunnelSections();
+
+    return names.includes(wanted) ? wanted : names[0] || "";
+  };
+
   o.cfgvalue = function (section_id) {
-    const list = main.dnsServersFromOptions({
+    const servers = main.dnsServersFromOptions({
       dns_type: uci.get("netshift", section_id, "dns_type"),
       dns_server: uci.get("netshift", section_id, "dns_server"),
       dns_pool_server: main.toIpList(
         uci.get("netshift", section_id, "dns_pool_server"),
       ),
     });
-
-    knownCount = list.length;
-
-    return list;
-  };
-  o.write = function (section_id, value) {
-    const options = main.dnsServersToOptions(
-      Array.isArray(value) ? value : [value],
+    const routes = main.dnsRoutesFromOptions(
+      main.toIpList(uci.get("netshift", section_id, "dns_server_route")),
     );
+    const fallback = backendDefaultRoute(section_id);
+    const tunnelSection = defaultTunnelSection(section_id);
+
+    return servers.map((server) => {
+      let route = routes[server] || fallback;
+
+      // "tunnel" is shown as the section it stands for
+      if (route === "tunnel") {
+        route = tunnelSection ? main.dnsRouteVia(tunnelSection) : "direct";
+      }
+
+      return `${server} ${route}`;
+    });
+  };
+
+  const splitRow = (entry) => {
+    const text = String(entry).trim();
+    const split = text.lastIndexOf(" ");
+
+    return split < 0
+      ? { server: text, route: "direct" }
+      : { server: text.slice(0, split), route: text.slice(split + 1) };
+  };
+
+  o.formvalue = function () {
+    return (this.rows || []).map((row) => `${row.server} ${row.route}`);
+  };
+
+  o.write = function (section_id, value) {
+    const rows = (Array.isArray(value) ? value : [value]).map(splitRow);
+    const servers = rows.map((row) => row.server);
+    const options = main.dnsServersToOptions(servers);
 
     if (!options) {
       return;
     }
+
+    const routes = {};
+
+    rows.forEach((row) => {
+      routes[row.server] = row.route;
+    });
 
     uci.set("netshift", section_id, "dns_type", options.dns_type);
     uci.set("netshift", section_id, "dns_server", options.dns_server);
@@ -86,108 +147,316 @@ function createSettingsContent(section) {
       "dns_pool_server",
       options.dns_pool_server.length ? options.dns_pool_server : null,
     );
+
+    const entries = main.dnsRoutesToOptions(
+      servers,
+      routes,
+      backendDefaultRoute(section_id),
+    );
+
+    uci.set(
+      "netshift",
+      section_id,
+      "dns_server_route",
+      entries.length ? entries : null,
+    );
   };
   o.remove = function () {};
-  // A second server is useless in "main server only" mode: when the list grows
-  // beyond one, switch to priority (the user can still pick another mode).
-  o.onchange = function (ev, section_id, value) {
-    const count = Array.isArray(value) ? value.length : 0;
-    const grew = knownCount !== null && count > knownCount;
 
-    knownCount = count;
+  o.renderWidget = function (section_id, option_index, cfgvalue) {
+    const widget = this;
+    const names = tunnelSections();
+    const times = {};
+    let busy = false;
 
-    if (!grew || count < 2) {
-      return;
-    }
+    widget.rows = (Array.isArray(cfgvalue) ? cfgvalue : [cfgvalue])
+      .filter(Boolean)
+      .map(splitRow);
 
-    const mode = this.section.getUIElement(section_id, "dns_pool_mode");
+    const presetLabel = (server) => main.DNS_POOL_PRESETS[server] || "";
+    const cellStyle = "vertical-align:middle;padding:.3em .5em";
+    const mainMark = E(
+      "span",
+      { class: "cbi-value-description", style: "margin-left:.5em" },
+      `(${_("main")})`,
+    );
 
-    if (mode && mode.getValue() === "single") {
-      mode.setValue("fallback");
-    }
-  };
-  o.validate = function (section_id, value) {
-    // Called for each entry of the list (and for the empty input row). An empty
-    // list is refused by rmempty = false.
-    if (!value) {
-      return true;
-    }
-
-    const validation = main.validateDnsPoolServer(value);
-
-    if (validation.valid) {
-      return true;
-    }
-
-    return validation.message;
-  };
-
-  // Speed test of the configured DNS servers, from this router.
-  o = section.taboption(
-    "dns",
-    form.DummyValue,
-    "_dns_speed",
-    _("DNS speed test"),
-    _(
-      "Times every configured DNS server (UDP, TCP, DoT and DoH; DoH3 and DoQ cannot be timed). With \"Route main DNS through proxy/VPN\" the servers are reached through the tunnel, so a resolver inside it can be timed too. Nothing is changed: use it to decide the order of the servers.",
-    ),
-  );
-  o.rawhtml = true;
-  o.cfgvalue = function () {
-    const result = E("div", { class: "cbi-value-description" });
-    const button = E(
+    const body = E("tbody", {});
+    const status = E("span", { class: "cbi-value-description" });
+    const refreshButton = E(
       "button",
       {
         class: "btn cbi-button",
         click: (ev) => {
           ev.preventDefault();
-          button.disabled = true;
-          result.textContent = _("Testing...");
-
-          main.NetShiftShellMethods.dnsBenchmark()
-            .then((reply) => {
-              const rows = main.sortBySpeed(
-                reply.success ? main.parseDnsBenchmark(reply.data) : [],
-              );
-
-              const via = reply.success
-                ? main.parseDnsBenchmarkVia(reply.data)
-                : "direct";
-
-              result.replaceChildren(
-                ...(rows.length
-                  ? [
-                      E(
-                        "div",
-                        {},
-                        via === "tunnel"
-                          ? _("Measured through the tunnel, the way real queries go")
-                          : _("Measured from the router"),
-                      ),
-                    ]
-                  : []),
-                ...(rows.length
-                  ? rows.map((row) =>
-                      E("div", {}, [
-                        `${row.server}: `,
-                        row.ms === null ? _("no answer") : `${row.ms} ${_("ms")}`,
-                      ]),
-                    )
-                  : [_("The test could not be run")]),
-              );
-            })
-            .catch(() => {
-              result.textContent = _("The test could not be run");
-            })
-            .finally(() => {
-              button.disabled = false;
-            });
+          measure();
         },
       },
-      _("Test the servers"),
+      _("Refresh"),
     );
+    const problem = E("div", {
+      class: "cbi-value-description",
+      style: "color:var(--error-color, #c00)",
+    });
 
-    return E("div", {}, [button, result]);
+    const routeOptions = (route) => {
+      const known = ["direct", ...names.map((name) => main.dnsRouteVia(name))];
+      const values = known.includes(route) ? known : [...known, route];
+
+      return values.map((value) => {
+        const section = main.dnsRouteSection(value);
+        let label = _("Directly");
+
+        if (section) {
+          label = names.includes(section)
+            ? _("Through %s").format(section)
+            : _("Through %s (not available)").format(section);
+        } else if (value !== "direct") {
+          label = value;
+        }
+
+        return E(
+          "option",
+          { value, ...(route === value ? { selected: "" } : {}) },
+          label,
+        );
+      });
+    };
+
+    const timeCell = (row) => {
+      const result = times[row.server];
+
+      if (result === undefined) {
+        return busy ? "…" : "";
+      }
+
+      if (result === null) {
+        return _("no answer");
+      }
+
+      // how it was measured: if the temporary sing-box could not start, the server was
+      // asked from the router even though its route says "tunnel"
+      const how = result.via === "tunnel" ? _("via the tunnel") : _("from the router");
+
+      return `${result.ms} ${_("ms")} (${how})`;
+    };
+
+    const move = (index, step) => {
+      const target = index + step;
+
+      if (target < 0 || target >= widget.rows.length) {
+        return;
+      }
+
+      const [row] = widget.rows.splice(index, 1);
+
+      widget.rows.splice(target, 0, row);
+      redraw();
+    };
+
+    const redraw = () => {
+      body.replaceChildren(
+        ...widget.rows.map((row, index) =>
+          E("tr", { class: "tr" }, [
+            E("td", { class: "td", style: cellStyle }, [
+              presetLabel(row.server)
+                ? E("div", {}, [
+                    presetLabel(row.server),
+                    index === 0 ? mainMark : "",
+                  ])
+                : "",
+              E(
+                presetLabel(row.server) ? "div" : "span",
+                {
+                  ...(presetLabel(row.server)
+                    ? { class: "cbi-value-description" }
+                    : {}),
+                  style: "word-break:break-all",
+                },
+                row.server,
+              ),
+              !presetLabel(row.server) && index === 0 ? mainMark : "",
+            ]),
+            E("td", { class: "td", style: cellStyle }, [
+              E(
+                "select",
+                {
+                  class: "cbi-input-select",
+                  change: (ev) => {
+                    row.route = ev.target.value;
+                    delete times[row.server];
+                    redraw();
+                  },
+                },
+                routeOptions(row.route),
+              ),
+            ]),
+            E(
+              "td",
+              { class: "td", style: `${cellStyle};white-space:nowrap` },
+              timeCell(row),
+            ),
+            E("td", { class: "td", style: `${cellStyle};white-space:nowrap` }, [
+              E(
+                "button",
+                {
+                  class: "btn cbi-button",
+                  title: _("Move up"),
+                  ...(index === 0 ? { disabled: "" } : {}),
+                  click: (ev) => {
+                    ev.preventDefault();
+                    move(index, -1);
+                  },
+                },
+                "↑",
+              ),
+              E(
+                "button",
+                {
+                  class: "btn cbi-button",
+                  title: _("Move down"),
+                  ...(index === widget.rows.length - 1 ? { disabled: "" } : {}),
+                  click: (ev) => {
+                    ev.preventDefault();
+                    move(index, 1);
+                  },
+                },
+                "↓",
+              ),
+              E(
+                "button",
+                {
+                  class: "btn cbi-button cbi-button-remove",
+                  title: _("Remove"),
+                  ...(widget.rows.length <= 1 ? { disabled: "" } : {}),
+                  click: (ev) => {
+                    ev.preventDefault();
+                    widget.rows.splice(index, 1);
+                    redraw();
+                  },
+                },
+                "✕",
+              ),
+            ]),
+          ]),
+        ),
+      );
+    };
+
+    // The speed test: every server of the table, from the router or through the
+    // tunnel (the routes saved last decide which).
+    const measure = () => {
+      if (busy) {
+        return;
+      }
+
+      busy = true;
+      refreshButton.disabled = true;
+      status.textContent = _("Testing...");
+      Object.keys(times).forEach((key) => delete times[key]);
+      redraw();
+
+      return main.NetShiftShellMethods.dnsBenchmark(
+        widget.rows.map((row) => row.server),
+      )
+        .then((reply) => {
+          const results = reply.success
+            ? main.parseDnsBenchmark(reply.data)
+            : [];
+
+          results.forEach((result) => {
+            times[result.server] =
+              result.ms === null
+                ? null
+                : { ms: result.ms, via: result.via };
+          });
+          status.textContent = results.length
+            ? ""
+            : _("The test could not be run");
+        })
+        .catch(() => {
+          status.textContent = _("The test could not be run");
+        })
+        .finally(() => {
+          busy = false;
+          refreshButton.disabled = false;
+          redraw();
+        });
+    };
+
+    // Add a server: pick a ready-made one from the list, or type any
+    // scheme://host and press Enter (the same picker the list used to have).
+    const addServer = (value) => {
+      const validation = main.validateDnsPoolServer(value);
+
+      if (!validation.valid) {
+        problem.textContent = validation.message;
+        return;
+      }
+
+      if (widget.rows.some((row) => row.server === value)) {
+        problem.textContent = _("This server is already in the list");
+        return;
+      }
+
+      problem.textContent = "";
+      widget.rows.push({ server: value, route: "direct" });
+      redraw();
+
+      // A second server is useless in "first server only" mode: switch to priority
+      // (the mode can still be changed below).
+      if (widget.rows.length === 2) {
+        const mode = widget.section.getUIElement(section_id, "dns_pool_mode");
+
+        if (mode && mode.getValue() === "single") {
+          mode.setValue("fallback");
+        }
+      }
+    };
+    const picker = new ui.Combobox("", main.DNS_POOL_PRESETS, {
+      placeholder: _("Add a server: pick one or type scheme://host"),
+      custom_placeholder: _("scheme://host[:port][/path], then Enter"),
+      sort: Object.keys(main.DNS_POOL_PRESETS),
+    });
+    const pickerNode = picker.render();
+
+    pickerNode.addEventListener("cbi-dropdown-change", (ev) => {
+      const value = String(ev.detail?.value?.value ?? "").trim();
+
+      if (value) {
+        addServer(value);
+        picker.setValue("");
+      }
+    });
+
+    redraw();
+    window.setTimeout(measure, 0);
+
+    return E("div", {}, [
+      E("div", { style: "overflow-x:auto" }, [
+        E("table", { class: "table cbi-section-table" }, [
+          E("thead", {}, [
+            E("tr", { class: "tr table-titles" }, [
+              E("th", { class: "th" }, _("Server")),
+              E("th", { class: "th" }, _("Route")),
+              E("th", { class: "th" }, _("Time")),
+              E(
+                "th",
+                { class: "th", style: "text-align:right;white-space:nowrap" },
+                refreshButton,
+              ),
+            ]),
+          ]),
+          body,
+        ]),
+      ]),
+      E("div", { style: "margin-top:.5em" }, [status]),
+      E("div", { style: "margin-top:.5em;max-width:28em" }, [pickerNode]),
+      problem,
+    ]);
+  };
+  o.validate = function () {
+    return true;
   };
 
   o = section.taboption(
@@ -275,54 +544,6 @@ function createSettingsContent(section) {
     }
 
     return validation.message;
-  };
-
-  o = section.taboption(
-    "dns",
-    form.Flag,
-    "dns_via_outbound",
-    _("Route main DNS through proxy/VPN"),
-    _(
-      "Send upstream DNS queries through a proxy/VPN outbound instead of directly. Bootstrap DNS always stays direct.",
-    ),
-  );
-  o.default = "0";
-  o.rmempty = false;
-
-  o = section.taboption(
-    "dns",
-    form.ListValue,
-    "dns_outbound_section",
-    _("DNS outbound section"),
-    _(
-      "Which proxy/VPN section carries the DNS. Leave unset to use the first configured outbound.",
-    ),
-  );
-  o.rmempty = true;
-  o.depends("dns_via_outbound", "1");
-  o.cfgvalue = function (section_id) {
-    return uci.get("netshift", section_id, "dns_outbound_section");
-  };
-  o.load = function () {
-    const sections = this.map?.data?.state?.values?.netshift ?? {};
-
-    this.keylist = [];
-    this.vallist = [];
-
-    for (const secName in sections) {
-      const sec = sections[secName];
-      if (
-        sec[".type"] === "section" &&
-        sec["connection_type"] !== "block" &&
-        sec["connection_type"] !== "dns" &&
-        sec["connection_type"] !== "exclusion"
-      ) {
-        this.keylist.push(secName);
-        this.vallist.push(secName);
-      }
-    }
-
-    return Promise.resolve();
   };
 
   o = section.taboption(
