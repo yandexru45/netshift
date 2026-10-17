@@ -8585,7 +8585,10 @@ fi
 # ── Fail-safe cascade: exercise _get_dns_detour_tag VERBATIM from the bin. ───
 # Stub UCI + the reused helpers so the cascade is fully controllable. The stubs
 # read from shell variables set per-case below.
-eval "$(awk '/^_get_dns_detour_tag\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
+eval "$(awk '/^_resolve_dns_outbound_tag\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
+# the older helper is gone from the product (the routes made it unused): the test keeps its meaning
+_get_dns_detour_tag() { local _v; config_get_bool _v "settings" "dns_via_outbound" 0; [ "$_v" -eq 1 ] || return 0; _resolve_dns_outbound_tag; }
+eval "$(awk '/^_resolve_dns_outbound_tag\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
 
 # UCI stubs (mimic LuCI config_get / config_get_bool: assign-and-return-0).
 config_get_bool() { eval "$1=\"\${UCI_DNS_VIA_OUTBOUND:-0}\""; return 0; }
@@ -8758,7 +8761,9 @@ log() {
 # other tests use): the DNS-section generator plus the helpers it calls.
 eval "$(awk '/^sing_box_configure_dns\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
 eval "$(awk '/^netshift_ipv6_enabled\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
-eval "$(awk '/^_get_dns_detour_tag\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
+eval "$(awk '/^_resolve_dns_outbound_tag\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
+# the older helper is gone from the product (the routes made it unused): the test keeps its meaning
+_get_dns_detour_tag() { local _v; config_get_bool _v "settings" "dns_via_outbound" 0; [ "$_v" -eq 1 ] || return 0; _resolve_dns_outbound_tag; }
 
 # UCI stubs: option values live in UCI_<section>_<option>; an UNSET variable
 # reproduces an option missing from /etc/config/netshift (the upgrade case).
@@ -17040,6 +17045,14 @@ config_list_foreach() {
     local _e
     for _e in $DP_ENTRIES; do "$3" "$_e"; done
 }
+dns_server_detour_tag() {
+    if [ -n "${DP_DETOUR_ONLY+x}" ]; then
+        case " $DP_DETOUR_ONLY " in *" $1 "*) printf '%s' "$DP_DETOUR" ;; esac
+    else
+        printf '%s' "$DP_DETOUR"
+    fi
+}
+
 for fn in is_valid_dns_pool_timeout _dns_pool_collect_entry sing_box_configure_dns_pool; do
     eval "$(awk -v name="$fn" '$0 == name "() {"{p=1} p{print} p&&/^\}/{exit}' "$BIN")"
 done
@@ -17080,7 +17093,8 @@ gen() { # $1=version $2=mode $3=entries $4=timeout $5=detour
     DP_MODE="$2"; DP_ENTRIES="$3"; DP_TIMEOUT="$4"
     : > "$LOGF"
     config="$base"
-    sing_box_configure_dns_pool "$5"
+    DP_DETOUR="$5"
+    sing_box_configure_dns_pool
     printf '%s' "$config"
 }
 same() { [ "$(printf '%s' "$1" | jq -cS .)" = "$(printf '%s' "$base" | jq -cS .)" ]; }
@@ -17154,6 +17168,23 @@ many=""; i=1; while [ $i -le 12 ]; do many="$many udp://10.0.0.$i"; i=$((i + 1))
 c="$(gen $V race "$many")"
 ok "$(echo "$c" | jq '[.dns.servers[] | select(.tag | startswith("dns-server"))] | length')" "$DNS_POOL_MAX_SERVERS" "dnspool-max-upstreams"
 warned "at most $DNS_POOL_MAX_SERVERS upstreams" && echo 'dnspool-max-upstreams-warned:OK' || echo 'dnspool-max-upstreams-warned:FAIL'
+
+# ── a detour per server (dns_server_route) ─────────────────────────
+DP_DETOUR_ONLY="dot://dns.quad9.net"
+c="$(gen $V race "$E2" "" main-out)"
+echo "$c" | jq -e '[.dns.servers[] | select(.tag == "dns-server-2") | .detour // "none"] == ["none"]' > /dev/null &&
+    echo 'dnspool-route-direct-server-has-no-detour:OK' || echo 'dnspool-route-direct-server-has-no-detour:FAIL'
+echo "$c" | jq -e '[.dns.servers[] | select(.tag == "dns-server-3") | .detour // "none"] == ["main-out"]' > /dev/null &&
+    echo 'dnspool-route-tunnel-server-has-detour:OK' || echo 'dnspool-route-tunnel-server-has-detour:FAIL'
+DP_BLOCK_DOH=1
+DP_DETOUR_ONLY="doh://a.example/dns-query"
+c="$(gen $V race "doh://a.example/dns-query doh://b.example/dns-query" "" main-out)"
+warned "DoH blocking" && echo 'dnspool-route-blockdoh-warns-for-direct-doh:OK' || echo 'dnspool-route-blockdoh-warns-for-direct-doh:FAIL'
+DP_DETOUR_ONLY="doh://a.example/dns-query doh://b.example/dns-query"
+c="$(gen $V race "doh://a.example/dns-query doh://b.example/dns-query" "" main-out)"
+warned "DoH blocking" && echo 'dnspool-route-blockdoh-silent-when-all-tunnel:FAIL' || echo 'dnspool-route-blockdoh-silent-when-all-tunnel:OK'
+DP_BLOCK_DOH=0
+unset DP_DETOUR_ONLY
 
 # ── transports, detour, resolver ───────────────────────────────────
 c="$(gen $V race "udp://1.1.1.1 tcp://1.1.1.1:5353 dot://dns.quad9.net doh://dns.google/dns-query doh3://dns.adguard-dns.com/dns-query doq://dns.adguard-dns.com:8853 udp://[2001:4860:4860::8888]" "" main-out)"
@@ -18593,7 +18624,9 @@ test_ecs_auto() {
         eval "$(awk '/^geoip_is_private_ip\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "$bin")"
         eval "$(awk '/^sing_box_configure_dns\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "$bin")"
         eval "$(awk '/^netshift_ipv6_enabled\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "$bin")"
-        eval "$(awk '/^_get_dns_detour_tag\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "$bin")"
+        eval "$(awk '/^_resolve_dns_outbound_tag\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "$bin")"
+        # the older helper is gone from the product (the routes made it unused): the test keeps its meaning
+        _get_dns_detour_tag() { local _v; config_get_bool _v "settings" "dns_via_outbound" 0; [ "$_v" -eq 1 ] || return 0; _resolve_dns_outbound_tag; }
 
         # private firewall config: zones wan (wan, wan2) and lan
         uci() { command uci -c "$work" "$@"; }
@@ -18792,7 +18825,9 @@ test_dns_servers_check() {
         config_get() { eval "$1=\"\${DNSC_$3:-}\""; }
         config_load() { :; }
         config_foreach() { :; }
-        _get_dns_detour_tag() { echo ""; }
+        dns_routes_init() { :; }
+        # the stub answers for ONE key, so a lookup with the wrong spelling of the server is seen
+        dns_server_detour_tag() { [ "$1" = "${DNSC_route_key:-}" ] && echo "main-out"; return 0; }
         dhcp_config_status=1
         # dig: record the arguments, succeed unless DIG_FAIL is set
         dig() { echo "$*" >> "$work/dig.log"; [ -z "$DIG_FAIL" ]; }
@@ -18811,6 +18846,18 @@ test_dns_servers_check() {
         echo "doh3=$(run doh3 dns.google/dns-query | tr '\n' '|')"
         echo "doq=$(run doq dns.adguard-dns.com | tr '\n' '|')"
         DIG_FAIL=1
+        # the route of the main server is found by the server as it is written in the settings
+        # (a DoH server with a path keeps the path in the key), and reported as its detour
+        DNSC_dns_type=doh DNSC_dns_server=dns.google/dns-query DNSC_bootstrap_dns_server=77.88.8.8
+        DNSC_route_key="doh://dns.google/dns-query"
+        echo "detour-reported-doh-path=$(check_dns_available | jq -r '.dns_via_outbound_tag')"
+        DNSC_route_key="doh://dns.google"
+        echo "detour-not-the-cut-key=[$(check_dns_available | jq -r '.dns_via_outbound_tag')]"
+        DNSC_dns_type=udp DNSC_dns_server=8.8.8.8
+        DNSC_route_key="udp://8.8.8.8"
+        echo "detour-reported=$(check_dns_available | jq -r '.dns_via_outbound_tag')"
+        DNSC_route_key=""
+        echo "detour-direct=[$(check_dns_available | jq -r '.dns_via_outbound_tag')]"
         echo "doq-fails=$(run doq dns.adguard-dns.com | head -n1)"
         echo "tcp-fails=$(run tcp 8.8.8.8 | head -n1)"
     )"
@@ -18829,6 +18876,10 @@ test_dns_servers_check() {
     _dc "doh is asked over HTTPS with its path" 'doh=["doh",1]|@dns.google google.com +https=/dns-query +timeout=2 +tries=1|'
     _dc "doh3 is judged by the router resolver" 'doh3=["doh3",1]|@127.0.0.42 google.com +timeout=3 +tries=1|'
     _dc "doq is judged by the router resolver" 'doq=["doq",1]|@127.0.0.42 google.com +timeout=3 +tries=1|'
+    _dc "the route of the main server is reported as its detour" "detour-reported=main-out"
+    _dc "a DoH server with a path is found by its route (the key keeps the path)" "detour-reported-doh-path=main-out"
+    _dc "...and not by the spelling without the path" "detour-not-the-cut-key=[]"
+    _dc "a direct main server has no detour" "detour-direct=[]"
     _dc "a failing resolver is reported for doq" 'doq-fails=["doq",0]'
     _dc "a failing resolver is reported for tcp" 'tcp-fails=["tcp",0]'
 
@@ -19507,7 +19558,8 @@ test_dns_benchmark() {
         cat > "$work/service.json" << 'CFG'
 {"outbounds":[{"type":"direct","tag":"direct-out"},
  {"type":"vless","tag":"node-b","server":"b.example.com","server_port":443,"uuid":"11111111-2222-3333-4444-555555555555","detour":"hop"},
- {"type":"socks","tag":"hop","server":"10.0.0.9","server_port":1080}],
+ {"type":"socks","tag":"hop","server":"10.0.0.9","server_port":1080},
+ {"type":"direct","tag":"plain-out"}],
  "route":{"default_mark":2097152,"auto_detect_interface":true,"final":"direct-out","default_domain_resolver":"dns-server"}}
 CFG
         TARGETS='[{"index":1,"port":19201,"host":"172.31.200.60","target_port":53},{"index":2,"port":19202,"host":"dns.google","target_port":853}]'
@@ -19528,13 +19580,14 @@ CFG
 
         # the whole run: dig answers by local port, sing-box is a stand-in that stays up
         UCI_config_path="$work/service.json"
-        _get_dns_detour_tag() { echo "main-out"; }
+        dns_routes_init() { :; }
+        dns_server_detour_tag() { echo "main-out"; }
         priority_clash_setup() { :; }
         priority_fetch_proxies() { printf '%s' "$PROXIES"; }
         DNS_BENCH_TUNNEL_START_WAIT=0
         : > "$work/sb.started"
         mkdir -p "$work/bin"
-        printf '#!/bin/sh\necho "$*" >> "%s/sb.started"\nsleep 30\n' "$work" > "$work/bin/sing-box"
+        printf '#!/bin/sh\necho "$*" >> "%s/sb.started"\ncp "$3" "%s/cfg.$$"\nsleep 30\n' "$work" "$work" > "$work/bin/sing-box"
         chmod +x "$work/bin/sing-box"
         PATH="$work/bin:$PATH"
         dig() {
@@ -19555,8 +19608,62 @@ CFG
         priority_fetch_proxies() { printf ''; }
         echo "fallback-direct=$(dns_benchmark udp://1.1.1.1 | jq -c '[.via, .results[0].ms]')"
         priority_fetch_proxies() { printf '%s' "$PROXIES"; }
-        _get_dns_detour_tag() { echo ""; }
+        dns_server_detour_tag() { echo ""; }
         echo "no-detour=$(dns_benchmark udp://1.1.1.1 | jq -c '.via')"
+
+        # only some servers go through the tunnel: those are timed through it, the others
+        # from the router, and every result says which way it was measured
+        dns_server_detour_tag() { case "$1" in udp://172.31.200.60) echo main-out ;; esac; }
+        echo "mixed=$(dns_benchmark udp://172.31.200.60 udp://1.1.1.1 | jq -c '[.via, [.results[] | [.server, .ms, .via]]]')"
+        dns_server_detour_tag() { case "$1" in udp://1.1.1.1) echo main-out ;; esac; }
+        echo "mixed-second=$(dns_benchmark udp://172.31.200.60 udp://1.1.1.1 | jq -c '[.via, [.results[] | [.server, .ms, .via]]]')"
+
+        # servers that go through different outbounds are timed in groups, one temporary
+        # sing-box each, and each group goes through its own outbound
+        rm -f "$work"/cfg.*; : > "$work/sb.started"
+        dns_server_detour_tag() { case "$1" in udp://172.31.200.60) echo main-out ;; udp://172.31.200.61) echo plain-out ;; esac; }
+        echo "two-groups=$(dns_benchmark udp://172.31.200.60 udp://172.31.200.61 udp://1.1.1.1 | jq -c '[.via, [.results[] | [.server, .via]]]')"
+        echo "two-groups-started=$(grep -c '^run -c ' "$work/sb.started")"
+        echo "two-groups-leaves=$(for f in "$work"/cfg.*; do jq -r '.route.final' "$f"; done | sort | tr '\n' ' ')"
+        echo "two-groups-ports=$(for f in "$work"/cfg.*; do jq -r '.inbounds[].listen_port' "$f"; done | sort -n | tr '\n' ' ')"
+
+        # the groups are timed at the same time: three outbounds with a one second start each
+        # take about one second, not three (one rpcd call lives about 30 seconds)
+        rm -f "$work"/cfg.*; : > "$work/sb.started"
+        DNS_BENCH_TUNNEL_START_WAIT=1
+        dns_server_detour_tag() { case "$1" in udp://10.0.0.1) echo main-out ;; udp://10.0.0.2) echo plain-out ;; udp://10.0.0.3) echo node-b ;; esac; }
+        t0="$(date +%s)"
+        dns_benchmark udp://10.0.0.1 udp://10.0.0.2 udp://10.0.0.3 > "$work/three.json"
+        t1="$(date +%s)"
+        echo "three-groups-started=$(grep -c '^run -c ' "$work/sb.started")"
+        echo "three-groups-parallel=$([ $((t1 - t0)) -le 2 ] && echo yes || echo "no ($((t1 - t0))s)")"
+        echo "three-groups-ports-distinct=$(for f in "$work"/cfg.*; do jq -r '.inbounds[].listen_port' "$f"; done | sort -n | uniq | wc -l | tr -d ' ')"
+        echo "three-groups-results=$(jq -c '[.results[] | .via]' "$work/three.json")"
+        DNS_BENCH_TUNNEL_START_WAIT=0
+
+        # more routes through different sections than the ports allow: the rest are timed from the
+        # router and say so (the windows of the groups must not reach the NaiveProxy sidecars)
+        DNS_BENCH_MAX_GROUPS=1
+        rm -f "$work"/cfg.*; : > "$work/sb.started"
+        echo "port-windows-below-naive=$([ $((DNS_BENCH_TUNNEL_PORT_BASE + 8 * DNS_BENCH_MAX_SERVERS)) -lt "$NAIVE_PORT_BASE" ] && echo yes || echo no)"
+        dns_benchmark udp://10.0.0.1 udp://10.0.0.2 udp://10.0.0.3 > "$work/capped.json"
+        echo "capped-started=$(grep -c '^run -c ' "$work/sb.started")"
+        echo "capped-results=$(jq -c '[.results[] | .via]' "$work/capped.json")"
+        DNS_BENCH_MAX_GROUPS=8
+
+        # one run at a time: a lock held by a live process is waited for, one whose owner is gone is taken over
+        DNS_BENCH_LOCK="$work/lock"; DNS_BENCH_LOCK_WAIT=5
+        mkdir -p "$DNS_BENCH_LOCK"; sleep 2 & holder=$!; echo "$holder" > "$DNS_BENCH_LOCK/pid"
+        t0="$(date +%s)"; dns_benchmark udp://1.1.1.1 > /dev/null; t1="$(date +%s)"
+        wait "$holder" 2> /dev/null
+        echo "lock-waited-for-owner=$([ $((t1 - t0)) -ge 1 ] && echo yes || echo no)"
+        echo "lock-released-after-run=$([ -d "$DNS_BENCH_LOCK" ] && echo no || echo yes)"
+        mkdir -p "$DNS_BENCH_LOCK"; echo 999999 > "$DNS_BENCH_LOCK/pid"
+        t0="$(date +%s)"; dns_benchmark udp://1.1.1.1 > /dev/null; t1="$(date +%s)"
+        echo "stale-lock-taken-over=$([ $((t1 - t0)) -le 1 ] && echo yes || echo no)"
+        echo "lock-released-after-stale=$([ -d "$DNS_BENCH_LOCK" ] && echo no || echo yes)"
+        # nothing in the way: no lock left behind
+        dns_benchmark udp://1.1.1.1 > /dev/null; echo "no-lock-left=$([ -d "$DNS_BENCH_LOCK" ] && echo no || echo yes)"
     )"
 
     _db() {
@@ -19604,6 +19711,24 @@ CFG
     _db "tcp is asked over TCP" "args-tcp=@127.0.0.1 -p 19201 +tcp"
     _db "dot is asked over TLS named by its host" "args-dot=@127.0.0.1 -p 19202 +tls +tls-hostname=dns.google"
     _db "doh keeps its path" "args-doh=@127.0.0.1 -p 19203 +https=/dns-query +tls-hostname=dns.google"
+    _db "only the servers sent through the tunnel are timed through it" 'mixed=["mixed",[["udp://172.31.200.60",4,"tunnel"],["udp://1.1.1.1",1,"direct"]]]'
+    _db "servers sent through different outbounds are all timed through a tunnel" 'two-groups=["mixed",[["udp://172.31.200.60","tunnel"],["udp://172.31.200.61","tunnel"],["udp://1.1.1.1","direct"]]]'
+    _db "...one temporary sing-box for each outbound" "two-groups-started=2"
+    _db "...and each one goes through its own outbound, not through the last one" "two-groups-leaves=node-b plain-out "
+    _db "...each group has its own local ports" "two-groups-ports=19201 19213 "
+    _db "three outbounds: three temporary sing-box" "three-groups-started=3"
+    _db "...timed at the same time, not one after another" "three-groups-parallel=yes"
+    _db "...on three different local ports" "three-groups-ports-distinct=3"
+    _db "...and every server says it went through the tunnel" 'three-groups-results=["tunnel","tunnel","tunnel"]'
+    _db "the eight port windows of the groups stay below the NaiveProxy sidecars" "port-windows-below-naive=yes"
+    _db "beyond the allowed number of groups no more temporary sing-box is started" "capped-started=1"
+    _db "...and the servers of the rest are timed from the router, which they say" 'capped-results=["tunnel","direct","direct"]'
+    _db "a second run waits for the first (they share the local ports)" "lock-waited-for-owner=yes"
+    _db "...and the lock is released after the run" "lock-released-after-run=yes"
+    _db "a lock whose owner is gone is taken over at once" "stale-lock-taken-over=yes"
+    _db "...and released too" "lock-released-after-stale=yes"
+    _db "an ordinary run leaves no lock" "no-lock-left=yes"
+    _db "the tunnel group is numbered from its own first server" 'mixed-second=["mixed",[["udp://172.31.200.60",1,"direct"],["udp://1.1.1.1",4,"tunnel"]]]'
     _db "through the tunnel the times are those of the local ports" 'tunnel=["tunnel",[["udp://172.31.200.60",4],["dot://dns.google",73],["doh://nowhere.example/dns-query",null],["doh3://dns.google",null]]]'
     _db "the temporary sing-box is started once" "tunnel-started=1"
     _db "...and stopped afterwards" "tunnel-sing-box-stopped=yes"
@@ -21913,6 +22038,129 @@ LIST
     rm -rf "$work" /etc/config/netshift
 }
 
+# ─────────────────────────────────────────────────────────────────
+# Test: a route per DNS server (dns_server_route overrides the global switch)
+# ─────────────────────────────────────────────────────────────────
+test_dns_server_route() {
+    header "DNS server route (direct / tunnel per server)"
+
+    local bin="${NETSHIFT_SRC}/usr/bin/netshift"
+    local lib="${NETSHIFT_LIB_DIR}"
+    if [ ! -r "$bin" ] || [ ! -r "$lib/helpers.sh" ]; then
+        fail "netshift bin / helpers.sh not found"
+        return
+    fi
+
+    local drv="/tmp/netshift-dnsroute-$$.sh"
+    cat > "$drv" << 'DREOF'
+LIB="NETSHIFT_LIB"
+. "$LIB/constants.sh"
+. "$LIB/helpers.sh"
+log() { :; }
+for fn in _dns_route_match_handler get_dns_server_route dns_routes_init dns_server_detour_tag _resolve_dns_outbound_tag; do
+    eval "$(awk -v name="$fn" '$0 == name "() {"{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
+done
+# the global switch alone, as the removed _get_dns_detour_tag did: "tunnel" when the switch is on
+_get_dns_detour_tag() { local _v; config_get_bool _v "settings" "dns_via_outbound" 0; [ "$_v" -eq 1 ] || return 0; _resolve_dns_outbound_tag; }
+
+# stubs: the switch, the routes, the tunnel section
+RT_VIA=0; RT_ROUTES=""; RT_SECTION="main"
+config_get_bool() { eval "$1=\"\$RT_VIA\""; }
+RT_FORM=list
+config_get() {
+    case "$3" in
+    dns_server_route_LENGTH) [ "$RT_FORM" = list ] && [ -n "$RT_ROUTES" ] && eval "$1=1" || eval "$1=\"\"" ;;
+    dns_server_route) [ "$RT_FORM" = list ] && eval "$1=\"\"" || eval "$1=\"\$RT_ROUTES\"" ;;
+    dns_outbound_section) eval "$1=\"\$RT_SECTION\"" ;;
+    connection_type) eval "$1=proxy" ;;
+    *) eval "$1=\"\"" ;;
+    esac
+}
+config_list_foreach() {
+    local _handler="$3" _item
+    shift 3
+    printf '%s\n' "$RT_ROUTES" | tr ' ' '\n' | awk 'NR % 2 {printf "%s ", $0; next} {print}' > /tmp/netshift-dnsroute-list.$$
+    while IFS= read -r _item; do
+        [ -n "$_item" ] && "$_handler" "$_item" "$@"
+    done < /tmp/netshift-dnsroute-list.$$
+    rm -f /tmp/netshift-dnsroute-list.$$
+}
+section_has_configured_outbound() { [ "$1" != gone ]; }
+get_first_outbound_section() { echo main; }
+get_outbound_tag_by_section() { echo "$1-out"; }
+subscription_outbound_is_unavailable() { return 1; }
+
+tag() { dns_routes_init; dns_server_detour_tag "$1"; }
+DOH="doh://dns.google/dns-query"
+
+RT_VIA=0; RT_ROUTES=""
+echo "off-no-routes:[$(tag $DOH)]"
+RT_VIA=1
+echo "on-no-routes:[$(tag $DOH)]"
+RT_VIA=0; RT_ROUTES="$DOH tunnel"
+echo "off-tunnel-entry:[$(tag $DOH)]"
+echo "off-other-server:[$(tag udp://1.1.1.1)]"
+RT_VIA=1; RT_ROUTES="$DOH direct"
+echo "on-direct-entry:[$(tag $DOH)]"
+echo "on-other-server:[$(tag udp://1.1.1.1)]"
+RT_VIA=0; RT_ROUTES="$DOH bogus"
+echo "unknown-mode-ignored:[$(tag $DOH)]"
+RT_VIA=0; RT_ROUTES="udp://1.1.1.1 tunnel $DOH direct"
+echo "two-entries:[$(tag udp://1.1.1.1)][$(tag $DOH)]"
+RT_VIA=0; RT_ROUTES="$DOH via:second udp://1.1.1.1 via:"
+echo "via-section:[$(tag $DOH)]"
+echo "via-empty-section-ignored:[$(tag udp://1.1.1.1)]"
+RT_VIA=1; RT_ROUTES="$DOH via:second"
+echo "via-beats-global:[$(tag $DOH)][$(tag udp://9.9.9.9)]"
+# a section chosen by name that is gone: the server goes out directly, not through the first
+# section's tunnel; the global switch keeps its old fallback to the first section
+RT_VIA=0; RT_ROUTES="$DOH via:gone"
+echo "via-gone-section-direct:[$(tag $DOH)]"
+RT_VIA=1; RT_ROUTES=""; RT_SECTION="gone"
+echo "global-gone-section-first:[$(tag $DOH)]"
+RT_SECTION="main"
+# the same entries written as a plain option instead of a list
+RT_FORM=scalar; RT_VIA=0; RT_ROUTES="udp://1.1.1.1 tunnel $DOH direct"
+echo "scalar-two-entries:[$(tag udp://1.1.1.1)][$(tag $DOH)]"
+RT_VIA=1; RT_ROUTES="$DOH direct"
+echo "scalar-direct-beats-switch:[$(tag $DOH)][$(tag udp://9.9.9.9)]"
+RT_FORM=list
+RT_VIA=1; RT_ROUTES=""
+echo "global-helper-unchanged:[$(_get_dns_detour_tag)]"
+RT_VIA=0
+echo "global-helper-off:[$(_get_dns_detour_tag)]"
+DREOF
+    sed -i "s|NETSHIFT_LIB|$lib|; s|BIN_PATH|$bin|" "$drv"
+    local out
+    out="$(ash "$drv" 2>&1)"
+    rm -f "$drv"
+
+    _dr() {
+        if printf '%s\n' "$out" | grep -qxF -- "$2"; then
+            pass "$1"
+        else
+            fail "$1" "wanted [$2] in: $(printf '%s' "$out" | tr '\n' '~')"
+        fi
+    }
+    _dr "switch off, no entries: direct" "off-no-routes:[]"
+    _dr "switch on, no entries: through the tunnel" "on-no-routes:[main-out]"
+    _dr "switch off, server marked tunnel: through the tunnel" "off-tunnel-entry:[main-out]"
+    _dr "switch off, another server stays direct" "off-other-server:[]"
+    _dr "switch on, server marked direct: direct" "on-direct-entry:[]"
+    _dr "switch on, another server still goes through the tunnel" "on-other-server:[main-out]"
+    _dr "an unknown mode is ignored (the switch decides)" "unknown-mode-ignored:[]"
+    _dr "entries are matched per server" "two-entries:[main-out][]"
+    _dr "a server routed via a section uses that section's outbound" "via-section:[second-out]"
+    _dr "a route with an empty section name is ignored" "via-empty-section-ignored:[]"
+    _dr "via:<section> beats the global switch, the others follow it" "via-beats-global:[second-out][main-out]"
+    _dr "a via:<section> that is gone: the server goes out directly, not through another tunnel" "via-gone-section-direct:[]"
+    _dr "the global switch with a gone section still falls back to the first section" "global-gone-section-first:[main-out]"
+    _dr "a route written as a plain option is read in pairs too" "scalar-two-entries:[main-out][]"
+    _dr "...and beats the global switch for its server only" "scalar-direct-beats-switch:[][main-out]"
+    _dr "the global helper still follows the switch (on)" "global-helper-unchanged:[main-out]"
+    _dr "the global helper still follows the switch (off)" "global-helper-off:[]"
+}
+
 main() {
     printf "${BOLD}Netshift Evolution — Smoke Test Suite${NC}\n"
     printf "Source: %s\n" "$NETSHIFT_SRC"
@@ -22015,6 +22263,7 @@ main() {
             test_telegram_fallback
             test_naive_component
             test_collected_lists
+            test_dns_server_route
             ;;
         deps)        test_deps ;;
         syntax)      test_syntax ;;
@@ -22107,15 +22356,17 @@ main() {
         tgfallback)  test_telegram_fallback ;;
         naivecomp)   test_naive_component ;;
         collected)   test_collected_lists ;;
+        dnsroute)    test_dns_server_route ;;
         *)
             echo "Unknown test: $target"
-echo "Available: all deps syntax config helpers jq cm sb nft nftv6 selmark isolation monfd unsupported extgate vlessenc textlist chunkcheck domsep domcase proxylink diagnostics subscription fastest feedgroups insecure rejected jobstate selfheal dnsdetour ecssubnet suburlopt subcron globalproxy sectiondisabled bittorrent stablecheck extcheck sbextarch sbextlite netshiftcheck latesttag ghredirect selfupdate backupguard hotreload cachepersist bypass dnssection utfilters priority geoip latencyurl cascade dnspool ipv6routing realitymlkem cachebust compproxy httpupgrade scalaropt emptylink updatepkg environment dnsbench blockleaks connections dnsforward dnslifecycle dnshijack dnsservers domrules ecsauto lan mixedauth paramfilters pinguard routecheck snapshots updatenotice urlint subinfo portrules configlint naive corecaps ipv6dnspolicy xhttpextra"
+echo "Available: all deps syntax config helpers jq cm sb nft nftv6 selmark isolation monfd unsupported extgate vlessenc textlist chunkcheck domsep domcase proxylink diagnostics subscription fastest feedgroups insecure rejected jobstate selfheal dnsdetour ecssubnet suburlopt subcron globalproxy sectiondisabled bittorrent stablecheck extcheck sbextarch sbextlite netshiftcheck latesttag ghredirect selfupdate backupguard hotreload cachepersist bypass dnssection utfilters priority geoip latencyurl cascade dnspool ipv6routing realitymlkem cachebust compproxy httpupgrade scalaropt emptylink updatepkg environment dnsbench blockleaks connections dnsforward dnslifecycle dnshijack dnsservers domrules ecsauto lan mixedauth paramfilters pinguard routecheck snapshots updatenotice urlint subinfo portrules configlint naive corecaps ipv6dnspolicy xhttpextra dnsroute"
             exit 1
             ;;
     esac
 
     summary
 }
+
 
 
 # ─────────────────────────────────────────────────────────────────
