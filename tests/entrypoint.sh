@@ -124,7 +124,8 @@ test_syntax() {
         "$lib/subinfo.sh" \
         "$lib/lint.sh" \
         "$lib/naive.sh" \
-        "$lib/corecaps.sh"; do
+        "$lib/corecaps.sh" \
+        "$lib/support.sh"; do
 
         if [ ! -r "$f" ]; then
             fail "File not found: $f"
@@ -21913,6 +21914,177 @@ LIST
     rm -rf "$work" /etc/config/netshift
 }
 
+test_support_report() {
+    header "Support report: what is masked, what is kept, the crash log"
+
+    local lib="${NETSHIFT_LIB_DIR}"
+    if ! command -v jq > /dev/null 2>&1; then
+        skip "jq not available"
+        return
+    fi
+    if [ ! -r "$lib/support.sh" ]; then
+        fail "support.sh not found"
+        return
+    fi
+
+    local work="/tmp/netshift-support-test-$$"
+    rm -rf "$work"
+    mkdir -p "$work"
+
+    cat > "$work/uci.json" << 'UJ'
+{"values":{
+ "settings":{".type":"settings",".name":"settings","dns_type":"doh","dns_server":"dns.google/dns-query","update_repo":"fork","subscription_keywords":"x",
+   "dns_pool_server":["dot://dns.quad9.net"],"routing_excluded_ips":["192.168.1.5","192.168.1.6"],"hwid":"abc123","api_secret":"s3cr3t","remote_domain_lists":["https://example.com/list.srs?token=zzz"]},
+ "main":{".type":"section",".name":"main","connection_type":"proxy","proxy_config_type":"urltest",
+   "urltest_proxy_links":["vless://11111111-2222-3333-4444-555555555555@srv.example.org:443?security=reality&pbk=PUBKEYVALUE&sid=ab12#name","hy2://pw@srv2.example.org:443#n"],
+   "subscription_url":["https://panel.example.net/sub/TOKENVALUE"],"user_domains":["a.com","b.com","c.com"],"mixed_proxy_password":"hunter2","mixed_proxy_username":"supportuser",
+   "global_proxy":"0","subscription_filter_include_keywords":["Germany"]}}}
+UJ
+    cat > "$work/config.json" << 'CJ'
+{"outbounds":[
+ {"type":"vless","tag":"main-1-out","server":"srv.example.org","server_port":443,"uuid":"11111111-2222-3333-4444-555555555555","flow":"xtls-rprx-vision",
+  "tls":{"enabled":true,"server_name":"srv.example.org","reality":{"enabled":true,"public_key":"PUBKEYVALUE","short_id":"ab12"}}},
+ {"type":"hysteria2","tag":"main-2-out","server":"srv2.example.org","server_port":443,"password":"pw","tls":{"enabled":true,"server_name":"sni.example.com"}},
+ {"type":"direct","tag":"direct-out"}],
+ "route":{"rules":[{"domain_suffix":["a.com","b.com","c.com","d.com"],"outbound":"main-1-out"},{"domain":["x.com"],"outbound":"direct-out"}]},
+ "dns":{"servers":[{"type":"udp","tag":"d","server":"1.1.1.1"}]}}
+CJ
+
+    local out
+    out="$(
+        . "$lib/constants.sh"
+        . "$lib/support.sh"
+        SUPPORT_CRASH_LINES=6
+
+        H="$(support_hosts "$work/config.json")"
+        echo "hosts=$H"
+        echo "hosts-no-ip-ports=$(printf '%s' "$H" | jq -c 'map(select(. == "1.1.1.1" or . == "443"))')"
+
+        U="$(support_uci_json_fixture=1; cat "$work/uci.json" | support_mask_uci "$H")"
+        echo "uci-dns-kept=$(printf '%s' "$U" | jq -c '.settings | [.dns_type, .dns_server, .update_repo]')"
+        echo "uci-pool-kept=$(printf '%s' "$U" | jq -c '.settings.dns_pool_server')"
+        echo "uci-keywords-kept=$(printf '%s' "$U" | jq -c '[.settings.subscription_keywords, .main.subscription_filter_include_keywords]')"
+        echo "uci-secrets-hidden=$(printf '%s' "$U" | jq -c '[.settings.hwid, .settings.api_secret, .main.mixed_proxy_password, .main.mixed_proxy_username]')"
+        echo "uci-links-schemes-only=$(printf '%s' "$U" | jq -c '.main.urltest_proxy_links')"
+        echo "uci-lists-counted=$(printf '%s' "$U" | jq -c '[.settings.routing_excluded_ips, .main.user_domains, .main.subscription_url, .settings.remote_domain_lists]')"
+        echo "uci-meta-kept=$(printf '%s' "$U" | jq -c '.main[".type"]')"
+        echo "uci-no-secret-text=$(printf '%s' "$U" | grep -c 'PUBKEYVALUE\|TOKENVALUE\|hunter2\|s3cr3t\|supportuser\|11111111-2222\|srv.example.org')"
+
+        C="$(support_mask_singbox "$H" < "$work/config.json")"
+        echo "cfg-secrets-hidden=$(printf '%s' "$C" | jq -c '.outbounds[0] | [.uuid, .tls.reality.public_key, .tls.reality.short_id]')"
+        echo "cfg-password-hidden=$(printf '%s' "$C" | jq -c '.outbounds[1].password')"
+        echo "cfg-hosts-named=$(printf '%s' "$C" | jq -c '[.outbounds[0].server, .outbounds[0].tls.server_name, .outbounds[1].server, .outbounds[1].tls.server_name]')"
+        echo "cfg-structure-kept=$(printf '%s' "$C" | jq -c '.outbounds[0] | [.type, .flow, .server_port, .tls.reality.enabled]')"
+        echo "cfg-long-list-counted=$(printf '%s' "$C" | jq -c '.route.rules[0].domain_suffix')"
+        echo "cfg-short-list-kept=$(printf '%s' "$C" | jq -c '.route.rules[1].domain')"
+        echo "cfg-public-dns-kept=$(printf '%s' "$C" | jq -c '.dns.servers[0].server')"
+        echo "cfg-no-secret-text=$(printf '%s' "$C" | grep -c 'PUBKEYVALUE\|11111111-2222\|srv.example.org\|"pw"')"
+
+        # the log lines
+        echo "text-link=$(printf '%s\n' 'bad link vless://u@srv.example.org:443?pbk=K#x here' | support_mask_text)"
+        echo "text-url=$(printf '%s\n' 'GET https://panel.example.net/sub/TOKENVALUE?x=1 failed' | support_mask_text)"
+        echo "text-plain-kept=$(printf '%s\n' 'sing-box started 1.2s' | support_mask_text)"
+        echo "text-url-userinfo=$(printf '%s\n' 'GET https://user:pass@panel.example.net/sub/TOKENVALUE failed' | support_mask_text)"
+        echo "text-url-query=$(printf '%s\n' 'GET https://panel.example.net?token=XYZ failed' | support_mask_text)"
+        # a name that is a part of another one is replaced after the longer one, with the same N as in the config
+        H2='["example.org","srv.example.org"]'
+        S2="$(support_hosts_sed "$H2")"
+        echo "sed-suffix-host=$(printf 'dial srv.example.org:443 and example.org\n' | sed -e "$S2")"
+        echo "uci-suffix-host=$(printf '{"values":{"s":{".type":"section","note":"srv.example.org and example.org"}}}' | support_mask_uci "$H2" | jq -c '.s.note')"
+        # the whole report, with the parts of the system stubbed: warnings, nft, no leaked variable
+        SUPPORT_LOG_LINES=3
+        support_uci_json() { cat "$work/uci.json"; }
+        config_get() { eval "$1=\"\${SR_${3}:-$4}\""; }
+        SR_config_path="$work/config.json"
+        get_sing_box_version() { echo "1.14.1"; }
+        get_sing_box_variant() { echo "stock"; }
+        get_sing_box_tags() { echo "with_quic,with_utls"; }
+        naive_binary() { return 1; }
+        get_config_warnings() { echo '[{"kind":"shadowed","section":"main","domain":"secretdomain.example"}]'; }
+        nft() { printf 'table inet NetShiftTable\ntable inet NetShiftGuard\ntable inet other\n'; }
+        logread() { printf 'Thu Oct 15 17:00:00 2026 daemon.info netshift: dial srv.example.org:443\n'; }
+        NFT_TABLE_NAME="NetShiftTable"
+        support_report > "$work/report.txt" 2>&1
+        echo "report-warnings-masked=$(grep -c 'secretdomain.example' "$work/report.txt") hidden=$(grep -c '"domain":"<hidden>"' "$work/report.txt")"
+        echo "report-nft-only-ours=$(grep -c 'NetShiftTable' "$work/report.txt") guard=$(grep -c 'NetShiftGuard' "$work/report.txt")"
+        echo "report-no-server-name=$(grep -c 'srv.example.org' "$work/report.txt")"
+        echo "report-tags=$(grep -c 'Tags: with_quic,with_utls' "$work/report.txt")"
+        echo "report-no-secret=$(grep -c 'PUBKEYVALUE\|TOKENVALUE\|hunter2\|supportuser\|11111111-2222' "$work/report.txt")"
+        echo "report-no-leaked-variable=${local_crash+leaked}"
+        unset -f logread nft
+        S="$(support_hosts_sed "$H")"
+        echo "sed-hosts=$(printf 'dial srv.example.org:443 and sni.example.com ok\n' | sed -e "$S")"
+        echo "sed-dots-literal=$(printf 'srvXexampleXorg stays\n' | sed -e "$S")"
+
+        # the last crash from the log
+        logread() {
+            cat <<'LR'
+Thu Oct 15 17:00:00 2026 daemon.err sing-box[1]: INFO started
+Thu Oct 15 17:01:00 2026 daemon.err sing-box[1]: panic: runtime error: index out of range
+Thu Oct 15 17:01:00 2026 daemon.err sing-box[1]: goroutine 1 [running]:
+Thu Oct 15 17:01:00 2026 daemon.err sing-box[1]: main.main()
+Thu Oct 15 17:02:00 2026 daemon.err sing-box[2]: INFO started again
+Thu Oct 15 17:03:00 2026 daemon.err sing-box[2]: fatal error: all goroutines are asleep - deadlock!
+Thu Oct 15 17:03:00 2026 daemon.err sing-box[2]: goroutine 1 [chan receive]:
+Thu Oct 15 17:03:00 2026 daemon.err sing-box[2]: second.trace()
+LR
+        }
+        CR="$(get_sing_box_crash_log)"
+        echo "crash-is-last=$(printf '%s\n' "$CR" | sed -n '1p' | grep -c 'fatal error')"
+        echo "crash-has-trace=$(printf '%s\n' "$CR" | grep -c 'second.trace')"
+        echo "crash-not-the-first=$(printf '%s\n' "$CR" | grep -c 'index out of range')"
+        logread() { printf 'Thu Oct 15 17:00:00 2026 daemon.err sing-box[1]: INFO all good\n'; }
+        echo "crash-none=[$(get_sing_box_crash_log)]"
+        unset -f logread
+    )"
+
+    _sr() {
+        if printf '%s\n' "$out" | grep -qxF -- "$2"; then
+            pass "$1"
+        else
+            fail "$1" "wanted [$2] in: $(printf '%s' "$out" | tr '\n' '~')"
+        fi
+    }
+    _sr "the server names of the config are found, sorted, without ports" 'hosts=["sni.example.com","srv.example.org","srv2.example.org"]'
+    _sr "...an address of a public DNS resolver is not one of them (it is kept as it is)" "hosts-no-ip-ports=[]"
+    _sr "settings: DNS, update source kept" 'uci-dns-kept=["doh","dns.google/dns-query","fork"]'
+    _sr "settings: a list of public resolvers is kept" 'uci-pool-kept=["dot://dns.quad9.net"]'
+    _sr "settings: filter keywords are not taken for keys" 'uci-keywords-kept=["x",["Germany"]]'
+    _sr "settings: passwords, keys, the hardware id and logins are hidden" 'uci-secrets-hidden=["<hidden>","<hidden>","<hidden>","<hidden>"]'
+    _sr "settings: a proxy link is reduced to its scheme" 'uci-links-schemes-only=["vless://<hidden>","hy2://<hidden>"]'
+    _sr "settings: lists of devices, domains, subscriptions are counted" 'uci-lists-counted=[["<2 entries>"],["<3 entries>"],["<1 entries>"],["<1 entries>"]]'
+    _sr "settings: the structure of a section is kept" 'uci-meta-kept="section"'
+    _sr "settings: no secret anywhere in the text" "uci-no-secret-text=0"
+    _sr "config: uuid, keys and short id are hidden" 'cfg-secrets-hidden=["<hidden>","<hidden>","<hidden>"]'
+    _sr "config: a password is hidden" 'cfg-password-hidden="<hidden>"'
+    _sr "config: servers and SNI are host-N (the same name for the same address)" 'cfg-hosts-named=["host-2","host-2","host-3","host-1"]'
+    _sr "config: the structure stays readable" 'cfg-structure-kept=["vless","xtls-rprx-vision",443,true]'
+    _sr "config: a long list of domains is counted" 'cfg-long-list-counted=["<4 entries>"]'
+    _sr "config: a short list is counted too (the README promises no domains of the user)" 'cfg-short-list-kept=["<1 entries>"]'
+    _sr "config: the address of a public DNS server is not a user's server" 'cfg-public-dns-kept="1.1.1.1"'
+    _sr "config: no secret anywhere in the text" "cfg-no-secret-text=0"
+    _sr "a link in a log line is cut after its scheme" 'text-link=bad link vless://<hidden> here'
+    _sr "a web address keeps its host, the path goes" 'text-url=GET https://panel.example.net/<hidden> failed'
+    _sr "an ordinary line is left alone" "text-plain-kept=sing-box started 1.2s"
+    _sr "the login and password of a web address go, the host stays" 'text-url-userinfo=GET https://<hidden>@panel.example.net/<hidden> failed'
+    _sr "an address with a query and no path loses the query" 'text-url-query=GET https://panel.example.net/<hidden> failed'
+    _sr "a name that is a part of another is replaced after the longer one" "sed-suffix-host=dial host-2:443 and host-1"
+    _sr "...and the settings use the same N" 'uci-suffix-host="host-2 and host-1"'
+    _sr "the report: the domains of the warnings are hidden" 'report-warnings-masked=0 hidden=1'
+    _sr "the report: only the NetShift table of nft (not the guard or other tables)" "report-nft-only-ours=1 guard=0"
+    _sr "the report: no server name anywhere" "report-no-server-name=0"
+    _sr "the report: the tags of the core are listed" "report-tags=1"
+    _sr "the report: no secret anywhere" "report-no-secret=0"
+    _sr "the report leaves no variable behind" "report-no-leaked-variable="
+    _sr "server addresses in the log become host-N, as in the config" "sed-hosts=dial host-2:443 and host-1 ok"
+    _sr "a dot in an address is a dot, not any character" "sed-dots-literal=srvXexampleXorg stays"
+    _sr "the crash log: the last crash, from its first line" "crash-is-last=1"
+    _sr "...with its stack trace" "crash-has-trace=1"
+    _sr "...and not the earlier one" "crash-not-the-first=0"
+    _sr "no crash in the log: nothing" "crash-none=[]"
+    rm -rf "$work"
+}
+
 main() {
     printf "${BOLD}Netshift Evolution — Smoke Test Suite${NC}\n"
     printf "Source: %s\n" "$NETSHIFT_SRC"
@@ -22015,6 +22187,7 @@ main() {
             test_telegram_fallback
             test_naive_component
             test_collected_lists
+            test_support_report
             ;;
         deps)        test_deps ;;
         syntax)      test_syntax ;;
@@ -22107,9 +22280,10 @@ main() {
         tgfallback)  test_telegram_fallback ;;
         naivecomp)   test_naive_component ;;
         collected)   test_collected_lists ;;
+        supportreport) test_support_report ;;
         *)
             echo "Unknown test: $target"
-echo "Available: all deps syntax config helpers jq cm sb nft nftv6 selmark isolation monfd unsupported extgate vlessenc textlist chunkcheck domsep domcase proxylink diagnostics subscription fastest feedgroups insecure rejected jobstate selfheal dnsdetour ecssubnet suburlopt subcron globalproxy sectiondisabled bittorrent stablecheck extcheck sbextarch sbextlite netshiftcheck latesttag ghredirect selfupdate backupguard hotreload cachepersist bypass dnssection utfilters priority geoip latencyurl cascade dnspool ipv6routing realitymlkem cachebust compproxy httpupgrade scalaropt emptylink updatepkg environment dnsbench blockleaks connections dnsforward dnslifecycle dnshijack dnsservers domrules ecsauto lan mixedauth paramfilters pinguard routecheck snapshots updatenotice urlint subinfo portrules configlint naive corecaps ipv6dnspolicy xhttpextra"
+echo "Available: all deps syntax config helpers jq cm sb nft nftv6 selmark isolation monfd unsupported extgate vlessenc textlist chunkcheck domsep domcase proxylink diagnostics subscription fastest feedgroups insecure rejected jobstate selfheal dnsdetour ecssubnet suburlopt subcron globalproxy sectiondisabled bittorrent stablecheck extcheck sbextarch sbextlite netshiftcheck latesttag ghredirect selfupdate backupguard hotreload cachepersist bypass dnssection utfilters priority geoip latencyurl cascade dnspool ipv6routing realitymlkem cachebust compproxy httpupgrade scalaropt emptylink updatepkg environment dnsbench blockleaks connections dnsforward dnslifecycle dnshijack dnsservers domrules ecsauto lan mixedauth paramfilters pinguard routecheck snapshots updatenotice urlint subinfo portrules configlint naive corecaps ipv6dnspolicy xhttpextra supportreport"
             exit 1
             ;;
     esac

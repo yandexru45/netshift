@@ -1085,7 +1085,7 @@ async function callBaseMethod(method, args = [], command = "/usr/bin/netshift", 
   const response = await executeShellCommand({
     command,
     args: [method, ...args],
-    timeout: 15e3,
+    timeout: options.timeout ?? 15e3,
     nobatch: options.nobatch
   });
   if (response.stdout) {
@@ -1118,6 +1118,7 @@ var NetShift;
     AvailableMethods2["CHECK_FAKEIP"] = "check_fakeip";
     AvailableMethods2["CHECK_ENVIRONMENT"] = "check_environment";
     AvailableMethods2["CHECK_ROUTE"] = "check_route";
+    AvailableMethods2["SUPPORT_REPORT"] = "support_report";
     AvailableMethods2["GET_UPDATE_NOTICE"] = "get_update_notice";
     AvailableMethods2["REFRESH_UPDATE_NOTICE"] = "refresh_update_notice";
     AvailableMethods2["CONFIG_SNAPSHOT"] = "config_snapshot";
@@ -1295,6 +1296,14 @@ var NetShiftShellMethods = {
     void 0,
     // Replaying the rules runs the core a few times: do not hold other calls.
     { nobatch: true }
+  ),
+  // The report for support (plain text, secrets masked): it reads the logs and the config, so it
+  // may take longer than the usual 15 seconds (an rpcd call lives about 30 seconds).
+  getSupportReport: async () => callBaseMethod(
+    NetShift.AvailableMethods.SUPPORT_REPORT,
+    [],
+    void 0,
+    { nobatch: true, timeout: 25e3 }
   ),
   getConnections: async () => callBaseMethod(
     NetShift.AvailableMethods.CLASH_API,
@@ -5324,6 +5333,7 @@ function render2() {
       E("div", { id: "pdk_diagnostic-page-actions" }),
       E("div", { id: "pdk_diagnostic-page-route-check" }),
       E("div", { id: "pdk_diagnostic-page-snapshots" }),
+      E("div", { id: "pdk_diagnostic-page-support-report" }),
       E("div", { id: "pdk_diagnostic-page-system-info" })
     ])
   ]);
@@ -6270,6 +6280,88 @@ function renderSnapshots() {
   ]);
 }
 
+// src/netshift/tabs/diagnostic/partials/renderSupportReport.ts
+function renderSupportReport() {
+  const text2 = E("textarea", {
+    class: "cbi-input-textarea pdk_diagnostic-page__support-report__text",
+    readOnly: true,
+    rows: 12,
+    style: "width:100%;font-family:monospace;display:none"
+  });
+  const message = E("div", {
+    class: "pdk_diagnostic-page__support-report__message"
+  });
+  const actions = E("div", {
+    class: "pdk_diagnostic-page__support-report__actions",
+    style: "display:none"
+  });
+  let loading = false;
+  function say(value) {
+    message.textContent = value;
+  }
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(text2.value);
+      say(_("Copied"));
+    } catch {
+      text2.select();
+      say(_("Select the text and copy it"));
+    }
+  }
+  async function prepare() {
+    if (loading) {
+      return;
+    }
+    loading = true;
+    say(_("Preparing the report..."));
+    try {
+      const response = await NetShiftShellMethods.getSupportReport();
+      const report = response.success && typeof response.data === "string" ? response.data : "";
+      if (!report) {
+        say(_("The report could not be prepared"));
+        return;
+      }
+      text2.value = report;
+      text2.style.display = "block";
+      actions.style.display = "";
+      say(
+        _(
+          "Read it before you send it: servers are shown as host-N and links, passwords and lists are hidden, but check that nothing of yours is left."
+        )
+      );
+    } catch (e) {
+      logger.error("[DIAGNOSTIC]", "support report failed", e);
+      say(_("The report could not be prepared"));
+    } finally {
+      loading = false;
+    }
+  }
+  actions.append(
+    renderButton({ text: _("Copy"), onClick: () => void copy() }),
+    renderButton({
+      text: _("Download"),
+      onClick: () => downloadAsTxt(text2.value, "netshift-support-report.txt")
+    })
+  );
+  return E("div", { class: "card pdk_diagnostic-page__support-report" }, [
+    E("b", {}, _("Report for support")),
+    E(
+      "div",
+      { class: "pdk_diagnostic-page__support-report__hint" },
+      _(
+        "Collects the versions, settings, configuration, state and logs in one text, with passwords, keys, links and server addresses hidden. Send it when you ask for help."
+      )
+    ),
+    renderButton({
+      text: _("Prepare the report"),
+      onClick: () => void prepare()
+    }),
+    message,
+    text2,
+    actions
+  ]);
+}
+
 // src/helpers/normalizeCompiledVersion.ts
 function normalizeCompiledVersion(version) {
   if (version.includes("COMPILED")) {
@@ -6917,6 +7009,7 @@ function onPageMount2() {
   renderWikiDisclaimerWidget();
   document.getElementById("pdk_diagnostic-page-route-check")?.replaceChildren(renderRouteCheck());
   document.getElementById("pdk_diagnostic-page-snapshots")?.replaceChildren(renderSnapshots());
+  document.getElementById("pdk_diagnostic-page-support-report")?.replaceChildren(renderSupportReport());
   fetchServicesInfo();
   fetchSystemInfo();
 }
@@ -7169,6 +7262,22 @@ var styles4 = `
 .pdk_diagnostic-page__snapshots__hint {
     opacity: 0.75;
     font-size: 0.9em;
+}
+
+.pdk_diagnostic-page__support-report {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-row-gap: 8px;
+}
+
+.pdk_diagnostic-page__support-report__hint {
+    opacity: 0.75;
+    font-size: 0.9em;
+}
+
+.pdk_diagnostic-page__support-report__actions {
+    display: flex;
+    gap: 8px;
 }
 
 .pdk_diagnostic-page__snapshots__list {
