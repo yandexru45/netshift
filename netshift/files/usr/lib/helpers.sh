@@ -2142,8 +2142,8 @@ normalize_subscription_to_singbox() {
         ;;
     esac
 
-    # udp_over_tcp from the section if present, else empty.
-    udp_over_tcp="$(uci -q get "netshift.${section}.udp_over_tcp" 2>/dev/null)"
+    # UDP over TCP from the section (the "UDP over TCP" flag), else empty.
+    udp_over_tcp="$(uci -q get "netshift.${section}.enable_udp_over_tcp" 2>/dev/null)"
 
     # How many servers of one feed are used (the section's subscription_max_nodes;
     # 500 when it is not set, 0 for no limit).
@@ -2166,101 +2166,128 @@ normalize_subscription_to_singbox() {
     lines_file="$(mktemp 2>/dev/null)" || lines_file="/tmp/netshift-sub-fb.$$"
     printf '%s\n' "$candidate" > "$lines_file"
 
-    # Resolve the core version once for the whole feed: the builder checks it
-    # per link (e.g. VLESS Encryption), and each check would otherwise spawn
+    # Resolve the core version (and the build tags) once for the whole feed: the
+    # builder checks them per link, and each check would otherwise spawn
     # `sing-box version` again. See get_sing_box_version.
-    local NETSHIFT_SING_BOX_VERSION
+    local NETSHIFT_SING_BOX_VERSION NETSHIFT_SING_BOX_TAGS
     NETSHIFT_SING_BOX_VERSION="$(get_sing_box_version)"
+    [ -n "${NETSHIFT_SING_BOX_TAGS+x}" ] || NETSHIFT_SING_BOX_TAGS="$(get_sing_box_tags)"
+
+    # Pass 1 (builtins only, no process per line): the links worth trying, trimmed.
+    local cand_file fast_file entries_file fast_opt res name_out fast_ok quic_ok utls_ok ext_ok
+    cand_file="$lines_file.cand"
+    fast_file="$lines_file.fast"
+    entries_file="$lines_file.entries"
+    : > "$entries_file"
 
     while IFS= read -r line; do
-        # Trim leading/trailing whitespace.
         line="${line#"${line%%[![:space:]]*}"}"
         line="${line%"${line##*[![:space:]]}"}"
         [ -n "$line" ] || continue
-        # Skip metadata/comment lines.
         case "$line" in
-        '#'*)
-            continue
-            ;;
+        '#'*) continue ;;
         esac
-        # Pre-filter: only attempt known schemes so an unknown scheme never
-        # reaches the builder's fatal path.
-        scheme="$(url_get_scheme "$line")"
-        case "$scheme" in
-        vless | vmess | trojan | ss | hysteria2 | hy2 | socks5 | socks4 | socks4a | naive+https | naive+quic) ;;
+        # only known schemes are tried, so an unknown one never reaches the builder
+        case "${line%%://*}" in
+        vless | vmess | trojan | ss | hysteria2 | hy2 | socks5 | socks4 | socks4a | naive+https | naive+quic)
+            printf '%s\n' "$line"
+            ;;
         *)
             skipped=$(( skipped + 1 ))
-            continue
             ;;
         esac
+    done < "$lines_file" > "$cand_file"
 
-        # A collected list can hold thousands of servers: each one costs a few
-        # processes here, and the config built from all of them is too much for a
-        # router (and for the speed tests of the group). Only the first
-        # subscription_max_nodes are taken (0: all of them).
+    # Pass 2: the common kinds of link are converted all at once by ONE jq run (linkfast.jq);
+    # what it is not sure about it marks "slow". Without the program (or when jq fails)
+    # every link goes the slow way, as before.
+    : > "$fast_file"
+    if [ -s "$cand_file" ] && [ -r "$NETSHIFT_LIB/linkfast.jq" ]; then
+        quic_ok=false
+        core_has_tag with_quic && quic_ok=true
+        utls_ok=false
+        core_has_tag with_utls && utls_ok=true
+        ext_ok=false
+        is_sing_box_extended "$NETSHIFT_SING_BOX_VERSION" && ext_ok=true
+        fast_opt="$(jq -n -c --argjson quic "$quic_ok" --argjson utls "$utls_ok" --argjson ext "$ext_ok" --arg uot "$udp_over_tcp" \
+            '{quic: $quic, utls: $utls, extended: $ext, udp_over_tcp: $uot}')"
+        jq -R -n -c --argjson opt "$fast_opt" -f "$NETSHIFT_LIB/linkfast.jq" < "$cand_file" > "$fast_file" 2> /dev/null || : > "$fast_file"
+    fi
+
+    # Pass 3: in the order of the list. A converted link is taken as it is; the others go the
+    # slow way (one link at a time, on an empty configuration: the builder only appends, so
+    # the size of the result does not slow it down). Redirects keep stdin of the builders
+    # away from the loops.
+    exec 4< "$fast_file"
+    while IFS= read -r line; do
         if [ "$max_nodes" -gt 0 ] && [ "$kept" -ge "$max_nodes" ]; then
             log "Subscription for '$section' has more than $max_nodes servers; only the first $max_nodes are used (see 'Servers per feed')" "warn"
             break
         fi
 
-        # Extract the human-readable name from the URI fragment (the part after
-        # the first '#', e.g. vless://...#🇩🇪 Frankfurt). The builder strips the
-        # fragment, so we capture it here and re-apply it as the outbound tag
-        # below. Fall back to a synthetic name when the fragment is absent.
+        res=""
+        IFS= read -r res <&4 || res=""
+        case "$res" in
+        '{"s":"ok"'*)
+            printf '%s\n' "$res" >> "$entries_file"
+            idx=$(( idx + 1 ))
+            kept=$(( kept + 1 ))
+            continue
+            ;;
+        esac
+
+        # The name from the URI fragment (the part after the last '#'), re-applied as the
+        # tag below; url_decode handles %20 / percent-escaped UTF-8 (flag emoji etc.).
         case "$line" in
         *"#"*) fragment="${line##*#}" ;;
         *) fragment="" ;;
         esac
-        # url_decode handles %20 / percent-escaped UTF-8 (flag emoji etc.).
         display_name=""
         [ -z "$fragment" ] || display_name="$(url_decode "$fragment" 2>/dev/null)"
         builder_tag="${section}-fb${idx}"
         builder_out_tag="$(get_outbound_tag_by_section "$builder_tag")"
 
-        # Second guard: run the builder in a subshell (command substitution) so
-        # an unexpected exit 1 (e.g. malformed URI) is contained and surfaced as
-        # a non-zero rc. Redirect its stdin from /dev/null so its internal
-        # pipelines cannot consume the loop's input.
-        new_config="$(sing_box_cf_add_proxy_outbound "$config" "$builder_tag" "$line" "$udp_over_tcp" </dev/null 2>/dev/null)" || {
+        # The builder runs in a subshell so an unexpected exit 1 (a malformed link) is
+        # contained and shows as a non-zero rc.
+        new_config="$(sing_box_cf_add_proxy_outbound '{"outbounds":[]}' "$builder_tag" "$line" "$udp_over_tcp" </dev/null 2>/dev/null)" || {
             log "skip unparsable subscription key #$idx for '$section'" "debug"
             idx=$(( idx + 1 ))
             continue
         }
-        idx=$(( idx + 1 ))
 
-        # One jq pass over the whole config per key: it rejects an invalid
-        # result or one where the builder appended nothing (the last outbound
-        # is not its $builder_out_tag), then re-applies the human-readable name as the
-        # tag of the just-added outbound. The name drops control characters
-        # and is deduplicated against tags already present so identical
-        # remarks stay unique and valid for sing-box and the dashboard (which
-        # displays the tag verbatim via the Clash API).
-        new_config="$(
-            printf '%s' "$new_config" | jq -c --arg name "$display_name" --arg builder_tag "$builder_tag" --arg builder_out_tag "$builder_out_tag" '
+        name_out="$(
+            printf '%s' "$new_config" | jq -c --arg name "$display_name" --arg builder_out_tag "$builder_out_tag" --argjson i "$idx" '
                 if (.outbounds[-1].tag // null) != $builder_out_tag then error("no outbound added") else . end
-                | ($name | explode | map(select(. != 9 and . != 10 and . != 13)) | implode
-                   | if . == "" then $builder_tag else . end) as $name
-                | ([.outbounds[:-1][].tag // empty]) as $existing
-                | (
-                    if ($existing | index($name) | not) then $name
-                    else
-                        (label $found
-                            | (range(1; 1000001)
-                                | ($name + "-" + (. | tostring)) as $cand
-                                | if ($existing | index($cand) | not) then $cand, break $found else empty end))
-                    end
-                  ) as $tag
-                | .outbounds[-1].tag = $tag
+                | {s: "ok", name: $name, ob: (.outbounds[-1] | del(.tag)), i: $i}
             ' 2>/dev/null
-        )" && [ -n "$new_config" ] || {
+        )" && [ -n "$name_out" ] || {
             log "skip subscription key (invalid result or no outbound added) for '$section'" "debug"
+            idx=$(( idx + 1 ))
             continue
         }
-
-        config="$new_config"
+        printf '%s\n' "$name_out" >> "$entries_file"
+        idx=$(( idx + 1 ))
         kept=$(( kept + 1 ))
-    done < "$lines_file"
-    rm -f "$lines_file"
+    done < "$cand_file"
+    exec 4<&-
+
+    # The tags are the human-readable names: without control characters, and unique in the
+    # whole list (a repeat gets -1, -2, ... so the remarks stay valid for sing-box and the
+    # dashboard, which shows the tag as it is). An empty name becomes <section>-fb<n>.
+    if [ -s "$entries_file" ]; then
+        config="$(jq -s -c --arg section "$section" '
+            reduce .[] as $e ({used: {}, out: []};
+                ($e.name | explode | map(select(. != 9 and . != 10 and . != 13)) | implode) as $n0
+                | (if $n0 == "" then ($section + "-fb" + ($e.i | tostring)) else $n0 end) as $n
+                | . as $st
+                | (if ($st.used[$n] | not) then $n
+                   else first(range(1; 1000001) | ($n + "-" + tostring) as $c | select($st.used[$c] | not) | $c) end) as $tag
+                | .used[$tag] = true
+                | .out += [{type: $e.ob.type, tag: $tag} + ($e.ob | del(.type))])
+            | {outbounds: .out}
+        ' "$entries_file" 2>/dev/null)" || config='{"outbounds":[]}'
+    fi
+    rm -f "$lines_file" "$cand_file" "$fast_file" "$entries_file"
 
     if [ "$skipped" -gt 0 ]; then
         log "Fallback subscription parser for '$section' skipped $skipped key(s) with unknown/unsupported schemes" "debug"
