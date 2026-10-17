@@ -124,7 +124,8 @@ test_syntax() {
         "$lib/subinfo.sh" \
         "$lib/lint.sh" \
         "$lib/naive.sh" \
-        "$lib/corecaps.sh"; do
+        "$lib/corecaps.sh" \
+        "$lib/filterpreview.sh"; do
 
         if [ ! -r "$f" ]; then
             fail "File not found: $f"
@@ -21913,6 +21914,141 @@ LIST
     rm -rf "$work" /etc/config/netshift
 }
 
+test_filter_preview() {
+    header "Subscription filter preview: what the filters in the form keep"
+
+    local lib="${NETSHIFT_LIB_DIR}"
+    local bin="${NETSHIFT_SRC}/usr/bin/netshift"
+    if ! command -v jq > /dev/null 2>&1 || ! command -v uci > /dev/null 2>&1 || [ ! -r "$bin" ]; then
+        skip "jq, uci or the netshift bin not available"
+        return
+    fi
+    if [ ! -r "$lib/filterpreview.sh" ]; then
+        fail "filterpreview.sh not found"
+        return
+    fi
+
+    mkdir -p /usr/lib/netshift
+    local f
+    for f in "$lib"/*.sh "$lib"/*.jq; do
+        ln -sf "$f" "/usr/lib/netshift/$(basename "$f")"
+    done
+
+    local work="/tmp/netshift-fprev-$$"
+    rm -rf "$work"
+    mkdir -p "$work/cache"
+    # every function of the bin, without the code that runs at the top level
+    awk '/^[a-zA-Z_][a-zA-Z0-9_]*\(\) \{/{p=1} p{print} p&&/^\}/{p=0}' "$bin" > "$work/funcs.sh"
+
+    cat > "$work/netshift" << 'CF'
+config settings 'settings'
+	option dns_type 'doh'
+
+config section 'main'
+	option connection_type 'proxy'
+	option proxy_config_type 'subscription'
+	list subscription_url 'https://feed.example.com/sub'
+	list subscription_filter_include_keywords 'Germany'
+
+config section 'geo'
+	option connection_type 'proxy'
+	option proxy_config_type 'subscription'
+	option geoip_flags '1'
+	list subscription_url 'https://feed.example.com/geo'
+	list subscription_filter_include_countries 'DE'
+CF
+    cat > "$work/feed.json" << 'FJ'
+{"outbounds":[
+ {"type":"shadowsocks","tag":"Germany-1","server":"a.example.com","server_port":443,"method":"aes-256-gcm","password":"p"},
+ {"type":"shadowsocks","tag":"Germany-2","server":"b.example.com","server_port":443,"method":"aes-256-gcm","password":"p"},
+ {"type":"shadowsocks","tag":"Finland-1","server":"c.example.com","server_port":443,"method":"aes-256-gcm","password":"p"},
+ {"type":"trojan","tag":"Sweden-1","server":"d.example.com","server_port":443,"password":"p"},
+ {"type":"vless","tag":"Xhttp-1","server":"e.example.com","server_port":443,"uuid":"11111111-2222-3333-4444-555555555555","tls":{"enabled":true,"server_name":"e.example.com"},"transport":{"type":"xhttp","path":"/x"}}
+]}
+FJ
+
+    local out
+    out="$(
+        . "$lib/constants.sh"
+        . "$lib/logging.sh"
+        . "$lib/helpers.sh"
+        . "$lib/sing_box_config_manager.sh"
+        . "$lib/sing_box_config_facade.sh"
+        . /lib/functions.sh
+        . "$work/funcs.sh"
+        . "$lib/filterpreview.sh"
+        log() { :; }
+        redact_url_for_log() { printf 'redacted'; }
+        NETSHIFT_CONFIG="$work/netshift"
+        SUBSCRIPTION_CACHE_FOLDER="$work/cache"
+        is_sing_box_extended() { return 1; }
+
+        echo "no-cache=$(preview_subscription_filter main '{}' | jq -c '.error')"
+
+        h="$(get_subscription_url_hash 'https://feed.example.com/sub')"
+        cp "$work/feed.json" "$(get_subscription_json_path main "$h")"
+        printf '%s' 'https://feed.example.com/sub' > "$(get_subscription_url_cache_path main "$h")"
+
+        echo "saved-filter=$(preview_subscription_filter main '{}' | jq -c '[.total, .kept, .names]')"
+        echo "unsupported-counted=$(preview_subscription_filter main '{}' | jq -c '.unsupported')"
+        echo "form-filter=$(preview_subscription_filter main '{"subscription_filter_include_keywords":["Finland","Sweden"]}' | jq -c '[.total, .kept, .names]')"
+        echo "form-empties=$(preview_subscription_filter main '{"subscription_filter_include_keywords":[]}' | jq -c '[.total, .kept]')"
+        echo "form-exclude=$(preview_subscription_filter main '{"subscription_filter_include_keywords":[],"subscription_filter_exclude_keywords":["Germany"]}' | jq -c '.kept')"
+        echo "form-protocol=$(preview_subscription_filter main '{"subscription_filter_include_keywords":[],"subscription_filter_include_protocols":["trojan"]}' | jq -c '.names')"
+        # an option the preview does read, but that is not a filter, is not taken from the form: a
+        # bogus feed address would leave no cached feed at all
+        echo "other-option-ignored=$(preview_subscription_filter main '{"subscription_url":["https://nowhere.example/x"]}' | jq -c '[.total, .kept]')"
+        echo "bad-input=$(preview_subscription_filter main 'nope' | jq -c '.error')"
+
+        # GeoIP flags: the real start puts them in front of the names before it filters, and the
+        # country filters match them; the preview does the same from the cache, looks nothing up
+        # and writes nothing
+        gh="$(get_subscription_url_hash 'https://feed.example.com/geo')"
+        cp "$work/feed.json" "$(get_subscription_json_path geo "$gh")"
+        printf '%s' 'https://feed.example.com/geo' > "$(get_subscription_url_cache_path geo "$gh")"
+        GEOIP_CACHE_FILE="$work/geoip.json"
+        printf '{"a.example.com":{"cc":"DE","ts":%s},"b.example.com":{"cc":"DE","ts":%s},"c.example.com":{"cc":"FI","ts":%s}}' "$(date +%s)" "$(date +%s)" "$(date +%s)" > "$GEOIP_CACHE_FILE"
+        geoip_before="$(md5sum < "$GEOIP_CACHE_FILE")"
+        curl() { echo called >> "$work/net.log"; return 1; }
+        echo "geoip-country-filter=$(preview_subscription_filter geo '{}' | jq -c '[.kept, .names]')"
+        echo "geoip-cache-untouched=$([ "$geoip_before" = "$(md5sum < "$GEOIP_CACHE_FILE")" ] && echo yes || echo no)"
+        echo "geoip-no-lookup=$([ -e "$work/net.log" ] && echo net || echo none)"
+        unset -f curl
+
+        # what LuCI has staged is not consumed by the preview (the preview has a save directory of its own)
+        uci -q -c "$work" set netshift.main.marker=1
+        preview_subscription_filter main '{"subscription_filter_include_keywords":["Finland"]}' > /dev/null
+        echo "staged-change-kept=$(uci -q -c "$work" changes netshift | grep -c marker)"
+        uci -q -c "$work" revert netshift
+        echo "config-untouched=$(grep -c "Germany" "$work/netshift")"
+        echo "tmp-left=$(ls -d "${TMPDIR:-/tmp}"/netshift-preview.* 2> /dev/null | wc -l | tr -d ' ')"
+    )"
+
+    _fp() {
+        if printf '%s\n' "$out" | grep -qxF -- "$2"; then
+            pass "$1"
+        else
+            fail "$1" "wanted [$2] in: $(printf '%s' "$out" | tr '\n' '~')"
+        fi
+    }
+    _fp "without a downloaded subscription: no_cache" 'no-cache="no_cache"'
+    _fp "the saved filter is applied (the total is what the core can use)" 'saved-filter=[4,2,["Germany-1","Germany-2"]]'
+    _fp "a server this core cannot use (xhttp without extended) is counted apart" "unsupported-counted=1"
+    _fp "the filter of the form wins over the saved one" 'form-filter=[4,2,["Finland-1","Sweden-1"]]'
+    _fp "an emptied filter keeps everything the core can use" 'form-empties=[4,4]'
+    _fp "the exclude filter works" 'form-exclude=2'
+    _fp "the parameter filter works" 'form-protocol=["Sweden-1"]'
+    _fp "only the filter options can be overridden" 'other-option-ignored=[4,2]'
+    _fp "GeoIP flags from the cache reach the country filter" 'geoip-country-filter=[2,["🇩🇪 Germany-1","🇩🇪 Germany-2"]]'
+    _fp "...the cache is not written" "geoip-cache-untouched=yes"
+    _fp "...and nothing is looked up" "geoip-no-lookup=none"
+    _fp "a change staged in LuCI is still staged afterwards" "staged-change-kept=1"
+    _fp "bad input is reported" 'bad-input="bad_input"'
+    _fp "the real configuration is not touched" 'config-untouched=1'
+    _fp "no temporary directory is left" 'tmp-left=0'
+    rm -rf "$work"
+}
+
 main() {
     printf "${BOLD}Netshift Evolution — Smoke Test Suite${NC}\n"
     printf "Source: %s\n" "$NETSHIFT_SRC"
@@ -22015,6 +22151,7 @@ main() {
             test_telegram_fallback
             test_naive_component
             test_collected_lists
+            test_filter_preview
             ;;
         deps)        test_deps ;;
         syntax)      test_syntax ;;
@@ -22107,9 +22244,10 @@ main() {
         tgfallback)  test_telegram_fallback ;;
         naivecomp)   test_naive_component ;;
         collected)   test_collected_lists ;;
+        filterpreview) test_filter_preview ;;
         *)
             echo "Unknown test: $target"
-echo "Available: all deps syntax config helpers jq cm sb nft nftv6 selmark isolation monfd unsupported extgate vlessenc textlist chunkcheck domsep domcase proxylink diagnostics subscription fastest feedgroups insecure rejected jobstate selfheal dnsdetour ecssubnet suburlopt subcron globalproxy sectiondisabled bittorrent stablecheck extcheck sbextarch sbextlite netshiftcheck latesttag ghredirect selfupdate backupguard hotreload cachepersist bypass dnssection utfilters priority geoip latencyurl cascade dnspool ipv6routing realitymlkem cachebust compproxy httpupgrade scalaropt emptylink updatepkg environment dnsbench blockleaks connections dnsforward dnslifecycle dnshijack dnsservers domrules ecsauto lan mixedauth paramfilters pinguard routecheck snapshots updatenotice urlint subinfo portrules configlint naive corecaps ipv6dnspolicy xhttpextra"
+echo "Available: all deps syntax config helpers jq cm sb nft nftv6 selmark isolation monfd unsupported extgate vlessenc textlist chunkcheck domsep domcase proxylink diagnostics subscription fastest feedgroups insecure rejected jobstate selfheal dnsdetour ecssubnet suburlopt subcron globalproxy sectiondisabled bittorrent stablecheck extcheck sbextarch sbextlite netshiftcheck latesttag ghredirect selfupdate backupguard hotreload cachepersist bypass dnssection utfilters priority geoip latencyurl cascade dnspool ipv6routing realitymlkem cachebust compproxy httpupgrade scalaropt emptylink updatepkg environment dnsbench blockleaks connections dnsforward dnslifecycle dnshijack dnsservers domrules ecsauto lan mixedauth paramfilters pinguard routecheck snapshots updatenotice urlint subinfo portrules configlint naive corecaps ipv6dnspolicy xhttpextra updaterepo quicmode hy2hop tgfallback supportreport filterpreview"
             exit 1
             ;;
     esac

@@ -549,7 +549,18 @@ function createSectionContent(section) {
     },
   ];
 
+  const paramFilterOptionNames = [
+    "subscription_filter_include_keywords",
+    "subscription_filter_exclude_keywords",
+    "subscription_filter_include_countries",
+    "subscription_filter_exclude_countries",
+  ];
+
   paramFilters.forEach(({ kind, include, exclude, choices }) => {
+    paramFilterOptionNames.push(
+      `subscription_filter_include_${kind}`,
+      `subscription_filter_exclude_${kind}`,
+    );
     [
       ["include", include, _("Keep only servers that connect this way.")],
       ["exclude", exclude, _("Drop servers that connect this way.")],
@@ -566,6 +577,97 @@ function createSectionContent(section) {
       o.rmempty = true;
     });
   });
+
+  // How many servers the filters above keep, before saving: the form values go to the
+  // router, which applies them to the subscription it downloaded at the last start.
+  o = section.taboption(
+    "subscription",
+    form.DummyValue,
+    "_subscription_filter_preview",
+    _("Filter preview"),
+    _(
+      "Shows how many servers of the downloaded subscription the filters above keep, and which. Nothing is saved or changed.",
+    ),
+  );
+  o.rawhtml = true;
+  o.depends({ connection_type: "proxy", proxy_config_type: "subscription" });
+  o.cfgvalue = function (section_id) {
+    const widget = this;
+    const result = E("div", { class: "cbi-value-description" });
+    const button = E(
+      "button",
+      {
+        class: "btn cbi-button",
+        click: (ev) => {
+          ev.preventDefault();
+
+          const overrides = {};
+
+          paramFilterOptionNames.forEach((name) => {
+            const found = widget.map.lookupOption(name, section_id);
+            const value = found?.[0]?.formvalue(section_id);
+
+            overrides[name] = (Array.isArray(value) ? value : [value]).filter(Boolean);
+          });
+
+          button.disabled = true;
+          result.textContent = _("Checking...");
+
+          main.NetShiftShellMethods.previewSubscriptionFilter(
+            section_id,
+            JSON.stringify(overrides),
+          )
+            .then((reply) => {
+              let data = null;
+
+              try {
+                data = reply.success ? JSON.parse(reply.data) : null;
+              } catch (_e) {
+                data = null;
+              }
+
+              if (!data) {
+                result.textContent = _("The check could not be run");
+              } else if (data.error === "no_cache") {
+                result.textContent = _(
+                  "There is no downloaded subscription yet: save the settings and restart the service first.",
+                );
+              } else if (data.error) {
+                result.textContent = _("The check could not be run");
+              } else {
+                result.replaceChildren(
+                  E("div", { style: "font-weight:600" }, `${_("Kept")}: ${data.kept} / ${data.total}`),
+                  data.kept === 0
+                    ? E(
+                        "div",
+                        { style: "color:var(--error-color-medium, #dc3545)" },
+                        _("No server is left: the section would have no connection."),
+                      )
+                    : E("div", {}, (data.names ?? []).slice(0, 50).join(", ")),
+                  data.kept > 50 ? E("div", {}, `… ${data.kept - 50}`) : "",
+                  data.unsupported > 0
+                    ? E(
+                        "div",
+                        { class: "cbi-value-description" },
+                        _("%d servers cannot be used by this core whatever the filters say.").format(data.unsupported),
+                      )
+                    : "",
+                );
+              }
+            })
+            .catch(() => {
+              result.textContent = _("The check could not be run");
+            })
+            .finally(() => {
+              button.disabled = false;
+            });
+        },
+      },
+      _("Check the filters"),
+    );
+
+    return E("div", {}, [button, result]);
+  };
 
   o = section.taboption(
     "connection",
