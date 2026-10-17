@@ -423,6 +423,10 @@ SNAPSHOT_KEEP=10
 PIN_GUARD_FAILURES=3
 PIN_GUARD_EVENTS_FILE="/tmp/netshift-pin-guard.json"
 PIN_GUARD_EVENTS_KEEP=10
+# Failover to direct (failover.sh): failed check cycles in a row before a section goes
+# direct, and the suffix of the selector that wraps the section's group.
+FAILOVER_FAILURES=3
+FAILOVER_TAG_SUFFIX="-failover"
 # URLTest interval standing for "only at start" (urltest_check_interval 'off')
 URLTEST_INTERVAL_OFF="8760h"
 
