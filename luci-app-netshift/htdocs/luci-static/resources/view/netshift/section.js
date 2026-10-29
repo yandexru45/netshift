@@ -294,7 +294,7 @@ function createSectionContent(section) {
     "subscription_url",
     _("Subscription URLs"),
     _(
-      "Add one or more subscription URLs to fetch proxy configurations from. All feeds are downloaded and merged.",
+      "Add one or more subscription URLs to fetch proxy configurations from. All feeds are downloaded and merged. A link of the INCY apps (incy://crypt1/...) is replaced by the address it holds when you save.",
     ),
   );
   o.depends({ connection_type: "proxy", proxy_config_type: "subscription" });
@@ -305,6 +305,20 @@ function createSectionContent(section) {
       return true;
     }
 
+    // an INCY link wraps the address of a subscription: it is saved as that address
+    // (the address inside has to pass the same check as a typed one)
+    if (main.isIncyLink(value)) {
+      const link = main.decodeIncyLink(value);
+
+      if (!link) {
+        return _("This INCY link cannot be read");
+      }
+
+      const inner = main.validateUrl(link.url);
+
+      return inner.valid ? true : inner.message;
+    }
+
     const validation = main.validateUrl(value);
 
     if (validation.valid) {
@@ -312,6 +326,17 @@ function createSectionContent(section) {
     }
 
     return validation.message;
+  };
+  o.write = function (section_id, value) {
+    const list = Array.isArray(value) ? value : value ? [value] : [];
+
+    return form.DynamicList.prototype.write.call(
+      this,
+      section_id,
+      main
+        .decodeIncyLinks(list)
+        .values.filter((address) => main.validateUrl(address).valid),
+    );
   };
 
   // A published list of feeds (a text file with an address per line, or a JSON object
