@@ -1887,6 +1887,8 @@ monitor_sing_box() {
             # The options the checks use (interval, priority mode, pin guard) apply without a
             # restart of the service: the configuration is read anew before every look.
             config_load "$NETSHIFT_CONFIG"
+            # Games open and close UPnP ports on their own.
+            nft_sync_dnat_sets
             if [ $((now - priority_last)) -ge "$(priority_check_interval)" ]; then
                 priority_last="$now"
                 priority_check_sections
@@ -2558,6 +2560,11 @@ create_nft_rules() {
     nft add chain inet "$NFT_TABLE_NAME" proxy '{ type filter hook prerouting priority -100; policy accept; }'
 
     nft add rule inet "$NFT_TABLE_NAME" mangle ct status dnat return
+    # Sessions that a LAN host opens itself from a forwarded (port forward or UPnP) port.
+    nft_create_dnat_sets "$NFT_TABLE_NAME"
+    nft add rule inet "$NFT_TABLE_NAME" mangle ip saddr . tcp sport "@$NFT_DNAT_TCP_SET_NAME" return
+    nft add rule inet "$NFT_TABLE_NAME" mangle ip saddr . udp sport "@$NFT_DNAT_UDP_SET_NAME" return
+    nft_sync_dnat_sets force
     # A packet to an address of the router itself (its external IP or DDNS name, reached from the
     # LAN) is not for the tunnel: with a global proxy, or a device that is fully routed, it would
     # be marked, taken by tproxy and lost, and a server on the router (VPN, web interface) would

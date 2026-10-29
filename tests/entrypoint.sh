@@ -25779,6 +25779,103 @@ LR
     rm -rf "$work"
 }
 
+test_dnat_bypass_sets() {
+    header "Forwarded ports (firewall redirects, UPnP leases) are never marked for the tunnel"
+
+    if ! command -v nft > /dev/null 2>&1 || ! command -v uci > /dev/null 2>&1; then
+        skip "nft or uci not available"
+        return
+    fi
+    local work="/tmp/netshift-dnat-$$" out
+    mkdir -p "$work/uci"
+    cat > "$work/uci/firewall" << 'FWEOF'
+config redirect
+	option name 'steam'
+	option target 'DNAT'
+	option src 'wan'
+	option proto 'tcp udp'
+	option src_dport '27015'
+	option dest_ip '192.168.1.50'
+	option dest_port '27016'
+
+config redirect
+	option name 'range'
+	option src 'wan'
+	option proto 'udp'
+	option src_dport '5000-5002'
+	option dest_ip '192.168.1.60'
+
+config redirect
+	option name 'snat'
+	option target 'SNAT'
+	option proto 'tcp'
+	option src_dport '1111'
+	option dest_ip '192.168.1.90'
+
+config redirect
+	option name 'off'
+	option enabled '0'
+	option proto 'tcp'
+	option src_dport '2222'
+	option dest_ip '192.168.1.91'
+FWEOF
+    printf 'TCP:50000:192.168.1.70:50001:0:Steam\nUDP:50000:192.168.1.70:50001:0:Steam\n' > "$work/leases"
+
+    local driver="$work/driver.sh"
+    cat > "$driver" << DRVEOF
+. "${NETSHIFT_LIB_DIR}/constants.sh"
+. "${NETSHIFT_LIB_DIR}/nft.sh"
+uci() { command uci -c "$work/uci" "\$@"; }
+NFT_UPNP_LEASE_FILES="$work/leases"
+NFT_DNAT_SUM_FILE="$work/sum"
+NFT_TABLE_NAME="NetShiftDnatTest"
+DRVEOF
+
+    out="$(sh -c ". '$driver'; nft_dnat_pairs | sort" 2> /dev/null | tr '\n' ',')"
+    local want="tcp 192.168.1.50 27016,tcp 192.168.1.70 50001,udp 192.168.1.50 27016,udp 192.168.1.60 5000,udp 192.168.1.60 5001,udp 192.168.1.60 5002,udp 192.168.1.70 50001,"
+    if [ "$out" = "$want" ]; then
+        pass "pairs-from-redirects-and-leases"
+    else
+        fail "unexpected pairs (got: $out)"
+    fi
+
+    # The real thing: the sets and the two rules in an nft table, then a sync.
+    nft delete table inet NetShiftDnatTest 2> /dev/null || true
+    if sh -c ". '$driver'
+        nft_create_table \"\$NFT_TABLE_NAME\" &&
+        nft_create_dnat_sets \"\$NFT_TABLE_NAME\" &&
+        nft add chain inet \"\$NFT_TABLE_NAME\" mangle '{ type filter hook prerouting priority -150; policy accept; }' &&
+        nft add rule inet \"\$NFT_TABLE_NAME\" mangle ip saddr . tcp sport \"@\$NFT_DNAT_TCP_SET_NAME\" return &&
+        nft add rule inet \"\$NFT_TABLE_NAME\" mangle ip saddr . udp sport \"@\$NFT_DNAT_UDP_SET_NAME\" return &&
+        nft_sync_dnat_sets force" > /dev/null 2>&1; then
+        pass "sets-and-rules-accepted-by-nft"
+        out="$(nft list set inet NetShiftDnatTest dnat_fwd_tcp 2> /dev/null | tr -d '\n\t ')"
+        case "$out" in
+        *192.168.1.50.27016*192.168.1.70.50001* | *192.168.1.70.50001*192.168.1.50.27016*) pass "tcp-set-filled" ;;
+        *) fail "tcp set not filled (got: $out)" ;;
+        esac
+        out="$(nft list set inet NetShiftDnatTest dnat_fwd_udp 2> /dev/null | tr -d '\n\t ')"
+        case "$out" in
+        *192.168.1.60.5001*) pass "udp-set-has-range" ;;
+        *) fail "udp set misses the port range (got: $out)" ;;
+        esac
+
+        # A lease that goes away leaves the set on the next sync.
+        : > "$work/leases"
+        sh -c ". '$driver'; nft_sync_dnat_sets" > /dev/null 2>&1
+        out="$(nft list set inet NetShiftDnatTest dnat_fwd_tcp 2> /dev/null | tr -d '\n\t ')"
+        case "$out" in
+        *192.168.1.70*) fail "closed UPnP port still in the set (got: $out)" ;;
+        *192.168.1.50.27016*) pass "closed-upnp-port-removed" ;;
+        *) fail "static redirect lost after sync (got: $out)" ;;
+        esac
+    else
+        fail "nft did not take the dnat sets and rules (are capabilities set?)"
+    fi
+    nft delete table inet NetShiftDnatTest 2> /dev/null || true
+    rm -rf "$work"
+}
+
 main() {
     printf "${BOLD}Netshift Evolution — Smoke Test Suite${NC}\n"
     printf "Source: %s\n" "$NETSHIFT_SRC"
