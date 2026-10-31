@@ -145,6 +145,12 @@ NFT_LOCALV6_ELEMENTS="::1, fc00::/7, fe80::/10, ff00::/8"
 # non-proxied traffic (e.g. a torrent to a random direct IP) never enters
 # sing-box (task-034). The per-section outbound is still selected by sing-box
 # route rules — nft only decides enter-or-not, so a single union set is enough.
+# Pairs "LAN address . port" that a port forward (firewall redirect) or UPnP lease sends to the LAN:
+# packets that leave from them are a game or P2P session of that host and are never marked.
+NFT_DNAT_TCP_SET_NAME="dnat_fwd_tcp"
+NFT_DNAT_UDP_SET_NAME="dnat_fwd_udp"
+NFT_DNAT_SUM_FILE="/tmp/netshift-dnat-pairs.sum"
+NFT_UPNP_LEASE_FILES="/var/run/miniupnpd.leases /var/upnp.leases"
 NFT_COMMON_SET_NAME="netshift_subnets"
 # Destinations that bypass sing-box completely (exclusion sections with
 # bypass_singbox): returned before any mark, so the traffic never enters tproxy.

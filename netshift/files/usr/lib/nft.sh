@@ -203,3 +203,104 @@ nft_add_selective_marking_rules() {
         fi
     fi
 }
+
+# The pairs "<tcp|udp> <LAN address> <port>" that the router forwards into the LAN: the redirects
+# of /etc/config/firewall and the leases of miniupnpd. `ct status dnat` covers only the sessions
+# that came in from the WAN; a session the LAN host opened first, from the forwarded port
+# (STUN, hole punching, the answers of a game lobby), has no such flag and would be taken by
+# tproxy and sent out with another address.
+nft_dnat_pairs() {
+    local lease_file
+
+    uci -q show firewall 2> /dev/null | awk '
+        {
+            eq = index($0, "=")
+            key = substr($0, 1, eq - 1)
+            val = substr($0, eq + 1)
+            gsub(/\047/, "", val)
+            n = split(key, p, ".")
+            if (n == 2 && val == "redirect") { order[++count] = p[2]; next }
+            if (n == 3) opt[p[2], p[3]] = val
+        }
+        END {
+            for (i = 1; i <= count; i++) {
+                s = order[i]
+                target = opt[s, "target"]
+                if (target != "" && target != "DNAT") continue
+                if (opt[s, "enabled"] == "0") continue
+                addr = opt[s, "dest_ip"]
+                if (addr !~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) continue
+                port = opt[s, "dest_port"]
+                if (port == "") port = opt[s, "src_dport"]
+                if (port == "") continue
+                gsub(/:/, "-", port)
+                m = split(port, r, "-")
+                lo = r[1] + 0
+                hi = (m > 1) ? r[2] + 0 : lo
+                if (lo < 1 || hi > 65535 || hi < lo || hi - lo > 1023) continue
+                proto = opt[s, "proto"]
+                if (proto == "" || proto == "tcpudp" || proto == "all") proto = "tcp udp"
+                k = split(proto, ps, " ")
+                for (j = 1; j <= k; j++) {
+                    if (ps[j] != "tcp" && ps[j] != "udp") continue
+                    for (q = lo; q <= hi; q++) print ps[j], addr, q
+                }
+            }
+        }'
+
+    for lease_file in $NFT_UPNP_LEASE_FILES; do
+        [ -r "$lease_file" ] || continue
+        # PROTO:external port:LAN address:LAN port:expiry:description
+        awk -F: '
+            { proto = tolower($1) }
+            (proto == "tcp" || proto == "udp") && $3 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $4 + 0 >= 1 && $4 + 0 <= 65535 {
+                print proto, $3, $4 + 0
+            }' "$lease_file"
+    done
+}
+
+nft_create_dnat_sets() {
+    local table="$1"
+    local name
+
+    for name in "$NFT_DNAT_TCP_SET_NAME" "$NFT_DNAT_UDP_SET_NAME"; do
+        nft add set inet "$table" "$name" '{ type ipv4_addr . inet_service; }'
+    done
+}
+
+# Makes the two sets hold the pairs of nft_dnat_pairs. Does nothing when they have not changed
+# since the last run (a hash is kept in a file), unless called with "force".
+nft_sync_dnat_sets() {
+    local force="${1:-}"
+    local pairs sum proto addr port tcp_elements="" udp_elements="" element
+
+    nft list set inet "$NFT_TABLE_NAME" "$NFT_DNAT_TCP_SET_NAME" > /dev/null 2>&1 || return 0
+
+    pairs="$(nft_dnat_pairs | awk '!seen[$0]++')"
+    sum="$(printf '%s' "$pairs" | md5sum | cut -d' ' -f1)"
+    if [ "$force" != "force" ] && [ "$sum" = "$(cat "$NFT_DNAT_SUM_FILE" 2> /dev/null)" ]; then
+        return 0
+    fi
+
+    while read -r proto addr port; do
+        [ -n "$port" ] || continue
+        element="$addr . $port"
+        if [ "$proto" = "tcp" ]; then
+            tcp_elements="${tcp_elements:+$tcp_elements, }$element"
+        else
+            udp_elements="${udp_elements:+$udp_elements, }$element"
+        fi
+    done << EOF
+$pairs
+EOF
+
+    nft flush set inet "$NFT_TABLE_NAME" "$NFT_DNAT_TCP_SET_NAME" 2> /dev/null
+    nft flush set inet "$NFT_TABLE_NAME" "$NFT_DNAT_UDP_SET_NAME" 2> /dev/null
+    if [ -n "$tcp_elements" ]; then
+        nft add element inet "$NFT_TABLE_NAME" "$NFT_DNAT_TCP_SET_NAME" "{ $tcp_elements }" 2> /dev/null || return 1
+    fi
+    if [ -n "$udp_elements" ]; then
+        nft add element inet "$NFT_TABLE_NAME" "$NFT_DNAT_UDP_SET_NAME" "{ $udp_elements }" 2> /dev/null || return 1
+    fi
+    printf '%s' "$sum" > "$NFT_DNAT_SUM_FILE"
+}
