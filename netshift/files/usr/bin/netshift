@@ -2561,10 +2561,30 @@ create_nft_rules() {
 
     nft add rule inet "$NFT_TABLE_NAME" mangle ct status dnat return
     # Sessions that a LAN host opens itself from a forwarded (port forward or UPnP) port.
-    nft_create_dnat_sets "$NFT_TABLE_NAME"
-    nft add rule inet "$NFT_TABLE_NAME" mangle ip saddr . tcp sport "@$NFT_DNAT_TCP_SET_NAME" return
-    nft add rule inet "$NFT_TABLE_NAME" mangle ip saddr . udp sport "@$NFT_DNAT_UDP_SET_NAME" return
-    nft_sync_dnat_sets force
+    # Only that source port is returned, and only on a LAN interface. FakeIP and, when
+    # block_doh is on, the DoH resolvers stay marked: an unmarked packet to a FakeIP
+    # address is lost. A fully_routed device is not pulled out of the tunnel — its other
+    # flows are still marked by source; this port has to stay direct or the peer that
+    # connected to the WAN address cannot match the reply.
+    log "Forwarded-port sessions stay direct (port forward, UPnP)"
+    if ! nft_create_dnat_sets "$NFT_TABLE_NAME"; then
+        log "Forwarded-port sets were not created; those sessions stay proxied" "error"
+    fi
+    local dnat_block_doh dnat_doh4=""
+    config_get_bool dnat_block_doh "settings" "block_doh" 0
+    if [ "$dnat_block_doh" -eq 1 ]; then
+        # shellcheck disable=SC2086
+        dnat_doh4="$(echo $DOH_BLOCK_IPV4_CIDRS | tr ' ' ',' | sed 's/,/, /g')"
+    fi
+    set -- iifname "@$NFT_INTERFACE_SET_NAME" ip saddr . tcp sport "@$NFT_DNAT_TCP_SET_NAME" \
+        ip daddr != "$SB_FAKEIP_INET4_RANGE"
+    [ -z "$dnat_doh4" ] || set -- "$@" ip daddr != "{ $dnat_doh4 }"
+    nft add rule inet "$NFT_TABLE_NAME" mangle "$@" return
+    set -- iifname "@$NFT_INTERFACE_SET_NAME" ip saddr . udp sport "@$NFT_DNAT_UDP_SET_NAME" \
+        ip daddr != "$SB_FAKEIP_INET4_RANGE"
+    [ -z "$dnat_doh4" ] || set -- "$@" ip daddr != "{ $dnat_doh4 }"
+    nft add rule inet "$NFT_TABLE_NAME" mangle "$@" return
+    nft_sync_dnat_sets force || log "Could not fill forwarded-port sets" "error"
     # A packet to an address of the router itself (its external IP or DDNS name, reached from the
     # LAN) is not for the tunnel: with a global proxy, or a device that is fully routed, it would
     # be marked, taken by tproxy and lost, and a server on the router (VPN, web interface) would

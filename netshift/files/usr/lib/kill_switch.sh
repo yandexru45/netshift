@@ -36,6 +36,11 @@
 # packet that NetShift sends directly on purpose would be dropped for good, not
 # just during a restart.
 #
+# Not mirrored: the forwarded-port return (LAN address . forwarded sport, except
+# FakeIP and DoH). During a restart a flow from that port toward a proxied
+# network or a FakeIP address is still dropped. That is the same window as
+# before the return existed; extending the guard to those pairs is separate.
+#
 # The rebuild swaps the table structure in ONE nft transaction and then loads
 # the subnets in chunks (a single transaction with tens of thousands of elements
 # is a RAM spike on a 128 MB router). The sets are briefly incomplete, which is

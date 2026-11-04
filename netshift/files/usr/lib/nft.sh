@@ -227,23 +227,44 @@ nft_dnat_pairs() {
                 s = order[i]
                 target = opt[s, "target"]
                 if (target != "" && target != "DNAT") continue
-                if (opt[s, "enabled"] == "0") continue
+                en = opt[s, "enabled"]
+                if (en == "0" || en == "no" || en == "off" || en == "false" || en == "disabled") continue
                 addr = opt[s, "dest_ip"]
-                if (addr !~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) continue
-                port = opt[s, "dest_port"]
-                if (port == "") port = opt[s, "src_dport"]
-                if (port == "") continue
-                gsub(/:/, "-", port)
-                m = split(port, r, "-")
-                lo = r[1] + 0
-                hi = (m > 1) ? r[2] + 0 : lo
-                if (lo < 1 || hi > 65535 || hi < lo || hi - lo > 1023) continue
+                portspec = opt[s, "dest_port"]
+                if (portspec == "") portspec = opt[s, "src_dport"]
+                if (addr == "" || portspec == "") {
+                    print "forwarded-port redirect " s " has no address or port" > "/dev/stderr"
+                    continue
+                }
                 proto = opt[s, "proto"]
                 if (proto == "" || proto == "tcpudp" || proto == "all") proto = "tcp udp"
-                k = split(proto, ps, " ")
-                for (j = 1; j <= k; j++) {
-                    if (ps[j] != "tcp" && ps[j] != "udp") continue
-                    for (q = lo; q <= hi; q++) print ps[j], addr, q
+                na = split(addr, addrs, /[[:space:]]+/)
+                np = split(portspec, porttoks, /[[:space:]]+/)
+                kp = split(proto, ps, /[[:space:]]+/)
+                for (a = 1; a <= na; a++) {
+                    if (addrs[a] !~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) {
+                        print "forwarded-port redirect " s " address is not ipv4: " addrs[a] > "/dev/stderr"
+                        continue
+                    }
+                    for (p = 1; p <= np; p++) {
+                        spec = porttoks[p]
+                        gsub(/:/, "-", spec)
+                        m = split(spec, r, "-")
+                        lo = r[1] + 0
+                        hi = (m > 1) ? r[2] + 0 : lo
+                        if (lo < 1 || hi > 65535 || hi < lo) {
+                            print "forwarded-port redirect " s " port is not usable: " spec > "/dev/stderr"
+                            continue
+                        }
+                        if (hi - lo > 1023) {
+                            print "forwarded-port redirect " s " port range is wider than 1024: " spec > "/dev/stderr"
+                            continue
+                        }
+                        for (j = 1; j <= kp; j++) {
+                            if (ps[j] != "tcp" && ps[j] != "udp") continue
+                            for (q = lo; q <= hi; q++) print ps[j], addrs[a], q
+                        }
+                    }
                 }
             }
         }'
@@ -264,43 +285,99 @@ nft_create_dnat_sets() {
     local name
 
     for name in "$NFT_DNAT_TCP_SET_NAME" "$NFT_DNAT_UDP_SET_NAME"; do
-        nft add set inet "$table" "$name" '{ type ipv4_addr . inet_service; }'
+        if ! nft add set inet "$table" "$name" '{ type ipv4_addr . inet_service; }'; then
+            log "Could not create forwarded-port set $name" "error"
+            return 1
+        fi
     done
 }
 
-# Makes the two sets hold the pairs of nft_dnat_pairs. Does nothing when they have not changed
-# since the last run (a hash is kept in a file), unless called with "force".
+# Cheap fingerprint of the inputs (firewall redirects and UPnP leases), before any
+# port range is expanded. The monitor compares this and skips the parse when nothing
+# changed. Lines are sorted so a lease file rewritten in another order does not refill.
+nft_dnat_fingerprint() {
+    local lease_file
+
+    uci -q show firewall 2> /dev/null
+    for lease_file in $NFT_UPNP_LEASE_FILES; do
+        [ -r "$lease_file" ] || continue
+        printf '\n'
+        cat "$lease_file"
+    done
+}
+
+# One `flush` plus chunked `add element` lines for a set of "address . port" pairs.
+# $1 script, $2 set name, $3 file with one "addr . port" per line.
+_nft_dnat_script_adds() {
+    local script="$1"
+    local setname="$2"
+    local elems="$3"
+    local line chunk="" n=0
+
+    printf 'flush set inet %s %s\n' "$NFT_TABLE_NAME" "$setname" >> "$script"
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        if [ -z "$chunk" ]; then
+            chunk="$line"
+        else
+            chunk="$chunk, $line"
+        fi
+        n=$((n + 1))
+        if [ "$n" -eq 500 ]; then
+            printf 'add element inet %s %s { %s }\n' "$NFT_TABLE_NAME" "$setname" "$chunk" >> "$script"
+            chunk=""
+            n=0
+        fi
+    done < "$elems"
+    if [ -n "$chunk" ]; then
+        printf 'add element inet %s %s { %s }\n' "$NFT_TABLE_NAME" "$setname" "$chunk" >> "$script"
+    fi
+}
+
+# Makes the two sets hold the pairs of nft_dnat_pairs. Does nothing when the firewall
+# and the lease files have not changed since the last run, unless called with "force".
+# Flush and refill are one nft transaction, so a failed update does not leave the sets empty.
 nft_sync_dnat_sets() {
     local force="${1:-}"
-    local pairs sum proto addr port tcp_elements="" udp_elements="" element
+    local pairs sum proto addr port
+    local tcpf udpf script warnf
 
     nft list set inet "$NFT_TABLE_NAME" "$NFT_DNAT_TCP_SET_NAME" > /dev/null 2>&1 || return 0
 
-    pairs="$(nft_dnat_pairs | awk '!seen[$0]++')"
-    sum="$(printf '%s' "$pairs" | md5sum | cut -d' ' -f1)"
+    sum="$(nft_dnat_fingerprint | sort | md5sum | cut -d' ' -f1)"
     if [ "$force" != "force" ] && [ "$sum" = "$(cat "$NFT_DNAT_SUM_FILE" 2> /dev/null)" ]; then
         return 0
     fi
 
+    warnf="$(mktemp)"
+    pairs="$(nft_dnat_pairs 2> "$warnf" | awk '!seen[$0]++')"
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        log "$line" "warn"
+    done < "$warnf"
+    rm -f "$warnf"
+
+    tcpf="$(mktemp)"
+    udpf="$(mktemp)"
+    script="$(mktemp)"
+    : > "$script"
     while read -r proto addr port; do
         [ -n "$port" ] || continue
-        element="$addr . $port"
         if [ "$proto" = "tcp" ]; then
-            tcp_elements="${tcp_elements:+$tcp_elements, }$element"
+            printf '%s . %s\n' "$addr" "$port" >> "$tcpf"
         else
-            udp_elements="${udp_elements:+$udp_elements, }$element"
+            printf '%s . %s\n' "$addr" "$port" >> "$udpf"
         fi
     done << EOF
 $pairs
 EOF
-
-    nft flush set inet "$NFT_TABLE_NAME" "$NFT_DNAT_TCP_SET_NAME" 2> /dev/null
-    nft flush set inet "$NFT_TABLE_NAME" "$NFT_DNAT_UDP_SET_NAME" 2> /dev/null
-    if [ -n "$tcp_elements" ]; then
-        nft add element inet "$NFT_TABLE_NAME" "$NFT_DNAT_TCP_SET_NAME" "{ $tcp_elements }" 2> /dev/null || return 1
+    _nft_dnat_script_adds "$script" "$NFT_DNAT_TCP_SET_NAME" "$tcpf"
+    _nft_dnat_script_adds "$script" "$NFT_DNAT_UDP_SET_NAME" "$udpf"
+    if ! nft -f "$script"; then
+        log "Could not update forwarded-port sets" "error"
+        rm -f "$tcpf" "$udpf" "$script" "$warnf"
+        return 1
     fi
-    if [ -n "$udp_elements" ]; then
-        nft add element inet "$NFT_TABLE_NAME" "$NFT_DNAT_UDP_SET_NAME" "{ $udp_elements }" 2> /dev/null || return 1
-    fi
+    rm -f "$tcpf" "$udpf" "$script"
     printf '%s' "$sum" > "$NFT_DNAT_SUM_FILE"
 }
