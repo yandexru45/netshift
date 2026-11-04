@@ -96,10 +96,10 @@ nft_add_set_elements_from_file_chunked() {
 }
 
 # IPv6 counterpart of nft_add_set_elements_from_file_chunked. Adds only the
-# IPv6 / IPv6-CIDR lines from the file into an ipv6_addr set. A line is treated
-# as IPv6 when it contains a ':' (after trimming); anything else (IPv4, blank,
-# comment) is skipped. Fail-open: a malformed line is simply not added, so the
-# corresponding traffic goes direct rather than blackholing.
+# IPv6 / IPv6-CIDR lines from the file into an ipv6_addr set. Every line is
+# validated: one malformed element makes nft reject the WHOLE 5000-element
+# chunk, so a bad line must be skipped rather than passed through. Fail-open:
+# the corresponding traffic goes direct rather than blackholing.
 nft_add_set_elements_from_file_chunked_v6() {
     local filepath="$1"
     local nft_table_name="$2"
@@ -113,13 +113,10 @@ nft_add_set_elements_from_file_chunked_v6() {
 
         [ -z "$line" ] && continue
 
-        case "$line" in
-        *:*) ;;
-        *)
+        if ! is_ipv6_ip_or_ipv6_cidr "$line"; then
             log "'$line' is not IPv6 or IPv6 CIDR" "debug"
             continue
-            ;;
-        esac
+        fi
 
         if [ -z "$array" ]; then
             array="$line"

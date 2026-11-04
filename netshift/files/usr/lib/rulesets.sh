@@ -233,7 +233,7 @@ _import_plain_domain_list_into() {
     patch_source_ruleset_rules_from_file "$ruleset_filepath" "domain_regex" "$valid_regex_file"
 }
 
-# Imports a plain IPv4/CIDR list into a ruleset in chunks, validating entries and appending them as ip_cidr rules
+# Imports a plain IPv4/IPv6 CIDR list into a ruleset in chunks, validating entries and appending them as ip_cidr rules.
 import_plain_subnet_list_to_local_source_ruleset_chunked() {
     local plain_list_filepath="$1"
     local ruleset_filepath="$2"
@@ -246,10 +246,24 @@ import_plain_subnet_list_to_local_source_ruleset_chunked() {
 
         [ -z "$line" ] && continue
 
-        if ! is_ipv4 "$line" && ! is_ipv4_cidr "$line"; then
-            log "'$line' is not IPv4 or IPv4 CIDR" "debug"
-            continue
-        fi
+        case "$line" in
+        *:*)
+            if ! subnets_allow_ipv6; then
+                log "'$line' is IPv6, but IPv6 is disabled; skipping" "debug"
+                continue
+            fi
+            if ! is_ipv6_ip_or_ipv6_cidr "$line"; then
+                log "'$line' is not IPv6 or IPv6 CIDR" "debug"
+                continue
+            fi
+            ;;
+        *)
+            if ! is_ipv4 "$line" && ! is_ipv4_cidr "$line"; then
+                log "'$line' is not IPv4 or IPv4 CIDR" "debug"
+                continue
+            fi
+            ;;
+        esac
 
         if [ -z "$array" ]; then
             array="$line"
@@ -305,10 +319,14 @@ decompile_binary_ruleset() {
 }
 
 # Extracts all ip_cidr entries from a JSON ruleset file and writes them to an output file.
+# Rules without ip_cidr (domain-only rules) are skipped, and ip_cidr may be a
+# string as well as an array; both shapes are accepted without a regex.
 extract_ip_cidr_from_json_ruleset_to_file() {
     local json_file="$1"
     local output_file="$2"
 
     log "Extracting ip_cidr entries from $json_file to $output_file" "debug"
-    jq -r '.rules[].ip_cidr[]' "$json_file" > "$output_file"
+    jq -r '.rules[]? | .ip_cidr? |
+        if type == "array" then .[] elif type == "string" then . else empty end' \
+        "$json_file" > "$output_file"
 }

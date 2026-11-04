@@ -153,6 +153,7 @@ NFT_BYPASS_SET_NAME_V6="netshift_bypass_v6"
 # IPv6 mirror of NFT_COMMON_SET_NAME (only created/used when IPv6 is enabled).
 NFT_COMMON_SET_NAME_V6="netshift_subnets_v6"
 NFT_DISCORD_SET_NAME="netshift_discord_subnets"
+NFT_DISCORD_SET_NAME_V6="netshift_discord_subnets_v6"
 NFT_INTERFACE_SET_NAME="interfaces"
 NFT_FAKEIP_MARK="0x00100000"
 NFT_OUTBOUND_MARK="0x00200000"
@@ -437,6 +438,20 @@ SUBNETS_HETZNER="${GITHUB_RAW_URL}/Subnets/IPv4/hetzner.lst"
 SUBNETS_OVH="${GITHUB_RAW_URL}/Subnets/IPv4/ovh.lst"
 SUBNETS_DIGITALOCEAN="${GITHUB_RAW_URL}/Subnets/IPv4/digitalocean.lst"
 SUBNETS_CLOUDFRONT="${GITHUB_RAW_URL}/Subnets/IPv4/cloudfront.lst"
+# IPv6 mirrors of the community subnet lists (Subnets/IPv6 in the same repo).
+# roblox has no IPv6 list there, so it has no constant on purpose.
+SUBNETS_V6_TWITTER="${GITHUB_RAW_URL}/Subnets/IPv6/twitter.lst"
+SUBNETS_V6_META="${GITHUB_RAW_URL}/Subnets/IPv6/meta.lst"
+SUBNETS_V6_TELEGRAM="${GITHUB_RAW_URL}/Subnets/IPv6/telegram.lst"
+SUBNETS_V6_CLOUDFLARE="${GITHUB_RAW_URL}/Subnets/IPv6/cloudflare.lst"
+SUBNETS_V6_HETZNER="${GITHUB_RAW_URL}/Subnets/IPv6/hetzner.lst"
+SUBNETS_V6_OVH="${GITHUB_RAW_URL}/Subnets/IPv6/ovh.lst"
+SUBNETS_V6_DIGITALOCEAN="${GITHUB_RAW_URL}/Subnets/IPv6/digitalocean.lst"
+SUBNETS_V6_CLOUDFRONT="${GITHUB_RAW_URL}/Subnets/IPv6/cloudfront.lst"
+SUBNETS_V6_DISCORD="${GITHUB_RAW_URL}/Subnets/IPv6/discord.lst"
+# Telegram's own IPv6 ranges (core.telegram.org/resources/cidr.txt), the
+# counterpart of TELEGRAM_FALLBACK_SUBNETS for the v6 list.
+TELEGRAM_FALLBACK_SUBNETS_V6="2001:67c:4e8::/48 2001:b28:f23c::/47 2001:b28:f23d::/48 2001:b28:f23f::/48 2a0a:f280::/32"
 COMMUNITY_SERVICES="russia_inside russia_outside ukraine_inside geoblock block porn news anime youtube hdrezka tiktok google_ai google_play hodca discord meta twitter cloudflare cloudfront digitalocean hetzner ovh telegram roblox"
 
 # Environment hints (check_environment): a clock earlier than this (2025-01-01) is

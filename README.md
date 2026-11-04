@@ -150,6 +150,8 @@ uci add_list netshift.my_sub.community_lists='telegram'
 uci commit netshift
 ```
 
+IPv6-подсети из списков User, Local, Remote и Community используются только при включённом `enable_ipv6`; без него IPv6-записи пропускаются.
+
 </details>
 
 <details>

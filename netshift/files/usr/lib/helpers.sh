@@ -75,6 +75,26 @@ is_ip_or_ip_prefix() {
     [ "$prefix" -le "$max_prefix" ]
 }
 
+# Check if a value is an IPv6 address or an IPv6 prefix that sing-box accepts.
+# The ':' requirement keeps IPv4 out, and the strict canonical-prefix check of
+# is_ip_or_ip_prefix is reused: one invalid ip_cidr makes sing-box reject the
+# WHOLE configuration, so a value must not reach it unchecked.
+is_ipv6_ip_or_ipv6_cidr() {
+    case "$1" in
+    *:*) ;;
+    *) return 1 ;;
+    esac
+
+    is_ip_or_ip_prefix "$1"
+}
+
+# True when IPv6 entries of subnet lists may be used. The flag is computed once
+# per entry point (netshift_ipv6_enabled runs `ip -6 addr`), never per line, and
+# an unset flag counts as off.
+subnets_allow_ipv6() {
+    [ "${NETSHIFT_SUBNETS_ALLOW_IPV6:-0}" = "1" ]
+}
+
 is_domain() {
     local str="$1"
     local regex='^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$'
@@ -952,10 +972,24 @@ parse_domain_or_subnet_file_to_comma_string() {
             line="$normalized"
             ;;
         subnets)
-            if ! is_ipv4 "$line" && ! is_ipv4_cidr "$line"; then
-                log "'$line' is not IPv4 or IPv4 CIDR" "debug"
-                continue
-            fi
+            case "$line" in
+            *:*)
+                if ! subnets_allow_ipv6; then
+                    log "'$line' is IPv6, but IPv6 is disabled; skipping" "debug"
+                    continue
+                fi
+                if ! is_ipv6_ip_or_ipv6_cidr "$line"; then
+                    log "'$line' is not IPv6 or IPv6 CIDR" "debug"
+                    continue
+                fi
+                ;;
+            *)
+                if ! is_ipv4 "$line" && ! is_ipv4_cidr "$line"; then
+                    log "'$line' is not IPv4 or IPv4 CIDR" "debug"
+                    continue
+                fi
+                ;;
+            esac
             ;;
         *)
             log "Unknown type: $type" "error"
