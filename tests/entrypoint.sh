@@ -25818,6 +25818,20 @@ test_happ_crypt4() {
     mkdir -p "$work"
     plain="vless://00000000-0000-4000-8000-000000000001@example.com:443?encryption=none&security=tls&sni=example.com#HappNode"
     secret="my-custom-device-hwid"
+    if ! command -v openssl > /dev/null 2>&1; then
+        if happ_decrypt_crypt4 "happ://crypt4/AAECAwQFBgcICQoLDA0ODw==" "$work/out" "$secret"; then
+            fail "crypt4 decrypted without openssl"
+        else
+            pass "crypt4-without-openssl-is-refused"
+        fi
+        if [ "$(happ_link_kind "happ://crypt5/aaaa")" = "crypt5" ]; then
+            pass "crypt5-is-recognized"
+        else
+            fail "crypt5 was not recognized"
+        fi
+        rm -rf "$work"
+        return
+    fi
     key=$(printf '%s' "$secret" | sha256sum | awk '{print $1}')
     iv="000102030405060708090a0b0c0d0e0f"
     printf '%s' "$plain" | openssl enc -aes-256-cbc -K "$key" -iv "$iv" -out "$work/ct" || {
