@@ -22557,6 +22557,10 @@ import_community_subnet_lists svc
 cv_ok cv-v4-failure-v6-on 1 $?
 SV_V4_FAIL_SERVICES=""
 
+# A failed section must not poison a later successful import.
+import_community_subnet_lists svc
+cv_ok cv-success-after-failure 0 $?
+
 # A failed ruleset write must be reported even after the work directory is removed.
 TMP_RULESET_FOLDER="$WORK/missing-rulesets"
 import_community_subnet_lists svc

@@ -2069,7 +2069,6 @@ process_validate_service() {
     local community_lists
     config_get community_lists "$section" "community_lists"
     if [ -n "$community_lists" ]; then
-        local community_import_failed=0
         config_list_foreach "$section" "community_lists" validate_service
     fi
 }
@@ -7447,6 +7446,7 @@ sing_box_config_check() {
 
 import_community_subnet_lists() {
     local section="$1"
+    local community_import_failed=0
     section_is_dns_rule "$section" && return 0
     subnets_ipv6_flag_init
     nft_select_subnet_target "$section"
