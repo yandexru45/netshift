@@ -3012,8 +3012,14 @@ jitter_shift_clock() {
 get_subscription_cron_line_for_interval() {
     local cron_hour cron_minute percent salt offset cron_time
 
-    percent="$(check_jitter_percent)"
-    salt="cron:$1:$(jitter_device_salt)"
+    # An empty or unknown answer is "off". A missing helper must not emit a cron
+    # line with a blank minute: the existing schedules stay exactly as written.
+    percent="$(check_jitter_percent 2> /dev/null)" || percent=0
+    case "$percent" in
+    15 | 25 | 40) ;;
+    *) percent=0 ;;
+    esac
+    salt="cron:$1:$(jitter_device_salt 2> /dev/null)"
 
     case "$1" in
     "30m")

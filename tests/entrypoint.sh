@@ -9476,6 +9476,8 @@ LIB="LIB_DIR_PLACEHOLDER"
 . /lib/functions.sh
 # shellcheck disable=SC1090
 . "$LIB/constants.sh"
+# shellcheck disable=SC1090
+. "$LIB/helpers.sh"
 
 extract() {
     awk -v f="$1" '$0 ~ "^"f"\\(\\) \\{"{p=1} p{print} p&&/^\}/{exit}' "$BIN"
@@ -9518,6 +9520,7 @@ for fn in is_valid_subscription_update_time \
           cron_number cron_field_matches \
           subscription_daily_minute_is_free suggest_free_daily_minute \
           warn_daily_subscription_time_collisions \
+          check_jitter_percent jitter_device_salt jitter_shift_clock \
           get_subscription_cron_line_for_interval \
           _collect_subscription_update_interval \
           sync_subscription_cron_jobs \
