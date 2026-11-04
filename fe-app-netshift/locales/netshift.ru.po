@@ -1,15 +1,15 @@
 # RU translations for NETSHIFT package.
 # Copyright (C) 2026 THE NETSHIFT'S COPYRIGHT HOLDER
 # This file is distributed under the same license as the NETSHIFT package.
-# agent, 2026.
+# cergo666, 2026.
 #
 msgid ""
 msgstr ""
 "Project-Id-Version: NETSHIFT\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-22 21:36+0300\n"
-"PO-Revision-Date: 2026-10-22 21:36+0300\n"
-"Last-Translator: agent\n"
+"POT-Creation-Date: 2026-11-04 14:03+0300\n"
+"PO-Revision-Date: 2026-11-04 14:03+0300\n"
+"Last-Translator: cergo666\n"
 "Language-Team: none\n"
 "Language: ru\n"
 "MIME-Version: 1.0\n"
@@ -1703,6 +1703,9 @@ msgstr "Настройки"
 msgid "Several DNS servers"
 msgstr "Несколько DNS-серверов"
 
+msgid "Shifts URLTest checks and the subscription refresh schedule by a stable amount, so they do not all fire at the same second. The shift is kept across reloads. Off leaves the times exactly as configured."
+msgstr "Сдвигает проверки URLTest и расписание обновления подписок на стабильную величину, чтобы они не срабатывали в одну секунду. Сдвиг сохраняется между перезапусками. «Выкл» оставляет время таким, как оно задано."
+
 msgid "Show a notice on the dashboard when a newer NetShift or sing-box-extended version is out. When the dashboard is opened and the last check is more than a day old, the router asks GitHub once in the background; nothing is installed."
 msgstr "Показывать на дашборде уведомление о новой версии NetShift или sing-box-extended. Если при открытии дашборда последняя проверка старше суток, роутер один раз в фоне обращается к GitHub; ничего не устанавливается."
 
@@ -1780,6 +1783,9 @@ msgstr "Укажите URL-адреса для загрузки и исполь�
 
 msgid "Specify the path to the list file located on the router filesystem"
 msgstr "Укажите путь к файлу списка, расположенному в файловой системе маршрутизатора."
+
+msgid "Spread out checks and subscription updates"
+msgstr "Разнести проверки и обновления подписок"
 
 msgid "Start NetShift"
 msgstr "Запустить NetShift"

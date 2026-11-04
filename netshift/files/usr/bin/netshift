@@ -2964,36 +2964,126 @@ get_section_subscription_update_time() {
     echo "$subscription_update_time"
 }
 
+# 15, 25 or 40 when settings.check_jitter asks for that spread, otherwise 0.
+check_jitter_percent() {
+    local percent
+
+    config_get percent "settings" "check_jitter" "0"
+    case "$percent" in
+    15 | 25 | 40) printf '%s' "$percent" ;;
+    *) printf '0' ;;
+    esac
+}
+
+# Stable per router, so two routers do not refresh in the same minute.
+jitter_device_salt() {
+    local mac
+
+    mac="$(cat /sys/class/net/br-lan/address 2> /dev/null)"
+    [ -n "$mac" ] || mac="$(hostname 2> /dev/null)"
+    printf '%s' "${mac:-netshift}"
+}
+
+# Move a minute by the jitter offset. The hour follows when the minute wraps.
+# Prints "minute hour".
+jitter_shift_clock() {
+    local minute="$1"
+    local hour="$2"
+    local offset="$3"
+
+    minute=$((minute + offset))
+    while [ "$minute" -lt 0 ]; do
+        minute=$((minute + 60))
+        hour=$((hour - 1))
+    done
+    while [ "$minute" -ge 60 ]; do
+        minute=$((minute - 60))
+        hour=$((hour + 1))
+    done
+    while [ "$hour" -lt 0 ]; do
+        hour=$((hour + 24))
+    done
+    while [ "$hour" -ge 24 ]; do
+        hour=$((hour - 24))
+    done
+    printf '%s %s' "$minute" "$hour"
+}
+
 get_subscription_cron_line_for_interval() {
-    local cron_hour cron_minute
+    local cron_hour cron_minute percent salt offset cron_time
+
+    percent="$(check_jitter_percent)"
+    salt="cron:$1:$(jitter_device_salt)"
 
     case "$1" in
     "30m")
-        echo "*/30 * * * * /usr/bin/netshift subscription_update 30m"
+        if [ "$percent" = "0" ]; then
+            echo "*/30 * * * * /usr/bin/netshift subscription_update 30m"
+        else
+            offset="$(jitter_offset 30 "$salt" "$percent")"
+            cron_minute=$(((0 + offset) % 60))
+            [ "$cron_minute" -lt 0 ] && cron_minute=$((cron_minute + 60))
+            echo "$cron_minute,$(((cron_minute + 30) % 60)) * * * * /usr/bin/netshift subscription_update 30m"
+        fi
         ;;
     "1h")
-        echo "17 * * * * /usr/bin/netshift subscription_update 1h"
+        if [ "$percent" = "0" ]; then
+            echo "17 * * * * /usr/bin/netshift subscription_update 1h"
+        else
+            offset="$(jitter_offset 60 "$salt" "$percent")"
+            # shellcheck disable=SC2086
+            set -- $(jitter_shift_clock 17 0 "$offset")
+            echo "$1 $2 * * * /usr/bin/netshift subscription_update 1h"
+        fi
         ;;
     "3h")
-        echo "7 */3 * * * /usr/bin/netshift subscription_update 3h"
+        if [ "$percent" = "0" ]; then
+            echo "7 */3 * * * /usr/bin/netshift subscription_update 3h"
+        else
+            offset="$(jitter_offset 60 "$salt" "$percent")"
+            # shellcheck disable=SC2086
+            set -- $(jitter_shift_clock 7 0 "$offset")
+            echo "$1 $2 */3 * * /usr/bin/netshift subscription_update 3h"
+        fi
         ;;
     "6h")
-        echo "24 */6 * * * /usr/bin/netshift subscription_update 6h"
+        if [ "$percent" = "0" ]; then
+            echo "24 */6 * * * /usr/bin/netshift subscription_update 6h"
+        else
+            offset="$(jitter_offset 60 "$salt" "$percent")"
+            # shellcheck disable=SC2086
+            set -- $(jitter_shift_clock 24 0 "$offset")
+            echo "$1 $2 */6 * * /usr/bin/netshift subscription_update 6h"
+        fi
         ;;
     "12h")
-        echo "40 */12 * * * /usr/bin/netshift subscription_update 12h"
+        if [ "$percent" = "0" ]; then
+            echo "40 */12 * * * /usr/bin/netshift subscription_update 12h"
+        else
+            offset="$(jitter_offset 60 "$salt" "$percent")"
+            # shellcheck disable=SC2086
+            set -- $(jitter_shift_clock 40 0 "$offset")
+            echo "$1 $2 */12 * * /usr/bin/netshift subscription_update 12h"
+        fi
         ;;
     "1d")
         # Optional $2: HH:MM to run at (default SUBSCRIPTION_UPDATE_TIME_DEFAULT).
         # The time is part of the job so it only refreshes the sections at that
         # time. cron wants plain numbers, and $((08)) is an octal error in ash,
         # so the leading zero is stripped textually instead.
-        local cron_time="${2:-$SUBSCRIPTION_UPDATE_TIME_DEFAULT}"
+        cron_time="${2:-$SUBSCRIPTION_UPDATE_TIME_DEFAULT}"
         is_valid_subscription_update_time "$cron_time" || return 1
         cron_hour="${cron_time%%:*}"
         cron_hour="${cron_hour#0}"
         cron_minute="${cron_time##*:}"
         cron_minute="${cron_minute#0}"
+        if [ "$percent" != "0" ]; then
+            offset="$(jitter_offset 60 "$salt:$cron_time" "$percent")"
+            # shellcheck disable=SC2086
+            set -- $(jitter_shift_clock "${cron_minute:-0}" "${cron_hour:-0}" "$offset")
+            cron_minute="$1"
+            cron_hour="$2"
+        fi
         echo "${cron_minute:-0} ${cron_hour:-0} * * * /usr/bin/netshift subscription_update 1d $cron_time"
         ;;
     *)
@@ -4793,6 +4883,7 @@ configure_outbound_handler() {
             config_get urltest_proxy_links "$section" "urltest_proxy_links"
             config_get udp_over_tcp "$section" "enable_udp_over_tcp"
             config_get urltest_check_interval "$section" "urltest_check_interval" "3m"
+            urltest_check_interval="$(jitter_duration "$urltest_check_interval" "urltest:${section}" "$(check_jitter_percent)")"
             config_get urltest_tolerance "$section" "urltest_tolerance" 50
             config_get urltest_testing_url "$section" "urltest_testing_url" "$LATENCY_TEST_URL_DEFAULT"
 
@@ -4846,6 +4937,7 @@ configure_outbound_handler() {
             config_get urltest_text_links "$section" "urltest_proxy_links_text"
             config_get udp_over_tcp "$section" "enable_udp_over_tcp"
             config_get urltest_check_interval "$section" "urltest_check_interval" "3m"
+            urltest_check_interval="$(jitter_duration "$urltest_check_interval" "urltest:${section}" "$(check_jitter_percent)")"
             config_get urltest_tolerance "$section" "urltest_tolerance" 50
             config_get urltest_testing_url "$section" "urltest_testing_url" "$LATENCY_TEST_URL_DEFAULT"
 
@@ -4882,6 +4974,7 @@ configure_outbound_handler() {
                 subscription_outbound_feeds_json
 
             config_get urltest_check_interval "$section" "urltest_check_interval" "3m"
+            urltest_check_interval="$(jitter_duration "$urltest_check_interval" "urltest:${section}" "$(check_jitter_percent)")"
             config_get urltest_tolerance "$section" "urltest_tolerance" 50
             config_get urltest_testing_url "$section" "urltest_testing_url" "$LATENCY_TEST_URL_DEFAULT"
             # Grouping mode (task-044): off | country | prefix. The new

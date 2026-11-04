@@ -1400,6 +1400,20 @@ function createSettingsContent(section) {
 
   o = section.taboption(
     "advanced",
+    form.ListValue,
+    "check_jitter",
+    _("Spread out checks and subscription updates"),
+    _("Shifts URLTest checks and the subscription refresh schedule by a stable amount, so they do not all fire at the same second. The shift is kept across reloads. Off leaves the times exactly as configured."),
+  );
+  o.value("0", _("Off"));
+  o.value("15", "±15%");
+  o.value("25", "±25%");
+  o.value("40", "±40%");
+  o.default = "0";
+  o.rmempty = false;
+
+  o = section.taboption(
+    "advanced",
     form.Value,
     "latency_test_url",
     _("Latency test URL"),

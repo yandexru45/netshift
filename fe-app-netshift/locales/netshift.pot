@@ -1,15 +1,15 @@
 # SOME DESCRIPTIVE TITLE.
 # Copyright (C) 2026 THE PACKAGE'S COPYRIGHT HOLDER
 # This file is distributed under the same license as the NETSHIFT package.
-# agent <agent@local>, 2026.
+# cergo666 <cergo666@ya.ru>, 2026.
 #, fuzzy
 msgid ""
 msgstr ""
 "Project-Id-Version: NETSHIFT\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-22 18:36+0300\n"
-"PO-Revision-Date: 2026-10-22 18:36+0300\n"
-"Last-Translator: agent <agent@local>\n"
+"POT-Creation-Date: 2026-11-04 11:03+0300\n"
+"PO-Revision-Date: 2026-11-04 11:03+0300\n"
+"Last-Translator: cergo666 <cergo666@ya.ru>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
 "Language: \n"
 "MIME-Version: 1.0\n"
@@ -275,11 +275,11 @@ msgstr ""
 msgid "Bypass sing-box for excluded IPs"
 msgstr ""
 
-#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1453
+#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1467
 msgid "Cache File Path"
 msgstr ""
 
-#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1467
+#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1481
 msgid "Cache file path cannot be empty"
 msgstr ""
 
@@ -435,7 +435,7 @@ msgstr ""
 msgid "Compressed build: uses more RAM at startup"
 msgstr ""
 
-#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1439
+#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1453
 msgid "Config File Path"
 msgstr ""
 
@@ -1603,7 +1603,7 @@ msgstr ""
 msgid "Last run"
 msgstr ""
 
-#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1405
+#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1419
 msgid "Latency test URL"
 msgstr ""
 
@@ -1656,7 +1656,7 @@ msgstr ""
 msgid "Local Subnet Lists"
 msgstr ""
 
-#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1490
+#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1504
 msgid "Log Level"
 msgstr ""
 
@@ -1896,6 +1896,7 @@ msgstr ""
 #: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:656
 #: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1060
 #: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1333
+#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1408
 msgid "Off"
 msgstr ""
 
@@ -1986,15 +1987,15 @@ msgstr ""
 msgid "Path cannot be empty"
 msgstr ""
 
-#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1471
+#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1485
 msgid "Path must be absolute (start with /)"
 msgstr ""
 
-#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1480
+#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1494
 msgid "Path must contain at least one directory (like /tmp/cache.db)"
 msgstr ""
 
-#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1475
+#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1489
 msgid "Path must end with cache.db"
 msgstr ""
 
@@ -2300,11 +2301,11 @@ msgstr ""
 msgid "Select or enter DNS server address"
 msgstr ""
 
-#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1454
+#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1468
 msgid "Select or enter path for sing-box cache file. Change this ONLY if you know what you are doing"
 msgstr ""
 
-#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1440
+#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1454
 msgid "Select path for sing-box config file. Change this ONLY if you know what you are doing"
 msgstr ""
 
@@ -2312,7 +2313,7 @@ msgstr ""
 msgid "Select the DNS protocol type for the domain resolver"
 msgstr ""
 
-#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1491
+#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1505
 msgid "Select the log level for sing-box"
 msgstr ""
 
@@ -2397,6 +2398,10 @@ msgstr ""
 #: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:1273
 #: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:523
 msgid "Several DNS servers"
+msgstr ""
+
+#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1406
+msgid "Shifts URLTest checks and the subscription refresh schedule by a stable amount, so they do not all fire at the same second. The shift is kept across reloads. Off leaves the times exactly as configured."
 msgstr ""
 
 #: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1197
@@ -2506,6 +2511,10 @@ msgstr ""
 #: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:1870
 #: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:1894
 msgid "Specify the path to the list file located on the router filesystem"
+msgstr ""
+
+#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1405
+msgid "Spread out checks and subscription updates"
 msgstr ""
 
 #: src/netshift/tabs/diagnostic/partials/renderAvailableActions.ts:71
@@ -2789,7 +2798,7 @@ msgstr ""
 msgid "The tiles with the traffic, the total traffic, the system information and the services above the lists of servers. Turn them off to leave only the servers."
 msgstr ""
 
-#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1406
+#: ../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1420
 msgid "The URL the dashboard uses to measure server latency. Change it if the default is slow or blocked in your region."
 msgstr ""
 

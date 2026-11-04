@@ -454,14 +454,14 @@
     "call": "Cache File Path",
     "key": "Cache File Path",
     "places": [
-      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1453"
+      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1467"
     ]
   },
   {
     "call": "Cache file path cannot be empty",
     "key": "Cache file path cannot be empty",
     "places": [
-      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1467"
+      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1481"
     ]
   },
   {
@@ -722,7 +722,7 @@
     "call": "Config File Path",
     "key": "Config File Path",
     "places": [
-      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1439"
+      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1453"
     ]
   },
   {
@@ -2712,7 +2712,7 @@
     "call": "Latency test URL",
     "key": "Latency test URL",
     "places": [
-      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1405"
+      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1419"
     ]
   },
   {
@@ -2804,7 +2804,7 @@
     "call": "Log Level",
     "key": "Log Level",
     "places": [
-      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1490"
+      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1504"
     ]
   },
   {
@@ -3205,7 +3205,8 @@
     "places": [
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:656",
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1060",
-      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1333"
+      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1333",
+      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1408"
     ]
   },
   {
@@ -3362,21 +3363,21 @@
     "call": "Path must be absolute (start with /)",
     "key": "Path must be absolute (start with /)",
     "places": [
-      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1471"
+      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1485"
     ]
   },
   {
     "call": "Path must contain at least one directory (like /tmp/cache.db)",
     "key": "Path must contain at least one directory (like /tmp/cache.db)",
     "places": [
-      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1480"
+      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1494"
     ]
   },
   {
     "call": "Path must end with cache.db",
     "key": "Path must end with cache.db",
     "places": [
-      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1475"
+      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1489"
     ]
   },
   {
@@ -3901,14 +3902,14 @@
     "call": "Select or enter path for sing-box cache file. Change this ONLY if you know what you are doing",
     "key": "Select or enter path for sing-box cache file. Change this ONLY if you know what you are doing",
     "places": [
-      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1454"
+      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1468"
     ]
   },
   {
     "call": "Select path for sing-box config file. Change this ONLY if you know what you are doing",
     "key": "Select path for sing-box config file. Change this ONLY if you know what you are doing",
     "places": [
-      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1440"
+      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1454"
     ]
   },
   {
@@ -3922,7 +3923,7 @@
     "call": "Select the log level for sing-box",
     "key": "Select the log level for sing-box",
     "places": [
-      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1491"
+      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1505"
     ]
   },
   {
@@ -4066,6 +4067,13 @@
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:155",
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:1273",
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:523"
+    ]
+  },
+  {
+    "call": "Shifts URLTest checks and the subscription refresh schedule by a stable amount, so they do not all fire at the same second. The shift is kept across reloads. Off leaves the times exactly as configured.",
+    "key": "Shifts URLTest checks and the subscription refresh schedule by a stable amount, so they do not all fire at the same second. The shift is kept across reloads. Off leaves the times exactly as configured.",
+    "places": [
+      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1406"
     ]
   },
   {
@@ -4253,6 +4261,13 @@
     "places": [
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:1870",
       "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/section.js:1894"
+    ]
+  },
+  {
+    "call": "Spread out checks and subscription updates",
+    "key": "Spread out checks and subscription updates",
+    "places": [
+      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1405"
     ]
   },
   {
@@ -4741,7 +4756,7 @@
     "call": "The URL the dashboard uses to measure server latency. Change it if the default is slow or blocked in your region.",
     "key": "The URL the dashboard uses to measure server latency. Change it if the default is slow or blocked in your region.",
     "places": [
-      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1406"
+      "../luci-app-netshift/htdocs/luci-static/resources/view/netshift/settings.js:1420"
     ]
   },
   {
