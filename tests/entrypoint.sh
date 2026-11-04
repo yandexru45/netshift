@@ -25808,6 +25808,54 @@ LR
     rm -rf "$work"
 }
 
+test_happ_crypt4() {
+    header "A Happ crypt4 link decrypts to the subscription it wraps"
+
+    # shellcheck disable=SC1090
+    . "$NETSHIFT_LIB_DIR/helpers.sh"
+    local work plain secret key iv b64 out
+    work="/tmp/netshift-happ-$$"
+    mkdir -p "$work"
+    plain="vless://00000000-0000-4000-8000-000000000001@example.com:443?encryption=none&security=tls&sni=example.com#HappNode"
+    secret="my-custom-device-hwid"
+    key=$(printf '%s' "$secret" | sha256sum | awk '{print $1}')
+    iv="000102030405060708090a0b0c0d0e0f"
+    printf '%s' "$plain" | openssl enc -aes-256-cbc -K "$key" -iv "$iv" -out "$work/ct" || {
+        fail "openssl could not build the crypt4 vector"
+        rm -rf "$work"
+        return
+    }
+    printf '%b' '\000\001\002\003\004\005\006\007\010\011\012\013\014\015\016\017' > "$work/iv"
+    cat "$work/iv" "$work/ct" > "$work/raw"
+    b64=$(base64 < "$work/raw" | tr -d '\n')
+    printf '%s' "$plain" > "$work/plain"
+    if happ_decrypt_crypt4 "happ://crypt4/${b64}" "$work/out" "$secret" && cmp -s "$work/out" "$work/plain"; then
+        pass "hwid-crypt4-decrypts"
+    else
+        fail "crypt4 with the section HWID did not decrypt" "$(cat "$work/out" 2> /dev/null)"
+    fi
+    key=$(printf '%s' "HappDefaultSalt" | sha256sum | awk '{print $1}')
+    printf '%s' "$plain" | openssl enc -aes-256-cbc -K "$key" -iv "$iv" -out "$work/ct"
+    cat "$work/iv" "$work/ct" > "$work/raw"
+    b64=$(base64 < "$work/raw" | tr -d '\n')
+    if happ_decrypt_crypt4 "crypt4/${b64}" "$work/out" "" && cmp -s "$work/out" "$work/plain"; then
+        pass "default-salt-crypt4-decrypts"
+    else
+        fail "crypt4 with the default salt did not decrypt"
+    fi
+    if [ "$(happ_link_kind "happ://crypt5/aaaa")" = "crypt5" ]; then
+        pass "crypt5-is-recognized"
+    else
+        fail "crypt5 was not recognized"
+    fi
+    if happ_decrypt_crypt4 "https://example.com/sub" "$work/out" ""; then
+        fail "a plain subscription URL was treated as crypt4"
+    else
+        pass "plain-url-is-not-crypt4"
+    fi
+    rm -rf "$work"
+}
+
 main() {
     printf "${BOLD}Netshift Evolution — Smoke Test Suite${NC}\n"
     printf "Source: %s\n" "$NETSHIFT_SRC"
