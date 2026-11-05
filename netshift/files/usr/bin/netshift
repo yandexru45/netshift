@@ -773,6 +773,11 @@ wait_for_subscription_connectivity() {
     local attempt
     local SUBSCRIPTION_HWID SUBSCRIPTION_DEVICE_OS SUBSCRIPTION_OS_VERSION SUBSCRIPTION_DEVICE_MODEL SUBSCRIPTION_USER_AGENT
 
+    # Embedded Happ subscriptions are decoded locally and have no network endpoint.
+    case "$(happ_link_kind "$subscription_url")" in
+    crypt4 | crypt5) return 0 ;;
+    esac
+
     load_subscription_client_identity "$section"
     for attempt in $(seq 1 "$attempts"); do
         if check_subscription_connectivity "$subscription_url" "$service_proxy_address" 1 0 "$timeout"; then

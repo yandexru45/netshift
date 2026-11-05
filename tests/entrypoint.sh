@@ -25816,6 +25816,18 @@ test_happ_crypt4() {
     local work plain secret key iv b64 out
     work="/tmp/netshift-happ-$$"
     mkdir -p "$work"
+    if (
+        eval "$(awk '/^wait_for_subscription_connectivity\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "$NETSHIFT_SRC/usr/bin/netshift")"
+        load_subscription_client_identity() { :; }
+        check_subscription_connectivity() { return 1; }
+        log() { :; }
+        wait_for_subscription_connectivity main 'happ://crypt4/example' '' 1 0 1 &&
+            ! wait_for_subscription_connectivity main 'https://example.com/feed' '' 1 0 1
+    ); then
+        pass "crypt4-bypasses-network-preflight"
+    else
+        fail "embedded crypt4 must not require connectivity; HTTP still must"
+    fi
     plain="vless://00000000-0000-4000-8000-000000000001@example.com:443?encryption=none&security=tls&sni=example.com#HappNode"
     secret="my-custom-device-hwid"
     if ! command -v openssl > /dev/null 2>&1; then
