@@ -6302,6 +6302,13 @@ fi
 
 mkdir -p "$SUBSCRIPTION_CACHE_FOLDER/.clear.interrupted"
 mv "$SUBSCRIPTION_CACHE_FOLDER"/*.json "$SUBSCRIPTION_CACHE_FOLDER/.clear.interrupted/"
+subscription_update_lock_acquire nowait
+if ! recover_interrupted_subscription_clear && [ -f "$SUBSCRIPTION_CACHE_FOLDER/.clear.interrupted/sec1.eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.json" ]; then
+    echo 'cc-case4-live-lock-prevents-recovery:OK'
+else
+    echo 'cc-case4-live-lock-prevents-recovery:FAIL'
+fi
+subscription_update_lock_release
 if recover_interrupted_subscription_clear && [ "$(ls -1 "$SUBSCRIPTION_CACHE_FOLDER" | wc -l)" -eq 4 ]; then
     echo 'cc-case4-interrupted-clear-restored:OK'
 else
