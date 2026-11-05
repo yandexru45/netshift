@@ -25808,6 +25808,30 @@ LR
     rm -rf "$work"
 }
 
+test_readonly_acl() {
+    header "Read-only RPC entry point rejects mutation"
+    local wrapper="${NETSHIFT_SRC}/usr/bin/netshift-read" work out rc
+    work="$(mktemp -d)" || return 1
+    if jq -e '."luci-app-netshift".read.file["/usr/bin/netshift-read"] == ["exec"] and (."luci-app-netshift".read.file | has("/usr/bin/netshift") | not) and (."luci-app-netshift".read.file | has("/etc/init.d/netshift") | not) and ."luci-app-netshift".write.file["/usr/bin/netshift"] == ["exec"] and ."luci-app-netshift".write.file["/etc/init.d/netshift"] == ["exec"]' /luci-app-netshift/root/usr/share/rpcd/acl.d/luci-app-netshift.json >/dev/null; then pass "read and write ACLs separate safe and unrestricted executables"; else fail "read and write ACLs separate safe and unrestricted executables"; fi
+    printf '#!/bin/sh\nprintf "CALLED:%%s\\n" "$*"\n' > "$work/backend"
+    chmod +x "$work/backend"
+    sed "s@exec /usr/bin/netshift @exec $work/backend @" "$wrapper" > "$work/wrapper"
+    chmod +x "$work/wrapper"
+    out="$("$work/wrapper" get_status)"
+    expect_line "$out" "status is forwarded" 'CALLED:get_status'
+    out="$("$work/wrapper" clash_api get_proxies)"
+    expect_line "$out" "reading proxies is forwarded" 'CALLED:clash_api get_proxies'
+    out="$("$work/wrapper" show_sing_box_config)"
+    expect_line "$out" "viewing sing-box config is forwarded" 'CALLED:show_sing_box_config'
+    for args in 'stop' 'subscription_update' 'component_action_async subscription clear_cache' 'clash_api set_group_proxy a b' 'config_snapshot restore 1' 'get_status extra'; do
+        # Intentional splitting: each test case is a fixed argument vector.
+        # shellcheck disable=SC2086
+        if "$work/wrapper" $args > "$work/out" 2>&1; then rc=0; else rc=$?; fi
+        if [ "$rc" -ne 0 ] && [ ! -s "$work/out" ]; then pass "read-only rejects $args"; else fail "read-only allowed $args"; fi
+    done
+    rm -rf "$work"
+}
+
 main() {
     printf "${BOLD}Netshift Evolution — Smoke Test Suite${NC}\n"
     printf "Source: %s\n" "$NETSHIFT_SRC"

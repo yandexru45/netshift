@@ -1,0 +1,20 @@
+#!/bin/sh
+# RPC entry point for read-only LuCI roles. Keep this list in sync with the
+# frontend, and never add commands that can change configuration or services.
+case "${1:-}" in
+get_status | get_sing_box_status | get_core_capabilities | get_lan_info | get_geoip_flags | get_update_notice | get_system_info | get_subscription_info | get_pin_guard_events | auto_update_status | check_logs | show_sing_box_config | get_config_warnings)
+    [ "$#" -eq 1 ] || exit 1
+    ;;
+config_snapshot)
+    [ "$#" -eq 2 ] && [ "$2" = list ] || exit 1
+    ;;
+clash_api)
+    case "${2:-}" in
+    get_proxies | get_connections) [ "$#" -eq 2 ] || exit 1 ;;
+    get_proxy_latency | get_group_latency) [ "$#" -ge 3 ] && [ "$#" -le 4 ] || exit 1 ;;
+    *) exit 1 ;;
+    esac
+    ;;
+*) exit 1 ;;
+esac
+exec /usr/bin/netshift "$@"

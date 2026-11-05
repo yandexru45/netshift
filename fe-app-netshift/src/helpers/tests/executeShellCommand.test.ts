@@ -26,6 +26,36 @@ describe('executeShellCommand', () => {
     ).resolves.toEqual({ stdout: 'ok', stderr: '', code: 0 });
   });
 
+  it('uses the restricted entry point for reads and the normal one for writes', async () => {
+    const exec = vi.fn(async () => ({ stdout: 'ok', stderr: '', code: 0 }));
+    stubExec(exec);
+    await executeShellCommand({
+      command: '/usr/bin/netshift',
+      args: ['get_status'],
+    });
+    await executeShellCommand({
+      command: '/usr/bin/netshift',
+      args: ['clash_api', 'get_proxies'],
+    });
+    await executeShellCommand({
+      command: '/usr/bin/netshift',
+      args: ['clash_api', 'set_group_proxy', 'g', 'p'],
+    });
+    expect(exec).toHaveBeenNthCalledWith(1, '/usr/bin/netshift-read', [
+      'get_status',
+    ]);
+    expect(exec).toHaveBeenNthCalledWith(2, '/usr/bin/netshift-read', [
+      'clash_api',
+      'get_proxies',
+    ]);
+    expect(exec).toHaveBeenNthCalledWith(3, '/usr/bin/netshift', [
+      'clash_api',
+      'set_group_proxy',
+      'g',
+      'p',
+    ]);
+  });
+
   it('resolves with the timeout message instead of rejecting', async () => {
     vi.useFakeTimers();
     stubExec(() => new Promise(() => undefined));

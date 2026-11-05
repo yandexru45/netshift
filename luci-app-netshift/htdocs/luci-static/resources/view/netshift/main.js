@@ -8646,6 +8646,34 @@ async function withTimeout(promise, timeoutMs, operationName, timeoutMessage = _
 
 // src/helpers/executeShellCommand.ts
 var execNoBatch;
+var READ_COMMANDS = /* @__PURE__ */ new Set([
+  "get_status",
+  "get_sing_box_status",
+  "get_core_capabilities",
+  "get_lan_info",
+  "get_geoip_flags",
+  "get_update_notice",
+  "get_system_info",
+  "get_subscription_info",
+  "get_pin_guard_events",
+  "auto_update_status",
+  "check_logs",
+  "show_sing_box_config",
+  "get_config_warnings"
+]);
+var READ_CLASH_COMMANDS = /* @__PURE__ */ new Set([
+  "get_proxies",
+  "get_connections",
+  "get_proxy_latency",
+  "get_group_latency"
+]);
+function readOnlyCommand(command, args) {
+  if (command !== "/usr/bin/netshift") return command;
+  if (READ_COMMANDS.has(args[0]) || args[0] === "config_snapshot" && args[1] === "list" || args[0] === "clash_api" && READ_CLASH_COMMANDS.has(args[1])) {
+    return "/usr/bin/netshift-read";
+  }
+  return command;
+}
 async function execWithoutBatching(command, args) {
   execNoBatch ?? (execNoBatch = rpc.declare({
     object: "file",
@@ -8665,9 +8693,10 @@ async function executeShellCommand({
   timeout = COMMAND_TIMEOUT,
   nobatch = false
 }) {
+  const executionCommand = readOnlyCommand(command, args);
   try {
     return await withTimeout(
-      nobatch ? execWithoutBatching(command, args) : fs.exec(command, args),
+      nobatch ? execWithoutBatching(executionCommand, args) : fs.exec(executionCommand, args),
       timeout,
       [command, ...args].join(" ")
     );
