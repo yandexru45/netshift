@@ -9558,7 +9558,7 @@ for fn in is_valid_subscription_update_time \
           sync_subscription_cron_jobs \
           remove_cron_job \
           foreach_active_section _active_section_dispatch section_is_disabled \
-          subscription_update subscription_update_unlocked \
+          subscription_update subscription_update_unlocked recover_interrupted_subscription_clear \
           subscription_update_lock_process_start subscription_update_lock_take_over           subscription_update_lock_owner_alive subscription_update_lock_acquire \
           subscription_update_lock_release subscription_update_worker_result \
           get_subscription_feed_display_name \
@@ -14850,6 +14850,7 @@ fi
 # ── subscription_update applies a changed feed without a restart ──────
 eval "$(extract subscription_update)"
 eval "$(extract subscription_update_unlocked)"
+eval "$(extract recover_interrupted_subscription_clear)"
 eval "$(extract subscription_update_lock_owner_alive)"
 eval "$(extract subscription_update_lock_acquire)"
 eval "$(extract subscription_update_lock_release)"
