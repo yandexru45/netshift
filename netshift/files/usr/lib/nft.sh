@@ -218,9 +218,9 @@ nft_dnat_pairs() {
             key = substr($0, 1, eq - 1)
             val = substr($0, eq + 1)
             gsub(/\047/, "", val)
-            n = split(key, p, ".")
-            if (n == 2 && val == "redirect") { order[++count] = p[2]; next }
-            if (n == 3) opt[p[2], p[3]] = val
+            n = split(key, key_parts, ".")
+            if (n == 2 && val == "redirect") { order[++count] = key_parts[2]; next }
+            if (n == 3) opt[key_parts[2], key_parts[3]] = val
         }
         END {
             for (i = 1; i <= count; i++) {
