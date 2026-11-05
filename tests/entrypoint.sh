@@ -6128,7 +6128,11 @@ echolog() { :; }
 nolog() { :; }
 # Hermetic no-op stub for the redownload+restart path (verbatim reuse is what
 # the production worker does; here we only assert the worker CALLS it).
-subscription_update_unlocked() { SUB_UPDATE_CALLS=$((SUB_UPDATE_CALLS + 1)); return "$SUB_UPDATE_RC"; }
+subscription_update_unlocked() {
+    SUB_UPDATE_CALLS=$((SUB_UPDATE_CALLS + 1))
+    [ "${SUB_UPDATE_PARTIAL:-0}" = 1 ] && SUBSCRIPTION_CLEAR_FAILED_FEEDS=1
+    return "$SUB_UPDATE_RC"
+}
 # The worker holds the subscription update lock around the wipe + redownload;
 # the real lock helpers run against a scratch lock directory.
 SUBSCRIPTION_UPDATE_LOCK_DIR="/tmp/netshift-cc-lock-$$"
@@ -6165,6 +6169,7 @@ config_get() {
 
 # Extract the worker VERBATIM from the shipped bin (column-0 opener → column-0 '}').
 eval "$(awk '/^subscription_clear_cache_and_redownload\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
+eval "$(awk '/^recover_interrupted_subscription_clear\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
 eval "$(awk '/^foreach_active_section\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
 eval "$(awk '/^_active_section_dispatch\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
 eval "$(awk '/^subscription_update_lock_owner_alive\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
@@ -6278,6 +6283,29 @@ if printf '%s' "$cc4_json" | jq -e '.success == false and (.message | length > 0
     echo 'cc-case4-redownload-fail-surfaced:OK'
 else
     echo "cc-case4-redownload-fail-surfaced(got '$cc4_json'):FAIL"
+fi
+if [ "$(ls -1 "$SUBSCRIPTION_CACHE_FOLDER" | wc -l)" -eq 4 ]; then
+    echo 'cc-case4-cache-restored:OK'
+else
+    echo 'cc-case4-cache-restored:FAIL'
+fi
+
+SUB_UPDATE_PARTIAL=1
+cc4b_json="$(subscription_clear_cache_and_redownload)"
+SUB_UPDATE_PARTIAL=0
+if printf '%s' "$cc4b_json" | jq -e '.success == false' >/dev/null 2>&1 &&
+    [ "$(ls -1 "$SUBSCRIPTION_CACHE_FOLDER" | wc -l)" -eq 4 ]; then
+    echo 'cc-case4-partial-failure-restored:OK'
+else
+    echo 'cc-case4-partial-failure-restored:FAIL'
+fi
+
+mkdir -p "$SUBSCRIPTION_CACHE_FOLDER/.clear.interrupted"
+mv "$SUBSCRIPTION_CACHE_FOLDER"/*.json "$SUBSCRIPTION_CACHE_FOLDER/.clear.interrupted/"
+if recover_interrupted_subscription_clear && [ "$(ls -1 "$SUBSCRIPTION_CACHE_FOLDER" | wc -l)" -eq 4 ]; then
+    echo 'cc-case4-interrupted-clear-restored:OK'
+else
+    echo 'cc-case4-interrupted-clear-restored:FAIL'
 fi
 
 # ── CASE 5: guarded delete — empty constant can NEVER `rm -f /*` ─────
@@ -6706,7 +6734,7 @@ for fn in sing_box_get_unique_outbound_tag sing_box_build_subscription_feed_grou
           subscription_url_cache_matches subscription_cache_is_usable \
           prepare_subscription_cache_for_startup reap_orphan_subscription_cache_files \
           wait_for_subscription_connectivity download_subscription_into_cache \
-          ensure_subscription_cache_dir get_subscription_user_agent_cache_path \
+          ensure_subscription_cache_dir recover_interrupted_subscription_clear get_subscription_user_agent_cache_path \
           get_subscription_rejected_cache_path; do
     eval "$(awk -v f="$fn" '$0 ~ "^"f"\\(\\) \\{"{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
 done

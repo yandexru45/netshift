@@ -435,6 +435,39 @@ reap_orphan_subscription_cache_files() {
         log "Removed $removed cache file(s) of subscription links no longer listed in section '$section'" "info"
 }
 
+recover_interrupted_subscription_clear() {
+    local backup_dir backup_file owner acquired restore_failed
+
+    [ "${SUBSCRIPTION_CLEAR_IN_PROGRESS:-0}" = 1 ] && return 0
+    [ -n "$SUBSCRIPTION_CACHE_FOLDER" ] || return 0
+    for backup_dir in "$SUBSCRIPTION_CACHE_FOLDER"/.clear.*; do
+        [ -d "$backup_dir" ] || continue
+        acquired=0
+        owner="$(cat "$SUBSCRIPTION_UPDATE_LOCK_DIR/pid" 2>/dev/null)"
+        if [ "$owner" != "$$" ]; then
+            if ! subscription_update_lock_acquire nowait; then
+                log "Cannot recover interrupted cache clear while another subscription update is running" "warn"
+                return 1
+            fi
+            acquired=1
+        fi
+        restore_failed=0
+        for backup_file in "$backup_dir"/*; do
+            [ -f "$backup_file" ] || continue
+            mv -f "$backup_file" "$SUBSCRIPTION_CACHE_FOLDER/" || restore_failed=1
+        done
+        rmdir "$backup_dir" 2>/dev/null || true
+        [ "$acquired" -eq 0 ] || subscription_update_lock_release
+        if [ "$restore_failed" -ne 0 ]; then
+            log "Cannot restore interrupted subscription cache clear from '$backup_dir'" "error"
+            return 1
+        fi
+        if [ -n "${SUBSCRIPTION_PENDING_APPLY_FLAG:-}" ]; then
+            : > "$SUBSCRIPTION_PENDING_APPLY_FLAG" 2>/dev/null || true
+        fi
+    done
+}
+
 ensure_subscription_cache_dir() {
     local state_dir_created=0 cache_dir_created=0
     local mkdir_errfile mkdir_rc
@@ -462,6 +495,7 @@ ensure_subscription_cache_dir() {
         chmod 700 "$NETSHIFT_STATE_DIR" 2>/dev/null
         chmod 700 "$SUBSCRIPTION_CACHE_FOLDER" 2>/dev/null
     fi
+    recover_interrupted_subscription_clear
 }
 
 migrate_subscription_cache_from_tmp() {
@@ -3645,6 +3679,10 @@ subscription_update_unlocked() {
         done < "$urls_tmp"
         rm -f "$urls_tmp"
 
+        if [ "${SUBSCRIPTION_CLEAR_IN_PROGRESS:-0}" = 1 ] && [ "$feed_failed_count" -gt 0 ]; then
+            SUBSCRIPTION_CLEAR_FAILED_FEEDS=1
+        fi
+
         if [ "$section_changed" -eq 1 ]; then
             updated_sections=$((updated_sections + 1))
             if [ "$feed_failed_count" -gt 0 ]; then
@@ -4062,7 +4100,8 @@ subscription_update_feed_worker() {
 # directory before `rm -f "$SUBSCRIPTION_CACHE_FOLDER"/*`, and only ever remove the
 # directory CONTENTS — never `rm -rf` the directory itself.
 subscription_clear_cache_and_redownload() {
-    local has_subscription removed cache_file update_rc
+    local has_subscription removed cache_file update_rc backup_dir backup_file restore_failed
+    local SUBSCRIPTION_CLEAR_IN_PROGRESS=0 SUBSCRIPTION_CLEAR_FAILED_FEEDS=0
 
     # The wipe and the redownload are one update: a running update must not
     # have its cache deleted under it, and nothing may start between the two.
@@ -4074,6 +4113,12 @@ subscription_clear_cache_and_redownload() {
         subscription_update_worker_result "$update_rc" "" ""
         return "$update_rc"
     fi
+    if ! recover_interrupted_subscription_clear; then
+        subscription_update_lock_release
+        echo '{"success":false,"message":"Cannot restore a previously interrupted cache clear"}'
+        return 1
+    fi
+    SUBSCRIPTION_CLEAR_IN_PROGRESS=1
 
     # Detect whether any subscription section is configured at all. If none,
     # there is nothing to clear or redownload — succeed gracefully.
@@ -4094,10 +4139,37 @@ subscription_clear_cache_and_redownload() {
     # (non-empty constant AND existing directory) make a wild `rm -f /*`
     # impossible. No error when the directory is empty or missing.
     removed=0
+    backup_dir=""
     if [ -n "$SUBSCRIPTION_CACHE_FOLDER" ] && [ -d "$SUBSCRIPTION_CACHE_FOLDER" ]; then
+        if [ "$has_subscription" -eq 1 ]; then
+            backup_dir="$(mktemp -d "$SUBSCRIPTION_CACHE_FOLDER/.clear.XXXXXX")" || {
+                subscription_update_lock_release
+                echo '{"success":false,"message":"Cannot preserve subscription cache before clearing"}'
+                return 1
+            }
+        fi
         for cache_file in "$SUBSCRIPTION_CACHE_FOLDER"/*; do
-            [ -e "$cache_file" ] || continue
-            rm -f "$cache_file" 2>/dev/null && removed=$((removed + 1))
+            [ -f "$cache_file" ] || continue
+            if [ -n "$backup_dir" ]; then
+                if ! mv "$cache_file" "$backup_dir/"; then
+                    restore_failed=0
+                    for backup_file in "$backup_dir"/*; do
+                        [ -f "$backup_file" ] || continue
+                        mv "$backup_file" "$SUBSCRIPTION_CACHE_FOLDER/" || restore_failed=1
+                    done
+                    rmdir "$backup_dir" 2>/dev/null || true
+                    subscription_update_lock_release
+                    if [ "$restore_failed" -ne 0 ]; then
+                        jq -nc --arg path "$backup_dir" '{success:false,message:("Cannot preserve subscription cache; some files remain in " + $path)}'
+                        return 1
+                    fi
+                    echo '{"success":false,"message":"Cannot preserve subscription cache before clearing"}'
+                    return 1
+                fi
+            else
+                rm -f "$cache_file" 2>/dev/null || continue
+            fi
+            removed=$((removed + 1))
         done
     fi
     log "Cleared subscription cache: removed $removed file(s) from '$SUBSCRIPTION_CACHE_FOLDER'" "info"
@@ -4112,13 +4184,31 @@ subscription_clear_cache_and_redownload() {
     # lock is already held, hence the unlocked body).
     subscription_update_unlocked
     update_rc=$?
-    subscription_update_lock_release
+    [ "$SUBSCRIPTION_CLEAR_FAILED_FEEDS" -eq 0 ] || update_rc=1
 
     if [ "$update_rc" -eq 0 ]; then
+        [ -z "$backup_dir" ] || rm -rf "$backup_dir"
+        subscription_update_lock_release
         echo "{\"success\":true,\"message\":\"Cleared $removed subscription cache file(s) and re-downloaded all feeds\"}"
         return 0
     fi
 
+    restore_failed=0
+    if [ -n "$backup_dir" ]; then
+        for backup_file in "$backup_dir"/*; do
+            [ -f "$backup_file" ] || continue
+            mv -f "$backup_file" "$SUBSCRIPTION_CACHE_FOLDER/" || restore_failed=1
+        done
+        rmdir "$backup_dir" 2>/dev/null || true
+    fi
+    if [ -n "${SUBSCRIPTION_PENDING_APPLY_FLAG:-}" ]; then
+        : > "$SUBSCRIPTION_PENDING_APPLY_FLAG" 2>/dev/null || true
+    fi
+    subscription_update_lock_release
+    if [ "$restore_failed" -ne 0 ]; then
+        jq -nc --arg path "$backup_dir" '{success:false,message:("Redownload failed; some cache files could not be restored and remain in " + $path)}'
+        return 1
+    fi
     echo "{\"success\":false,\"message\":\"Cleared $removed subscription cache file(s) but the redownload failed (rc=$update_rc); kept the last working cache\"}"
     return "$update_rc"
 }
