@@ -6128,10 +6128,15 @@ echolog() { :; }
 nolog() { :; }
 # Hermetic no-op stub for the redownload+restart path (verbatim reuse is what
 # the production worker does; here we only assert the worker CALLS it).
-subscription_update_unlocked() { SUB_UPDATE_CALLS=$((SUB_UPDATE_CALLS + 1)); return "$SUB_UPDATE_RC"; }
+subscription_update_unlocked() {
+    SUB_UPDATE_CALLS=$((SUB_UPDATE_CALLS + 1))
+    [ "${SUB_UPDATE_PARTIAL:-0}" = 1 ] && SUBSCRIPTION_CLEAR_FAILED_FEEDS=1
+    return "$SUB_UPDATE_RC"
+}
 # The worker holds the subscription update lock around the wipe + redownload;
 # the real lock helpers run against a scratch lock directory.
 SUBSCRIPTION_UPDATE_LOCK_DIR="/tmp/netshift-cc-lock-$$"
+NETSHIFT_STATE_DIR="/tmp/netshift-cc-state-$$"
 SUBSCRIPTION_UPDATE_LOCK_WAIT=1
 SUBSCRIPTION_UPDATE_BUSY=4
 SUBSCRIPTION_UPDATE_LOCK_FAILED=5
@@ -6165,6 +6170,8 @@ config_get() {
 
 # Extract the worker VERBATIM from the shipped bin (column-0 opener → column-0 '}').
 eval "$(awk '/^subscription_clear_cache_and_redownload\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
+eval "$(awk '/^recover_interrupted_subscription_clear\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
+eval "$(awk '/^ensure_subscription_cache_dir\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
 eval "$(awk '/^foreach_active_section\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
 eval "$(awk '/^_active_section_dispatch\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
 eval "$(awk '/^subscription_update_lock_owner_alive\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
@@ -6278,6 +6285,53 @@ if printf '%s' "$cc4_json" | jq -e '.success == false and (.message | length > 0
     echo 'cc-case4-redownload-fail-surfaced:OK'
 else
     echo "cc-case4-redownload-fail-surfaced(got '$cc4_json'):FAIL"
+fi
+if [ "$(ls -1 "$SUBSCRIPTION_CACHE_FOLDER" | wc -l)" -eq 4 ]; then
+    echo 'cc-case4-cache-restored:OK'
+else
+    echo 'cc-case4-cache-restored:FAIL'
+fi
+
+SUB_UPDATE_PARTIAL=1
+cc4b_json="$(subscription_clear_cache_and_redownload)"
+SUB_UPDATE_PARTIAL=0
+if printf '%s' "$cc4b_json" | jq -e '.success == false' >/dev/null 2>&1 &&
+    [ "$(ls -1 "$SUBSCRIPTION_CACHE_FOLDER" | wc -l)" -eq 4 ]; then
+    echo 'cc-case4-partial-failure-restored:OK'
+else
+    echo 'cc-case4-partial-failure-restored:FAIL'
+fi
+
+# Simulate a full/unwritable flash at backup creation. The operation must fail
+# before moving or deleting any cache entry and must release its lock.
+mktemp() { return 1; }
+cc_space_json="$(subscription_clear_cache_and_redownload)"
+unset -f mktemp
+if printf '%s' "$cc_space_json" | jq -e '.success == false' >/dev/null 2>&1 &&
+    [ "$(ls -1 "$SUBSCRIPTION_CACHE_FOLDER" | wc -l)" -eq 4 ]; then
+    echo 'cc-case4-no-space-keeps-cache:OK'
+else
+    echo 'cc-case4-no-space-keeps-cache:FAIL'
+fi
+
+mkdir -p "$SUBSCRIPTION_CACHE_FOLDER/.clear.interrupted"
+mv "$SUBSCRIPTION_CACHE_FOLDER"/*.json "$SUBSCRIPTION_CACHE_FOLDER/.clear.interrupted/"
+subscription_update_lock_acquire nowait
+if ! recover_interrupted_subscription_clear && [ -f "$SUBSCRIPTION_CACHE_FOLDER/.clear.interrupted/sec1.eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.json" ]; then
+    echo 'cc-case4-live-lock-prevents-recovery:OK'
+else
+    echo 'cc-case4-live-lock-prevents-recovery:FAIL'
+fi
+if ! ensure_subscription_cache_dir; then
+    echo 'cc-case4-cache-reader-does-not-see-empty-cache:OK'
+else
+    echo 'cc-case4-cache-reader-does-not-see-empty-cache:FAIL'
+fi
+subscription_update_lock_release
+if recover_interrupted_subscription_clear && [ "$(ls -1 "$SUBSCRIPTION_CACHE_FOLDER" | wc -l)" -eq 4 ]; then
+    echo 'cc-case4-interrupted-clear-restored:OK'
+else
+    echo 'cc-case4-interrupted-clear-restored:FAIL'
 fi
 
 # ── CASE 5: guarded delete — empty constant can NEVER `rm -f /*` ─────
@@ -6706,7 +6760,7 @@ for fn in sing_box_get_unique_outbound_tag sing_box_build_subscription_feed_grou
           subscription_url_cache_matches subscription_cache_is_usable \
           prepare_subscription_cache_for_startup reap_orphan_subscription_cache_files \
           wait_for_subscription_connectivity download_subscription_into_cache \
-          ensure_subscription_cache_dir get_subscription_user_agent_cache_path \
+          ensure_subscription_cache_dir recover_interrupted_subscription_clear get_subscription_user_agent_cache_path \
           get_subscription_rejected_cache_path; do
     eval "$(awk -v f="$fn" '$0 ~ "^"f"\\(\\) \\{"{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
 done
@@ -9539,7 +9593,7 @@ for fn in is_valid_subscription_update_time \
           sync_subscription_cron_jobs \
           remove_cron_job \
           foreach_active_section _active_section_dispatch section_is_disabled \
-          subscription_update subscription_update_unlocked \
+          subscription_update subscription_update_unlocked recover_interrupted_subscription_clear \
           subscription_update_lock_process_start subscription_update_lock_take_over           subscription_update_lock_owner_alive subscription_update_lock_acquire \
           subscription_update_lock_release subscription_update_worker_result \
           get_subscription_feed_display_name \
@@ -14831,6 +14885,7 @@ fi
 # ── subscription_update applies a changed feed without a restart ──────
 eval "$(extract subscription_update)"
 eval "$(extract subscription_update_unlocked)"
+eval "$(extract recover_interrupted_subscription_clear)"
 eval "$(extract subscription_update_lock_owner_alive)"
 eval "$(extract subscription_update_lock_acquire)"
 eval "$(extract subscription_update_lock_release)"
@@ -26186,7 +26241,7 @@ NETSHIFT_LIB="LIB_DIR_PLACEHOLDER"
 . "LIB_DIR_PLACEHOLDER/sing_box_config_facade.sh"
 get_outbound_tag_by_section() { printf '%s-out' "$1"; }
 for fn in download_subscription_into_cache fetch_subscription_candidate ensure_subscription_cache_dir \
-          get_subscription_user_agent_cache_path get_subscription_rejected_cache_path \
+          recover_interrupted_subscription_clear get_subscription_user_agent_cache_path get_subscription_rejected_cache_path \
           subscription_url_cache_matches; do
     eval "$(awk -v f="$fn" '$0 ~ "^"f"\\(\\) \\{"{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH_PLACEHOLDER")"
 done
