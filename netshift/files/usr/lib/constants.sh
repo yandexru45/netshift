@@ -202,6 +202,8 @@ NFT_GUARD_BYPASS_SET_NAME="guard_bypass"
 NFT_GUARD_BYPASS_SET_NAME_V6="guard_bypass_v6"
 NFT_GUARD_BYPASS_SOURCE_SET_NAME="guard_bypass_sources"
 NFT_GUARD_BYPASS_SOURCE_SET_NAME_V6="guard_bypass_sources_v6"
+NFT_GUARD_DNAT_TCP_SET_NAME="guard_dnat_fwd_tcp"
+NFT_GUARD_DNAT_UDP_SET_NAME="guard_dnat_fwd_udp"
 
 ## LuCI
 # Where the LuCI app keeps its views. The package installs them in a

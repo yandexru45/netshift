@@ -213,6 +213,14 @@ nft_dnat_pairs() {
     local lease_file
 
     uci -q show firewall 2> /dev/null | awk '
+        function valid_ipv4(value, octets, count, i) {
+            count = split(value, octets, /\./)
+            if (count != 4) return 0
+            for (i = 1; i <= 4; i++) {
+                if (octets[i] !~ /^[0-9]+$/ || octets[i] + 0 > 255) return 0
+            }
+            return 1
+        }
         {
             eq = index($0, "=")
             key = substr($0, 1, eq - 1)
@@ -242,7 +250,7 @@ nft_dnat_pairs() {
                 np = split(portspec, porttoks, /[[:space:]]+/)
                 kp = split(proto, ps, /[[:space:]]+/)
                 for (a = 1; a <= na; a++) {
-                    if (addrs[a] !~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) {
+                    if (!valid_ipv4(addrs[a])) {
                         print "forwarded-port redirect " s " address is not ipv4: " addrs[a] > "/dev/stderr"
                         continue
                     }
@@ -310,11 +318,12 @@ nft_dnat_fingerprint() {
 # $1 script, $2 set name, $3 file with one "addr . port" per line.
 _nft_dnat_script_adds() {
     local script="$1"
-    local setname="$2"
-    local elems="$3"
+    local table="$2"
+    local setname="$3"
+    local elems="$4"
     local line chunk="" n=0
 
-    printf 'flush set inet %s %s\n' "$NFT_TABLE_NAME" "$setname" >> "$script"
+    printf 'flush set inet %s %s\n' "$table" "$setname" >> "$script"
     while IFS= read -r line; do
         [ -n "$line" ] || continue
         if [ -z "$chunk" ]; then
@@ -324,13 +333,13 @@ _nft_dnat_script_adds() {
         fi
         n=$((n + 1))
         if [ "$n" -eq 500 ]; then
-            printf 'add element inet %s %s { %s }\n' "$NFT_TABLE_NAME" "$setname" "$chunk" >> "$script"
+            printf 'add element inet %s %s { %s }\n' "$table" "$setname" "$chunk" >> "$script"
             chunk=""
             n=0
         fi
     done < "$elems"
     if [ -n "$chunk" ]; then
-        printf 'add element inet %s %s { %s }\n' "$NFT_TABLE_NAME" "$setname" "$chunk" >> "$script"
+        printf 'add element inet %s %s { %s }\n' "$table" "$setname" "$chunk" >> "$script"
     fi
 }
 
@@ -342,14 +351,31 @@ nft_sync_dnat_sets() {
     local pairs sum proto addr port
     local tcpf udpf script warnf
 
-    nft list set inet "$NFT_TABLE_NAME" "$NFT_DNAT_TCP_SET_NAME" > /dev/null 2>&1 || return 0
+    nft list set inet "$NFT_TABLE_NAME" "$NFT_DNAT_TCP_SET_NAME" > /dev/null 2>&1 || {
+        log "Forwarded-port TCP set is missing" "error"
+        return 1
+    }
+    nft list set inet "$NFT_TABLE_NAME" "$NFT_DNAT_UDP_SET_NAME" > /dev/null 2>&1 || {
+        log "Forwarded-port UDP set is missing" "error"
+        return 1
+    }
 
     sum="$(nft_dnat_fingerprint | sort | md5sum | cut -d' ' -f1)"
+    case "$sum" in
+    ???????????????????????????????? )
+        case "$sum" in *[!0123456789abcdefABCDEF]*) sum="" ;; esac
+        ;;
+    *) sum="" ;;
+    esac
+    if [ -z "$sum" ]; then
+        log "Could not fingerprint forwarded-port inputs; refreshing sets without a cache" "warn"
+        force=force
+    fi
     if [ "$force" != "force" ] && [ "$sum" = "$(cat "$NFT_DNAT_SUM_FILE" 2> /dev/null)" ]; then
         return 0
     fi
 
-    warnf="$(mktemp)"
+    warnf="$(mktemp)" || return 1
     pairs="$(nft_dnat_pairs 2> "$warnf" | awk '!seen[$0]++')"
     while IFS= read -r line; do
         [ -n "$line" ] || continue
@@ -357,9 +383,9 @@ nft_sync_dnat_sets() {
     done < "$warnf"
     rm -f "$warnf"
 
-    tcpf="$(mktemp)"
-    udpf="$(mktemp)"
-    script="$(mktemp)"
+    tcpf="$(mktemp)" || { rm -f "$warnf"; return 1; }
+    udpf="$(mktemp)" || { rm -f "$warnf" "$tcpf"; return 1; }
+    script="$(mktemp)" || { rm -f "$warnf" "$tcpf" "$udpf"; return 1; }
     : > "$script"
     while read -r proto addr port; do
         [ -n "$port" ] || continue
@@ -371,13 +397,19 @@ nft_sync_dnat_sets() {
     done << EOF
 $pairs
 EOF
-    _nft_dnat_script_adds "$script" "$NFT_DNAT_TCP_SET_NAME" "$tcpf"
-    _nft_dnat_script_adds "$script" "$NFT_DNAT_UDP_SET_NAME" "$udpf"
+    _nft_dnat_script_adds "$script" "$NFT_TABLE_NAME" "$NFT_DNAT_TCP_SET_NAME" "$tcpf"
+    _nft_dnat_script_adds "$script" "$NFT_TABLE_NAME" "$NFT_DNAT_UDP_SET_NAME" "$udpf"
+    if nft list table inet "$NFT_GUARD_TABLE_NAME" >/dev/null 2>&1 &&
+        nft list set inet "$NFT_GUARD_TABLE_NAME" "$NFT_GUARD_DNAT_TCP_SET_NAME" >/dev/null 2>&1 &&
+        nft list set inet "$NFT_GUARD_TABLE_NAME" "$NFT_GUARD_DNAT_UDP_SET_NAME" >/dev/null 2>&1; then
+        _nft_dnat_script_adds "$script" "$NFT_GUARD_TABLE_NAME" "$NFT_GUARD_DNAT_TCP_SET_NAME" "$tcpf"
+        _nft_dnat_script_adds "$script" "$NFT_GUARD_TABLE_NAME" "$NFT_GUARD_DNAT_UDP_SET_NAME" "$udpf"
+    fi
     if ! nft -f "$script"; then
         log "Could not update forwarded-port sets" "error"
         rm -f "$tcpf" "$udpf" "$script" "$warnf"
         return 1
     fi
     rm -f "$tcpf" "$udpf" "$script"
-    printf '%s' "$sum" > "$NFT_DNAT_SUM_FILE"
+    [ -z "$sum" ] || printf '%s' "$sum" > "$NFT_DNAT_SUM_FILE"
 }

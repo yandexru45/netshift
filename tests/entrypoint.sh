@@ -1327,6 +1327,10 @@ BIN="BIN_PATH_PLACEHOLDER"
 # shellcheck disable=SC1090
 . "$LIB/kill_switch.sh"
 
+nft_dnat_pairs() {
+    printf '%s\n' 'tcp 192.168.1.50 27016' 'udp 192.168.1.50 27016'
+}
+
 # Unique tables and scratch space: never touch the real NetShiftTable /
 # NetShiftGuard.
 NFT_TABLE_NAME="$SCN_TABLE"
@@ -1524,6 +1528,13 @@ BLEOF
         pass "blockleaks:sets — LAN interface mirrored into the guard set"
     else
         fail "blockleaks:sets — LAN interface not mirrored"
+    fi
+    if echo "$gdump" | grep -q 'ip saddr . tcp sport @guard_dnat_fwd_tcp' &&
+        echo "$gdump" | grep -q 'ip saddr . udp sport @guard_dnat_fwd_udp' &&
+        echo "$gdump" | grep -q '192.168.1.50 . 27016'; then
+        pass "blockleaks:dnat — forwarded TCP and UDP pairs are accepted from the guard sets"
+    else
+        fail "blockleaks:dnat — guard mirror or accept rules missing" "$(echo "$gdump" | grep -E 'dnat_fwd|27016')"
     fi
     if _bl_section "$out1" DNS | grep -q "restore=no"; then
         pass "blockleaks:dns — DNS stays fail-closed while sing-box is down"
