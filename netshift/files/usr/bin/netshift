@@ -1012,7 +1012,14 @@ prepare_subscription_cache_for_startup() {
     config_get proxy_config_type "$section" "proxy_config_type"
     [ "$proxy_config_type" = "subscription" ] || return 0
 
-    ensure_subscription_cache_dir || true
+    if ! ensure_subscription_cache_dir; then
+        # Another process is clearing/redownloading the cache while holding the
+        # update lock. Do not build a new sing-box config from the temporarily
+        # empty directory; let that operation finish and retry on the next pass.
+        log "Subscription cache recovery is locked by an update; postponing section '$section' apply" "warn"
+        subscription_startup_blocked=1
+        return 0
+    fi
     migrate_subscription_cache_from_tmp
     # Reap any stale legacy bare-"${section}.<ext>" cache so it can never be read
     # again (we always hash now).
@@ -1431,7 +1438,10 @@ start_main() {
     # A download left behind by a killed start stays in tmpfs (RAM) until the next
     # reboot: wipe it before this start downloads anything of its own.
     subscription_downloads_clean
-    ensure_subscription_cache_dir
+    if ! ensure_subscription_cache_dir; then
+        log "Subscription cache recovery is busy or failed; leaving the current sing-box configuration in place" "error"
+        return 1
+    fi
     migrate_subscription_cache_from_tmp
 
     prepare_subscription_caches_for_startup
@@ -5048,7 +5058,11 @@ configure_outbound_handler() {
             fi
 
             mkdir -p "$TMP_SUBSCRIPTION_FOLDER"
-            ensure_subscription_cache_dir || true
+            if ! ensure_subscription_cache_dir; then
+                log "Subscription cache recovery is busy or failed; section '$section' will remain unavailable until the cache is restored" "warn"
+                mark_section_outbound_unavailable "$section"
+                return 0
+            fi
             migrate_subscription_cache_from_tmp
             # Always hash per URL; reap any stale legacy bare-"${section}.<ext>".
             reap_legacy_subscription_cache_files "$section"

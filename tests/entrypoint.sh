@@ -6136,6 +6136,7 @@ subscription_update_unlocked() {
 # The worker holds the subscription update lock around the wipe + redownload;
 # the real lock helpers run against a scratch lock directory.
 SUBSCRIPTION_UPDATE_LOCK_DIR="/tmp/netshift-cc-lock-$$"
+NETSHIFT_STATE_DIR="/tmp/netshift-cc-state-$$"
 SUBSCRIPTION_UPDATE_LOCK_WAIT=1
 SUBSCRIPTION_UPDATE_BUSY=4
 SUBSCRIPTION_UPDATE_LOCK_FAILED=5
@@ -6170,6 +6171,7 @@ config_get() {
 # Extract the worker VERBATIM from the shipped bin (column-0 opener → column-0 '}').
 eval "$(awk '/^subscription_clear_cache_and_redownload\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
 eval "$(awk '/^recover_interrupted_subscription_clear\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
+eval "$(awk '/^ensure_subscription_cache_dir\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
 eval "$(awk '/^foreach_active_section\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
 eval "$(awk '/^_active_section_dispatch\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
 eval "$(awk '/^subscription_update_lock_owner_alive\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH")"
@@ -6300,6 +6302,18 @@ else
     echo 'cc-case4-partial-failure-restored:FAIL'
 fi
 
+# Simulate a full/unwritable flash at backup creation. The operation must fail
+# before moving or deleting any cache entry and must release its lock.
+mktemp() { return 1; }
+cc_space_json="$(subscription_clear_cache_and_redownload)"
+unset -f mktemp
+if printf '%s' "$cc_space_json" | jq -e '.success == false' >/dev/null 2>&1 &&
+    [ "$(ls -1 "$SUBSCRIPTION_CACHE_FOLDER" | wc -l)" -eq 4 ]; then
+    echo 'cc-case4-no-space-keeps-cache:OK'
+else
+    echo 'cc-case4-no-space-keeps-cache:FAIL'
+fi
+
 mkdir -p "$SUBSCRIPTION_CACHE_FOLDER/.clear.interrupted"
 mv "$SUBSCRIPTION_CACHE_FOLDER"/*.json "$SUBSCRIPTION_CACHE_FOLDER/.clear.interrupted/"
 subscription_update_lock_acquire nowait
@@ -6307,6 +6321,11 @@ if ! recover_interrupted_subscription_clear && [ -f "$SUBSCRIPTION_CACHE_FOLDER/
     echo 'cc-case4-live-lock-prevents-recovery:OK'
 else
     echo 'cc-case4-live-lock-prevents-recovery:FAIL'
+fi
+if ! ensure_subscription_cache_dir; then
+    echo 'cc-case4-cache-reader-does-not-see-empty-cache:OK'
+else
+    echo 'cc-case4-cache-reader-does-not-see-empty-cache:FAIL'
 fi
 subscription_update_lock_release
 if recover_interrupted_subscription_clear && [ "$(ls -1 "$SUBSCRIPTION_CACHE_FOLDER" | wc -l)" -eq 4 ]; then
