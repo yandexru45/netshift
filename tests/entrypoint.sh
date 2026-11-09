@@ -25813,7 +25813,7 @@ test_happ_crypt4() {
 
     # shellcheck disable=SC1090
     . "$NETSHIFT_LIB_DIR/helpers.sh"
-    local work plain secret key iv b64 out
+    local work plain secret key iv b64 urlsafe short_b64 out
     work="/tmp/netshift-happ-$$"
     mkdir -p "$work"
     if (
@@ -25830,17 +25830,13 @@ test_happ_crypt4() {
     fi
     plain="vless://00000000-0000-4000-8000-000000000001@example.com:443?encryption=none&security=tls&sni=example.com#HappNode"
     secret="my-custom-device-hwid"
-    if ! command -v openssl > /dev/null 2>&1; then
-        if happ_decrypt_crypt4 "happ://crypt4/AAECAwQFBgcICQoLDA0ODw==" "$work/out" "$secret"; then
-            fail "crypt4 decrypted without openssl"
-        else
-            pass "crypt4-without-openssl-is-refused"
-        fi
-        if [ "$(happ_link_kind "happ://crypt5/aaaa")" = "crypt5" ]; then
-            pass "crypt5-is-recognized"
-        else
-            fail "crypt5 was not recognized"
-        fi
+    if ! command -v happ_decrypt_crypt4 > /dev/null 2>&1; then
+        fail "crypt4 decrypt function is present"
+        rm -rf "$work"
+        return
+    fi
+    if ! command -v openssl > /dev/null 2>&1 || ! command -v base64 > /dev/null 2>&1 || ! command -v sha256sum > /dev/null 2>&1; then
+        fail "OpenWrt smoke image has crypt4 crypto dependencies"
         rm -rf "$work"
         return
     fi
@@ -25855,24 +25851,54 @@ test_happ_crypt4() {
     cat "$work/iv" "$work/ct" > "$work/raw"
     b64=$(base64 < "$work/raw" | tr -d '\n')
     printf '%s' "$plain" > "$work/plain"
-    if happ_decrypt_crypt4 "happ://crypt4/${b64}" "$work/out" "$secret" && cmp -s "$work/out" "$work/plain"; then
-        pass "hwid-crypt4-decrypts"
+    if happ_decrypt_crypt4 "happ://crypt4/${b64}#main" "$work/out" "$secret" && cmp -s "$work/out" "$work/plain"; then
+        pass "hwid-crypt4-decrypts-with-fragment"
     else
-        fail "crypt4 with the section HWID did not decrypt" "$(cat "$work/out" 2> /dev/null)"
+        fail "crypt4 with a named fragment did not decrypt" "$(cat "$work/out" 2> /dev/null)"
+    fi
+    if [ "$(happ_link_kind "happ://crypt4")" = "crypt4" ] && [ "$(happ_link_kind "crypt4")" = "crypt4" ]; then
+        pass "crypt4-without-trailing-slash-is-recognized"
+    else
+        fail "crypt4 without a trailing slash was not recognized"
+    fi
+    urlsafe=$(printf '%s' "$b64" | tr '+/' '-_')
+    if happ_decrypt_crypt4 "crypt4/${urlsafe}" "$work/out" "$secret" && cmp -s "$work/out" "$work/plain"; then
+        pass "urlsafe-base64-crypt4-decrypts"
+    else
+        fail "URL-safe base64 crypt4 did not decrypt"
     fi
     key=$(printf '%s' "HappDefaultSalt" | sha256sum | awk '{print $1}')
     printf '%s' "$plain" | openssl enc -aes-256-cbc -K "$key" -iv "$iv" -out "$work/ct"
     cat "$work/iv" "$work/ct" > "$work/raw"
     b64=$(base64 < "$work/raw" | tr -d '\n')
-    if happ_decrypt_crypt4 "crypt4/${b64}" "$work/out" "" && cmp -s "$work/out" "$work/plain"; then
-        pass "default-salt-crypt4-decrypts"
+    if happ_decrypt_crypt4 "crypt4/${b64}" "$work/out" "wrong-section-hwid" && cmp -s "$work/out" "$work/plain"; then
+        pass "default-salt-is-tried-after-wrong-section-hwid"
     else
-        fail "crypt4 with the default salt did not decrypt"
+        fail "default salt was not tried after an unrelated section HWID"
     fi
-    if [ "$(happ_link_kind "happ://crypt5/aaaa")" = "crypt5" ]; then
-        pass "crypt5-is-recognized"
+    if [ "$(happ_link_kind "happ://crypt5/aaaa")" = "crypt5" ] && [ "$(happ_link_kind "crypt2/aaaa")" = "crypt2" ] && [ "$(happ_link_kind "happ://crypt3/aaaa")" = "crypt3" ]; then
+        pass "unsupported-happ-encryption-kinds-are-distinguished"
     else
-        fail "crypt5 was not recognized"
+        fail "unsupported Happ encryption kinds were not distinguished"
+    fi
+    if happ_decrypt_crypt4 "happ://crypt4/A" "$work/out" "$secret"; then
+        fail "crypt4 accepted base64 with an impossible remainder"
+    else
+        pass "crypt4-rejects-base64-remainder-one"
+    fi
+    head -c 16 /dev/zero > "$work/raw"
+    short_b64=$(base64 < "$work/raw" | tr -d '\n')
+    if happ_decrypt_crypt4 "crypt4/${short_b64}" "$work/out" "$secret"; then
+        fail "crypt4 accepted a payload shorter than an IV and one block"
+    else
+        pass "crypt4-rejects-short-payload"
+    fi
+    head -c 17 /dev/zero > "$work/raw"
+    short_b64=$(base64 < "$work/raw" | tr -d '\n')
+    if happ_decrypt_crypt4 "crypt4/${short_b64}" "$work/out" "$secret"; then
+        fail "crypt4 accepted a payload whose length is not a block multiple"
+    else
+        pass "crypt4-rejects-non-block-payload"
     fi
     if happ_decrypt_crypt4 "https://example.com/sub" "$work/out" ""; then
         fail "a plain subscription URL was treated as crypt4"

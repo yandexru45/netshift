@@ -775,7 +775,7 @@ wait_for_subscription_connectivity() {
 
     # Embedded Happ subscriptions are decoded locally and have no network endpoint.
     case "$(happ_link_kind "$subscription_url")" in
-    crypt4 | crypt5) return 0 ;;
+    crypt4 | crypt5 | crypt2 | crypt3 | crypt) return 0 ;;
     esac
 
     load_subscription_client_identity "$section"
@@ -805,7 +805,7 @@ download_subscription_into_cache() {
     local tmpfile persist_tmpfile url_tmpfile rejected_cache_path tmp_hash rejected_hash validation_reason file_size fallback_tmp
     local configured_user_agent user_agent_cache_path cached_user_agent candidates_file
     local effective_user_agent download_ok winning_user_agent ua_tmpfile
-    local subscription_insecure subscription_format_preference
+    local subscription_insecure subscription_format_preference decrypt_rc crypt4_body_size crypt4_body_lines crypt4_candidate
     local SUBSCRIPTION_HWID SUBSCRIPTION_DEVICE_OS SUBSCRIPTION_OS_VERSION SUBSCRIPTION_DEVICE_MODEL SUBSCRIPTION_USER_AGENT
 
     ensure_subscription_cache_dir || {
@@ -863,6 +863,7 @@ download_subscription_into_cache() {
     # and is refused here so it is not passed to wget as if it were an address.
     case "$(happ_link_kind "$subscription_url")" in
     crypt4)
+        decrypt_rc=0
         if happ_decrypt_crypt4 "$subscription_url" "$tmpfile" "${SUBSCRIPTION_HWID:-}"; then
             if validate_subscription_file "$tmpfile" \
                 || { normalize_subscription_to_singbox "$tmpfile" "$fallback_tmp" "$section" \
@@ -871,15 +872,26 @@ download_subscription_into_cache() {
                 download_ok=1
                 log "Subscription for section '$section' decrypted from a Happ crypt4 link" "info"
             fi
+        else
+            decrypt_rc=$?
         fi
         if [ "$download_ok" -ne 1 ]; then
-            log "Happ crypt4 subscription for section '$section' could not be decrypted" "error"
+            if [ "$decrypt_rc" -eq 3 ]; then
+                log "Happ crypt4 subscription for section '$section' needs openssl, base64, sha256sum and od; install the package dependencies" "error"
+            else
+                log "Happ crypt4 subscription for section '$section' could not be decrypted or validated" "error"
+            fi
             rm -f "$tmpfile" "$fallback_tmp" "$candidates_file"
             return 13
         fi
         ;;
     crypt5)
         log "Happ crypt5 subscription for section '$section' is not decrypted: it needs Happ's RSA client keys, which this build does not ship" "error"
+        rm -f "$tmpfile" "$candidates_file"
+        return 13
+        ;;
+    crypt2 | crypt3 | crypt)
+        log "Happ $(happ_link_kind "$subscription_url") subscription for section '$section' uses an unsupported encryption format" "error"
         rm -f "$tmpfile" "$candidates_file"
         return 13
         ;;
@@ -903,12 +915,26 @@ download_subscription_into_cache() {
         # text. Best-effort: a plain-text body is left untouched.
         maybe_gunzip_subscription_file "$tmpfile"
         # A panel may answer over HTTPS with a single crypt4 line instead of the list.
-        if [ "$(happ_link_kind "$(head -n 1 "$tmpfile" 2> /dev/null)")" = "crypt4" ]; then
-            if happ_decrypt_crypt4 "$(head -n 1 "$tmpfile")" "$fallback_tmp" "${SUBSCRIPTION_HWID:-}"; then
-                mv -f "$fallback_tmp" "$tmpfile"
-            else
-                log "Subscription body for section '$section' is Happ crypt4 and did not decrypt with User-Agent '$effective_user_agent'; trying next candidate" "warn"
-                continue
+        # Cap this probe before reading it into a shell variable to protect router RAM.
+        crypt4_body_size="$(wc -c < "$tmpfile" 2> /dev/null | tr -d ' ')"
+        if [ -n "$crypt4_body_size" ] && [ "$crypt4_body_size" -le 8193 ]; then
+            crypt4_body_lines="$(awk 'END { print NR }' "$tmpfile" 2> /dev/null)"
+            if [ "$crypt4_body_lines" -eq 1 ]; then
+                crypt4_candidate="$(cat "$tmpfile")"
+                if [ "$(happ_link_kind "$crypt4_candidate")" = "crypt4" ]; then
+                    decrypt_rc=0
+                    if happ_decrypt_crypt4 "$crypt4_candidate" "$fallback_tmp" "${SUBSCRIPTION_HWID:-}"; then
+                        mv -f "$fallback_tmp" "$tmpfile"
+                    else
+                        decrypt_rc=$?
+                        if [ "$decrypt_rc" -eq 3 ]; then
+                            log "Happ crypt4 body for section '$section' needs openssl, base64, sha256sum and od" "error"
+                        else
+                            log "Subscription body for section '$section' is Happ crypt4 and did not decrypt with User-Agent '$effective_user_agent'; trying next candidate" "warn"
+                        fi
+                        continue
+                    fi
+                fi
             fi
         fi
         if subscription_body_is_binary "$tmpfile"; then
@@ -957,9 +983,15 @@ download_subscription_into_cache() {
         fi
     fi
 
-    # Traffic / expiry reported by the panel (best effort, never fails the refresh).
-    subscription_refresh_info "$section" "$subscription_url" "$urlhash" "$winning_user_agent" \
-        "$service_proxy_address" "$subscription_insecure"
+    # Embedded Happ links are not hosts and have no remote metadata endpoint.
+    # Traffic / expiry for regular remote subscriptions is best effort.
+    case "$(happ_link_kind "$subscription_url")" in
+    crypt4 | crypt5 | crypt2 | crypt3 | crypt) : ;;
+    *)
+        subscription_refresh_info "$section" "$subscription_url" "$urlhash" "$winning_user_agent" \
+            "$service_proxy_address" "$subscription_insecure"
+        ;;
+    esac
 
     rejected_cache_path="$(get_subscription_rejected_cache_path "$section" "$urlhash")"
     tmp_hash="$(md5sum "$tmpfile" 2>/dev/null | awk '{print $1}')"
