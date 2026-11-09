@@ -26548,20 +26548,33 @@ conn:refused" ]; then
 
 test_check_jitter() {
     header "Stable spread of URLTest checks and subscription refreshes"
+
+    # shellcheck disable=SC1090
+    . "$NETSHIFT_LIB_DIR/helpers.sh"
+    # shellcheck disable=SC1090
+    . "$NETSHIFT_LIB_DIR/sing_box_config_manager.sh"
+
     local plain again seconds jittered urltest_json urltest_interval urltest_idle
     plain="$(jitter_duration 3m salt 0)"
     if [ "$plain" = "3m" ]; then
         pass "jitter-off-keeps-the-interval"
+    else
         fail "jitter off changed the interval" "$plain"
+    fi
+
     plain="$(jitter_duration 3m "urltest:main" 25)"
     again="$(jitter_duration 3m "urltest:main" 25)"
     if [ "$plain" = "$again" ]; then
         pass "jitter-is-stable"
+    else
         fail "the same salt produced two intervals" "$plain / $again"
+    fi
     seconds="${plain%s}"
     if [ "$plain" != "$seconds" ] && [ "$seconds" -ge 135 ] && [ "$seconds" -le 225 ]; then
         pass "jitter-stays-within-a-quarter"
+    else
         fail "25% of 3m is not 135-225s" "$plain"
+    fi
     urltest_json="$(sing_box_cm_add_urltest_outbound '{"outbounds":[]}' jittered '[]' '' "$plain" 50)"
     urltest_interval="$(printf '%s' "$urltest_json" | jq -r '.outbounds[0].interval')"
     urltest_idle="$(printf '%s' "$urltest_json" | jq -r '.outbounds[0].idle_timeout // "30m"')"
@@ -26569,12 +26582,19 @@ test_check_jitter() {
     if [ "$urltest_interval" = "$plain" ] && [ "$seconds" -ge 135 ] && [ "$seconds" -le 225 ] &&
         [ "$(_duration_to_seconds "$urltest_idle")" -ge "$seconds" ]; then
         pass "jittered-urltest-config-has-bounded-interval-and-safe-idle-timeout"
+    else
         fail "jittered URLTest interval is not safe in the built outbound" "$urltest_json"
+    fi
+
     plain="$(jitter_offset 60 "cron:1h:aa:bb:cc:dd:ee:ff" 25)"
     again="$(jitter_offset 60 "cron:1h:aa:bb:cc:dd:ee:ff" 25)"
     if [ "$plain" = "$again" ] && [ "$plain" -ge -15 ] && [ "$plain" -le 15 ]; then
         pass "cron-offset-is-stable-and-bounded"
+    else
         fail "cron offset is not a stable ±15 minutes" "$plain / $again"
+    fi
+}
+
 main() {
     printf "${BOLD}Netshift Evolution — Smoke Test Suite${NC}\n"
     printf "Source: %s\n" "$NETSHIFT_SRC"
