@@ -5843,6 +5843,15 @@ function getEnvironmentItems(data) {
       value: ""
     });
   }
+  if (data.reality && data.reality.rejected > 0) {
+    items.push({
+      state: "warning",
+      key: _("A server answered with the certificate of another site"),
+      value: data.reality.stock_core ? _(
+        "A Reality server may need a newer client than the stock sing-box core: install sing-box extended or lite in the component manager"
+      ) : _("Check the public key, short id and SNI of the server")
+    });
+  }
   return items;
 }
 
@@ -8849,6 +8858,7 @@ function withCountryFlag(name, countryCode) {
 // src/helpers/deviceRouting.ts
 var DEVICE_ROUTE_DEFAULT = "";
 var DEVICE_ROUTE_EXCLUDED = "netshift:excluded";
+var DEVICE_ROUTE_MIXED = "netshift:mixed";
 function toIpList(value) {
   if (Array.isArray(value)) {
     return value.map((item) => String(item).trim()).filter(Boolean);
@@ -8881,6 +8891,22 @@ function setDeviceRoute(state, ip, route) {
     sections[route] = [...sections[route] ?? [], ip];
   }
   return { sections, excluded };
+}
+function getDeviceGroupRoute(state, ips) {
+  if (!ips.length) {
+    return DEVICE_ROUTE_DEFAULT;
+  }
+  const route = getDeviceRoute(state, ips[0]);
+  return ips.every((ip) => getDeviceRoute(state, ip) === route) ? route : DEVICE_ROUTE_MIXED;
+}
+function setDeviceGroupRoute(state, ips, route) {
+  if (route === DEVICE_ROUTE_MIXED) {
+    return state;
+  }
+  return [...new Set(ips)].reduce(
+    (next, ip) => setDeviceRoute(next, ip, route),
+    state
+  );
 }
 function listedDeviceIps(state) {
   const seen = /* @__PURE__ */ new Set();
@@ -9079,6 +9105,34 @@ function connectionAge(start, now) {
 
 // src/helpers/lanDevices.ts
 var EMPTY_LAN_INFO = { subnets: [], staticHosts: [] };
+function groupDeviceAddresses(entries) {
+  const groups = /* @__PURE__ */ new Map();
+  for (const entry of entries) {
+    const key = entry.mac ? `mac:${entry.mac.toUpperCase()}` : `ip:${entry.ip}`;
+    const group = groups.get(key);
+    if (!group) {
+      groups.set(key, {
+        ...entry,
+        addresses: [entry.ip],
+        offline: !!entry.offline
+      });
+      continue;
+    }
+    if (!group.addresses.includes(entry.ip)) {
+      group.addresses.push(entry.ip);
+    }
+    group.name || (group.name = entry.name);
+    group.offline = group.offline && !!entry.offline;
+  }
+  return [...groups.values()].map((group) => {
+    group.addresses = [
+      ...group.addresses.filter((ip) => ipv4ToNumber(ip) !== null),
+      ...group.addresses.filter((ip) => ipv4ToNumber(ip) === null)
+    ];
+    group.ip = group.addresses[0];
+    return group;
+  });
+}
 function ipv4ToNumber(ip) {
   const parts = ip.split(".");
   if (parts.length !== 4) {
@@ -9141,7 +9195,7 @@ function deviceMatchesQuery(device, query) {
   if (!needle) {
     return true;
   }
-  return [device.name, device.ip, device.mac].some(
+  return [device.name, device.ip, device.mac, ...device.addresses ?? []].some(
     (field) => field.toLowerCase().includes(needle)
   );
 }
@@ -9308,6 +9362,17 @@ function chars(alphabet, length, random) {
 function pick(list, random) {
   return list[Math.floor(random() * list.length)];
 }
+function pickWeighted(list, random) {
+  const total = list.reduce((sum, variant) => sum + variant[2], 0);
+  let left = random() * total;
+  for (const variant of list) {
+    left -= variant[2];
+    if (left < 0) {
+      return variant;
+    }
+  }
+  return list[list.length - 1];
+}
 function uuid(random) {
   const hex = chars(HEX, 32, random);
   return [
@@ -9348,45 +9413,71 @@ var CLIENT_IDENTITY_PROFILES = {
     Android: {
       hwid: happHwid,
       deviceOs: "Android",
-      variants: ["16", "15", "14", "13"].map((version) => [
-        "Happ/4.7.1/Android/{install}",
-        version
-      ]),
+      variants: [
+        ["Happ/4.7.1/Android/{install}", "16", 36],
+        ["Happ/4.7.1/Android/{install}", "14", 11],
+        ["Happ/4.7.1/Android/{install}", "13", 6],
+        ["Happ/4.7.1/Android/{install}", "15", 6],
+        ["Happ/4.7.1/Android/{install}", "17", 5],
+        ["Happ/4.6.0/Android/{install}", "16", 3],
+        ["Happ/4.4.1/Android/{install}", "13", 3],
+        ["Happ/4.4.1/Android/{install}", "16", 3],
+        ["Happ/4.7.1/Android/{install}", "12", 2],
+        ["Happ/4.6.1/Android/{install}", "11", 2],
+        ["Happ/4.8.0/Android/{install}", "16", 2]
+      ],
       models: ANDROID_MODELS
     },
     AndroidTV: {
       hwid: happHwid,
       deviceOs: "AndroidTV",
-      variants: ["14", "12", "11"].map((version) => [
-        "Happ/4.7.1/AndroidTV/{install}",
-        version
-      ]),
+      variants: [
+        ["Happ/4.7.1/AndroidTV/{install}", "14", 5],
+        ["Happ/4.7.1/AndroidTV/{install}", "12", 2]
+      ],
       models: ["MiTV-MOOQ1", "MiTV-AFKR0", "VONTAR H618", "4K PA Google TV"]
     },
     iOS: {
       hwid: happAppleHwid,
       deviceOs: "iOS",
-      variants: ["26.6.2", "26.6.1", "27.0.1"].map((version) => [
-        "Happ/6.1.0/ios/2610091516618",
-        version
-      ]),
+      variants: [
+        ["Happ/4.12.0/ios/2606121423635", "26.6.1", 10],
+        ["Happ/4.12.0/ios/2606121423635", "26.6.2", 5],
+        ["Happ/4.12.0/ios/2606121423635", "27.0.1", 4],
+        ["Happ/4.11.0/ios/2606031854651", "26.6.1", 3],
+        ["Happ/4.12.0/ios/2606121423635", "26.3.1", 2],
+        ["Happ/4.13.0/ios/2606221801679", "26.7.1", 2],
+        ["Happ/4.13.0/ios/2606242343607", "26.6.2", 2],
+        ["Happ/4.13.0/ios/2606221809551", "26.5.2", 2],
+        ["Happ/5.7.0/ios/2609021014649", "26.6.2", 2],
+        ["Happ/6.1.0/ios/2610091516618", "27.0.1", 2],
+        ["Happ/4.12.0/ios/2606121423635", "18.6.2", 2]
+      ],
       models: IPHONE_MODELS
     },
     macOS: {
       hwid: happAppleHwid,
       deviceOs: "macOS",
-      variants: ["27.0.1", "26.6.2", "15.7.9"].map((version) => [
-        "Happ/6.1.0/macos catalyst/2610091518671",
-        version
-      ]),
+      variants: [
+        ["Happ/4.11.0/macos catalyst/2606031851521", "26.0.1", 2],
+        ["Happ/4.7.4/macos catalyst/2604141223521", "15.7.9", 2],
+        ["Happ/6.1.0/macos catalyst/2610091518671", "15.3.1", 1],
+        ["Happ/6.0.0/macos catalyst/2609301458638", "27.0.1", 1],
+        ["Happ/4.13.0/macos catalyst/2606241216557", "27.0.1", 1],
+        ["Happ/4.7.4/macos catalyst/2604141223521", "26.6.2", 1]
+      ],
       models: ["Mac", "MacBook", "iMac"]
     },
     Windows: {
       hwid: uuid,
       deviceOs: "Windows",
-      variants: ["11_10.0.26200", "10_10.0.19045", "11_10.0.26100"].map(
-        (version) => ["Happ/4.5.4/Windows/2610141139602", version]
-      ),
+      variants: [
+        ["Happ/4.5.4/Windows/2610141139602", "10_10.0.19045", 3],
+        ["Happ/4.3.0/Windows/2609151455603", "10_10.0.19045", 3],
+        ["Happ/4.2.1/Windows/2609041405606", "11_10.0.26200", 2],
+        ["Happ/4.3.0/Windows/2609151455503", "11_10.0.26200", 2],
+        ["Happ/4.3.0/Windows/2609151455603", "11_10.0.26100", 2]
+      ],
       models: ["DESKTOP-{host}_x86_64"]
     }
   },
@@ -9394,10 +9485,15 @@ var CLIENT_IDENTITY_PROFILES = {
     Android: {
       hwid: incyHwid,
       deviceOs: "Android",
-      variants: ["16", "15", "14", "13"].map((version) => [
-        "INCY/3.7.9/android Dalvik/2.1.0",
-        version
-      ]),
+      variants: [
+        ["INCY/3.7.9/android Dalvik/2.1.0", "16", 22],
+        ["INCY/3.7.9/android Dalvik/2.1.0", "15", 7],
+        ["INCY/3.7.9/android Dalvik/2.1.0", "14", 6],
+        ["INCY/3.7.9/android Dalvik/2.1.0", "17", 5],
+        ["INCY/3.7.9/android Dalvik/2.1.0", "13", 5],
+        ["INCY/3.7.0/android Dalvik/2.1.0", "13", 4],
+        ["INCY/3.7.0/android Dalvik/2.1.0", "16", 4]
+      ],
       models: [
         "samsung SM-S938B",
         "samsung SM-A546E",
@@ -9410,9 +9506,18 @@ var CLIENT_IDENTITY_PROFILES = {
       hwid: incyHwid,
       deviceOs: "iOS",
       variants: [
-        ["INCY/2.6.4/ios CFNetwork/3896.100.1.2.1 Darwin/27.0.0", "27.0.1"],
-        ["INCY/2.6.4/ios CFNetwork/3860.700.2 Darwin/25.6.0", "26.6.2"],
-        ["INCY/2.6.4/ios CFNetwork/3860.700.2 Darwin/25.6.0", "26.6.1"]
+        ["INCY/2.6.4/ios CFNetwork/3896.100.1.2.1 Darwin/27.0.0", "27.0.1", 13],
+        ["INCY/2.6.4/ios CFNetwork/3860.700.2 Darwin/25.6.0", "26.6.2", 6],
+        ["INCY/2.6.5/ios CFNetwork/3860.700.1 Darwin/25.6.0", "26.6.1", 4],
+        ["INCY/2.6.1/ios CFNetwork/3860.400.51 Darwin/25.3.0", "26.3.1", 4],
+        ["INCY/2.6.3/ios CFNetwork/3860.700.1 Darwin/25.6.0", "26.6.1", 4],
+        ["INCY/2.6.5/ios CFNetwork/3860.700.2 Darwin/25.6.0", "26.6.2", 4],
+        ["INCY/2.6.2/ios CFNetwork/3860.700.2 Darwin/25.6.0", "26.6.2", 3],
+        ["INCY/2.6.3/ios CFNetwork/3860.600.12 Darwin/25.5.0", "26.5", 3],
+        ["INCY/2.6.4/ios CFNetwork/3860.600.12 Darwin/25.5.0", "26.5", 3],
+        ["INCY/2.6.5/ios CFNetwork/3860.400.51 Darwin/25.3.0", "26.3.1", 2],
+        ["INCY/2.6.2/ios CFNetwork/3860.700.1 Darwin/25.6.0", "26.6.1", 2],
+        ["INCY/2.6.4/ios CFNetwork/3826.600.41.2.1 Darwin/24.6.0", "18.7.8", 2]
       ],
       models: IPHONE_MODELS
     },
@@ -9420,21 +9525,28 @@ var CLIENT_IDENTITY_PROFILES = {
       hwid: incyHwid,
       deviceOs: "Mac OS X",
       variants: [
-        ["INCY/3.8.8/mac os x Dalvik/21.0.11+10-LTS", "26.6.2"],
-        ["INCY/3.8.8/mac os x Dalvik/21.0.11+10-LTS", "15.3.1"]
+        ["INCY/3.8.8/mac os x Dalvik/21.0.11+10-LTS", "26.6.2", 2],
+        ["INCY/3.7.2/mac os x Dalvik/21.0.11+10-LTS", "15.3.1", 1]
       ],
       models: ["Mac OS X aarch64"]
     },
     "Windows 11": {
       hwid: incyHwid,
       deviceOs: "Windows 11",
-      variants: [["INCY/3.9.0/windows 11 Dalvik/21.0.12+8-LTS", "10.0"]],
+      variants: [
+        ["INCY/3.9.0/windows 11 Dalvik/21.0.12+8-LTS", "10.0", 1],
+        ["INCY/3.8.6/windows 11 Dalvik/21.0.8+9-LTS", "10.0", 1],
+        ["INCY/3.5.0/windows 11 Dalvik/21.0.8+9-LTS", "10.0", 1]
+      ],
       models: ["Windows 11 amd64"]
     },
     "Windows 10": {
       hwid: incyHwid,
       deviceOs: "Windows 10",
-      variants: [["INCY/3.8.10/windows 10 Dalvik/21.0.12+8-LTS", "10.0"]],
+      variants: [
+        ["INCY/3.8.8/windows 10 Dalvik/21.0.12+8-LTS", "10.0", 2],
+        ["INCY/3.8.10/windows 10 Dalvik/21.0.12+8-LTS", "10.0", 1]
+      ],
       models: ["Windows 10 amd64"]
     }
   }
@@ -9444,7 +9556,7 @@ function generateClientIdentity(app, platform, random = Math.random) {
   if (!profile) {
     return null;
   }
-  const [userAgent, osVersion] = pick(profile.variants, random);
+  const [userAgent, osVersion] = pickWeighted(profile.variants, random);
   return {
     user_agent: fill(userAgent, random),
     hwid: profile.hwid(random),
@@ -9452,6 +9564,268 @@ function generateClientIdentity(app, platform, random = Math.random) {
     os_version: osVersion,
     device_model: fill(pick(profile.models, random), random)
   };
+}
+
+// src/helpers/incy.ts
+var LINK_PREFIX = "incy://crypt1/";
+var MAX_LINK_LEN = 4096;
+var KEY_HEX = "f6d40ea0c8a8899d7c682d09ba0d4165dfe2b3dd45e6bb3e25cb233cf00c2462";
+var IV_LEN = 12;
+var TAG_LEN = 16;
+function isIncyLink(value) {
+  return value.trim().toLowerCase().startsWith("incy://");
+}
+var SBOX = new Uint8Array(256);
+(function buildSbox() {
+  const exp = new Uint8Array(256);
+  const log = new Uint8Array(256);
+  let x = 1;
+  for (let i = 0; i < 255; i++) {
+    exp[i] = x;
+    log[x] = i;
+    x ^= x << 1 ^ (x & 128 ? 283 : 0);
+    x &= 255;
+  }
+  for (let i = 0; i < 256; i++) {
+    const inv = i === 0 ? 0 : exp[(255 - log[i]) % 255];
+    let s = inv;
+    for (let r = 1; r <= 4; r++) {
+      s ^= (inv << r | inv >> 8 - r) & 255;
+    }
+    SBOX[i] = s ^ 99;
+  }
+})();
+function xtime(a) {
+  return (a << 1 ^ (a & 128 ? 27 : 0)) & 255;
+}
+function expandKey(key) {
+  const nk = 8;
+  const rounds = 14;
+  const w = new Uint8Array(16 * (rounds + 1));
+  w.set(key);
+  let rcon = 1;
+  for (let i = nk; i < 4 * (rounds + 1); i++) {
+    const t = w.slice(4 * (i - 1), 4 * i);
+    if (i % nk === 0) {
+      const first = t[0];
+      t[0] = SBOX[t[1]] ^ rcon;
+      t[1] = SBOX[t[2]];
+      t[2] = SBOX[t[3]];
+      t[3] = SBOX[first];
+      rcon = xtime(rcon);
+    } else if (i % nk === 4) {
+      for (let j = 0; j < 4; j++) {
+        t[j] = SBOX[t[j]];
+      }
+    }
+    for (let j = 0; j < 4; j++) {
+      w[4 * i + j] = w[4 * (i - nk) + j] ^ t[j];
+    }
+  }
+  return w;
+}
+function encryptBlock(roundKeys, input) {
+  const s = new Uint8Array(input);
+  const addRoundKey = (round) => {
+    for (let i = 0; i < 16; i++) {
+      s[i] ^= roundKeys[16 * round + i];
+    }
+  };
+  addRoundKey(0);
+  for (let round = 1; round <= 14; round++) {
+    for (let i = 0; i < 16; i++) {
+      s[i] = SBOX[s[i]];
+    }
+    let t = s[1];
+    s[1] = s[5];
+    s[5] = s[9];
+    s[9] = s[13];
+    s[13] = t;
+    t = s[2];
+    s[2] = s[10];
+    s[10] = t;
+    t = s[6];
+    s[6] = s[14];
+    s[14] = t;
+    t = s[15];
+    s[15] = s[11];
+    s[11] = s[7];
+    s[7] = s[3];
+    s[3] = t;
+    if (round < 14) {
+      for (let c = 0; c < 16; c += 4) {
+        const a0 = s[c];
+        const a1 = s[c + 1];
+        const a2 = s[c + 2];
+        const a3 = s[c + 3];
+        const all = a0 ^ a1 ^ a2 ^ a3;
+        s[c] ^= all ^ xtime(a0 ^ a1);
+        s[c + 1] ^= all ^ xtime(a1 ^ a2);
+        s[c + 2] ^= all ^ xtime(a2 ^ a3);
+        s[c + 3] ^= all ^ xtime(a3 ^ a0);
+      }
+    }
+    addRoundKey(round);
+  }
+  return s;
+}
+function gfMul(x, y) {
+  const z = new Uint8Array(16);
+  const v = new Uint8Array(y);
+  for (let i = 0; i < 128; i++) {
+    if (x[i >> 3] >> 7 - (i & 7) & 1) {
+      for (let j = 0; j < 16; j++) {
+        z[j] ^= v[j];
+      }
+    }
+    const carry = v[15] & 1;
+    for (let j = 15; j > 0; j--) {
+      v[j] = v[j] >> 1 | (v[j - 1] & 1) << 7;
+    }
+    v[0] >>= 1;
+    if (carry) {
+      v[0] ^= 225;
+    }
+  }
+  return z;
+}
+function ghash(h, data) {
+  let y = new Uint8Array(16);
+  for (let offset = 0; offset < data.length; offset += 16) {
+    const block = new Uint8Array(16);
+    block.set(data.subarray(offset, offset + 16));
+    for (let i = 0; i < 16; i++) {
+      y[i] ^= block[i];
+    }
+    y = gfMul(y, h);
+  }
+  return y;
+}
+function gcmDecrypt(key, iv, cipher, tag) {
+  const roundKeys = expandKey(key);
+  const h = encryptBlock(roundKeys, new Uint8Array(16));
+  const counter = new Uint8Array(16);
+  counter.set(iv);
+  counter[15] = 1;
+  const padded = new Uint8Array(Math.ceil(cipher.length / 16) * 16 + 16);
+  padded.set(cipher);
+  const lengths = new DataView(padded.buffer, padded.length - 16);
+  lengths.setUint32(12, cipher.length * 8);
+  const mask = encryptBlock(roundKeys, counter);
+  const expected = ghash(h, padded);
+  let diff = 0;
+  for (let i = 0; i < TAG_LEN; i++) {
+    diff |= expected[i] ^ mask[i] ^ tag[i];
+  }
+  if (diff !== 0) {
+    return null;
+  }
+  const plain = new Uint8Array(cipher.length);
+  for (let offset = 0; offset < cipher.length; offset += 16) {
+    for (let i = 15; i >= 12; i--) {
+      counter[i] = counter[i] + 1 & 255;
+      if (counter[i] !== 0) {
+        break;
+      }
+    }
+    const stream = encryptBlock(roundKeys, counter);
+    const end = Math.min(16, cipher.length - offset);
+    for (let i = 0; i < end; i++) {
+      plain[offset + i] = cipher[offset + i] ^ stream[i];
+    }
+  }
+  return plain;
+}
+function hexToBytes(hex) {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(hex.slice(2 * i, 2 * i + 2), 16);
+  }
+  return out;
+}
+function base64UrlToBytes(value) {
+  try {
+    const padded = value.replace(/-/g, "+").replace(/_/g, "/");
+    const binary = atob(padded + "=".repeat((4 - padded.length % 4) % 4));
+    const out = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      out[i] = binary.charCodeAt(i);
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+function utf8(bytes) {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+function isPlainHttpUrl(url) {
+  if (!/^https?:\/\/./i.test(url)) {
+    return false;
+  }
+  for (let i = 0; i < url.length; i++) {
+    const code = url.charCodeAt(i);
+    if (code <= 32 || code === 127) {
+      return false;
+    }
+  }
+  return true;
+}
+function decodeIncyLink(link) {
+  const text2 = link.trim();
+  if (!text2.toLowerCase().startsWith(LINK_PREFIX) || text2.length > MAX_LINK_LEN) {
+    return null;
+  }
+  const wire = base64UrlToBytes(
+    text2.slice(LINK_PREFIX.length).replace(/\/+$/, "")
+  );
+  if (!wire || wire.length < IV_LEN + TAG_LEN + 1) {
+    return null;
+  }
+  const plain = gcmDecrypt(
+    hexToBytes(KEY_HEX),
+    wire.subarray(0, IV_LEN),
+    wire.subarray(IV_LEN, wire.length - TAG_LEN),
+    wire.subarray(wire.length - TAG_LEN)
+  );
+  const json = plain ? utf8(plain) : null;
+  if (json === null) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(json);
+    if (typeof parsed.url !== "string" || !isPlainHttpUrl(parsed.url)) {
+      return null;
+    }
+    const url = parsed.url.replace(
+      /^[A-Za-z][A-Za-z0-9+.-]*:/,
+      (scheme) => scheme.toLowerCase()
+    );
+    return typeof parsed.n === "string" && parsed.n ? { url, name: parsed.n } : { url };
+  } catch {
+    return null;
+  }
+}
+function decodeIncyLinks(values) {
+  let decoded = 0;
+  let undecoded = 0;
+  const out = values.map((value) => {
+    if (!isIncyLink(value)) {
+      return value;
+    }
+    const link = decodeIncyLink(value);
+    if (!link) {
+      undecoded += 1;
+      return value;
+    }
+    decoded += 1;
+    return link.url;
+  });
+  return { values: out, decoded, undecoded };
 }
 
 // src/main.ts
@@ -9471,6 +9845,7 @@ return baseclass.extend({
   DEFAULT_DNS_TYPE,
   DEVICE_ROUTE_DEFAULT,
   DEVICE_ROUTE_EXCLUDED,
+  DEVICE_ROUTE_MIXED,
   DIAGNOSTICS_INITIAL_DELAY,
   DIAGNOSTICS_UPDATE_INTERVAL,
   DNS_POOL_PRESETS,
@@ -9508,6 +9883,8 @@ return baseclass.extend({
   connectionTarget,
   coreService,
   createLogErrorBatcher,
+  decodeIncyLink,
+  decodeIncyLinks,
   describeAutoUpdateState,
   describeSubscriptionInfo,
   deviceMatchesQuery,
@@ -9525,13 +9902,16 @@ return baseclass.extend({
   getClashUIUrl,
   getClashWsUrl,
   getCoreCapabilities,
+  getDeviceGroupRoute,
   getDeviceRoute,
   getOutdatedComponents,
   getProxyUrlName,
+  groupDeviceAddresses,
   injectGlobalStyles,
   insertIf,
   insertIfObj,
   isConfiguredOutboundSection,
+  isIncyLink,
   isIpv4InSubnet,
   isLanIpv4,
   isNaiveUrl,
@@ -9563,6 +9943,7 @@ return baseclass.extend({
   recentPinGuardEvents,
   saveDashboardViewPrefs,
   setCoreCapabilities,
+  setDeviceGroupRoute,
   setDeviceRoute,
   shouldRefreshUpdateNotice,
   socket,
