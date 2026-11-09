@@ -36,6 +36,11 @@
 # packet that NetShift sends directly on purpose would be dropped for good, not
 # just during a restart.
 #
+# Not mirrored: the forwarded-port return (LAN address . forwarded sport, except
+# FakeIP and DoH). During a restart a flow from that port toward a proxied
+# network or a FakeIP address is still dropped. That is the same window as
+# before the return existed; extending the guard to those pairs is separate.
+#
 # The rebuild swaps the table structure in ONE nft transaction and then loads
 # the subnets in chunks (a single transaction with tens of thousands of elements
 # is a RAM spike on a 128 MB router). The sets are briefly incomplete, which is
@@ -176,6 +181,23 @@ kill_switch_load_elements() {
     fi
 
     return "$rc"
+}
+
+kill_switch_emit_dnat_elements() {
+    local filepath="$1" set="$2" chunk="" line count=0
+
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        if [ -n "$chunk" ]; then chunk="$chunk, "; fi
+        chunk="$chunk$line"
+        count=$((count + 1))
+        if [ "$count" -ge 500 ]; then
+            printf 'add element inet %s %s { %s }\n' "$NFT_GUARD_TABLE_NAME" "$set" "$chunk"
+            chunk=""
+            count=0
+        fi
+    done < "$filepath"
+    [ -z "$chunk" ] || printf 'add element inet %s %s { %s }\n' "$NFT_GUARD_TABLE_NAME" "$set" "$chunk"
 }
 
 # Collect every section's fully_routed_ips into $_kill_switch_source_out4 (IPv4)
@@ -328,8 +350,8 @@ kill_switch_apply() {
     fi
 
     local tmp data_sub4 data_sub6 data_byp4 data_byp6 data_src4 data_src6
-    local data_bsrc4 data_bsrc6 data_lan program
-    local v6=0 mark_all=0 block_doh=0 exclude_ntp=0 rc=0
+    local data_bsrc4 data_bsrc6 data_lan data_dnat_tcp data_dnat_udp program
+    local v6=0 mark_all=0 block_doh=0 exclude_ntp=0 rc=0 dnat_doh4="" dnat_source_exclusion=""
     local interface source_network_interfaces lan="iifname @$NFT_GUARD_INTERFACE_SET_NAME "
 
     # A private scratch directory per call: a start and a monitor recovery may
@@ -348,6 +370,8 @@ kill_switch_apply() {
     data_bsrc4="$tmp/bsrc4"
     data_bsrc6="$tmp/bsrc6"
     data_lan="$tmp/lan"
+    data_dnat_tcp="$tmp/dnat-tcp"
+    data_dnat_udp="$tmp/dnat-udp"
     program="$tmp/guard.nft"
 
     # Same sets the marking model uses — read back from the live table so the
@@ -373,6 +397,17 @@ kill_switch_apply() {
 
     kill_switch_collect_sources "$data_src4" "$data_src6"
     kill_switch_collect_bypass_sources "$data_bsrc4" "$data_bsrc6"
+    : > "$data_dnat_tcp"
+    : > "$data_dnat_udp"
+    while read -r proto addr port; do
+        [ -n "$port" ] || continue
+        case "$proto" in
+        tcp) printf '%s . %s\n' "$addr" "$port" >> "$data_dnat_tcp" ;;
+        udp) printf '%s . %s\n' "$addr" "$port" >> "$data_dnat_udp" ;;
+        esac
+    done <<EOF
+$(nft_dnat_pairs 2>/dev/null | awk '!seen[$0]++')
+EOF
 
     : > "$data_lan"
     config_get source_network_interfaces "settings" "source_network_interfaces" "br-lan"
@@ -392,6 +427,10 @@ kill_switch_apply() {
     [ -n "$(get_global_proxy_section)" ] && mark_all=1
     config_get_bool block_doh "settings" "block_doh" 0
     config_get_bool exclude_ntp "settings" "exclude_ntp" 0
+    if [ "$block_doh" -eq 1 ]; then
+        # shellcheck disable=SC2086
+        dnat_doh4="{ $(echo $DOH_BLOCK_IPV4_CIDRS | tr ' ' ',') }"
+    fi
 
     log "block_leaks: rebuilding $NFT_GUARD_TABLE_NAME (global_proxy=$mark_all, ipv6=$v6)" "info"
 
@@ -407,6 +446,8 @@ kill_switch_apply() {
         echo "    set $NFT_GUARD_SOURCE_SET_NAME { type ipv4_addr; flags interval; auto-merge; }"
         echo "    set $NFT_GUARD_BYPASS_SET_NAME { type ipv4_addr; flags interval; auto-merge; }"
         echo "    set $NFT_GUARD_BYPASS_SOURCE_SET_NAME { type ipv4_addr; flags interval; auto-merge; }"
+        echo "    set $NFT_GUARD_DNAT_TCP_SET_NAME { type ipv4_addr . inet_service; }"
+        echo "    set $NFT_GUARD_DNAT_UDP_SET_NAME { type ipv4_addr . inet_service; }"
         if [ "$v6" -eq 1 ]; then
             echo "    set $NFT_GUARD_SUBNET_SET_NAME_V6 { type ipv6_addr; flags interval; auto-merge; }"
             echo "    set $NFT_GUARD_SOURCE_SET_NAME_V6 { type ipv6_addr; flags interval; auto-merge; }"
@@ -426,6 +467,10 @@ kill_switch_apply() {
         echo "        meta mark & $NFT_FAKEIP_MARK == $NFT_FAKEIP_MARK accept"
         # Not marked by design (mangle returns these first) — never dropped.
         echo "        ct status dnat accept"
+        dnat_source_exclusion=""
+        [ "$mark_all" -eq 1 ] || dnat_source_exclusion="ip saddr != @$NFT_GUARD_SOURCE_SET_NAME"
+        echo "        ${lan}ip saddr . tcp sport @$NFT_GUARD_DNAT_TCP_SET_NAME $dnat_source_exclusion ip daddr != $SB_FAKEIP_INET4_RANGE ${dnat_doh4:+ip daddr != $dnat_doh4 }accept"
+        echo "        ${lan}ip saddr . udp sport @$NFT_GUARD_DNAT_UDP_SET_NAME $dnat_source_exclusion ip daddr != $SB_FAKEIP_INET4_RANGE ${dnat_doh4:+ip daddr != $dnat_doh4 }accept"
         [ "$exclude_ntp" -eq 1 ] && echo "        udp dport 123 accept"
         _kill_switch_emit_unmarked_accepts "$lan" "$v6"
         echo "        ${lan}ip saddr @$NFT_GUARD_BYPASS_SOURCE_SET_NAME ip daddr != $SB_FAKEIP_INET4_RANGE accept"
@@ -461,6 +506,8 @@ kill_switch_apply() {
         kill_switch_emit_elements "$NFT_GUARD_INTERFACE_SET_NAME" "$data_lan"
         kill_switch_emit_elements "$NFT_GUARD_SOURCE_SET_NAME" "$data_src4"
         kill_switch_emit_elements "$NFT_GUARD_BYPASS_SOURCE_SET_NAME" "$data_bsrc4"
+        kill_switch_emit_dnat_elements "$data_dnat_tcp" "$NFT_GUARD_DNAT_TCP_SET_NAME"
+        kill_switch_emit_dnat_elements "$data_dnat_udp" "$NFT_GUARD_DNAT_UDP_SET_NAME"
         if [ "$v6" -eq 1 ]; then
             kill_switch_emit_elements "$NFT_GUARD_SOURCE_SET_NAME_V6" "$data_src6"
             kill_switch_emit_elements "$NFT_GUARD_BYPASS_SOURCE_SET_NAME_V6" "$data_bsrc6"

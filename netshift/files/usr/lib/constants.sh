@@ -149,6 +149,14 @@ NFT_LOCALV6_ELEMENTS="::1, fc00::/7, fe80::/10, ff00::/8"
 # sing-box (task-034). The per-section outbound is still selected by sing-box
 # route rules — nft only decides enter-or-not, so a single union set is enough.
 NFT_COMMON_SET_NAME="netshift_subnets"
+# Pairs "LAN address . port" that a port forward (firewall redirect) or UPnP lease sends to the LAN.
+# Packets that leave from them are a game or P2P session of that host and are never marked,
+# except when the destination is FakeIP or (with block_doh) a DoH resolver.
+# IPv6 redirects (option family 'ipv6') are not in these sets.
+NFT_DNAT_TCP_SET_NAME="dnat_fwd_tcp"
+NFT_DNAT_UDP_SET_NAME="dnat_fwd_udp"
+NFT_DNAT_SUM_FILE="/tmp/netshift-dnat-pairs.sum"
+NFT_UPNP_LEASE_FILES="/var/run/miniupnpd.leases /var/upnp.leases"
 # Destinations that bypass sing-box completely (exclusion sections with
 # bypass_singbox): returned before any mark, so the traffic never enters tproxy.
 NFT_BYPASS_SET_NAME="netshift_bypass"
@@ -197,6 +205,8 @@ NFT_GUARD_BYPASS_SET_NAME="guard_bypass"
 NFT_GUARD_BYPASS_SET_NAME_V6="guard_bypass_v6"
 NFT_GUARD_BYPASS_SOURCE_SET_NAME="guard_bypass_sources"
 NFT_GUARD_BYPASS_SOURCE_SET_NAME_V6="guard_bypass_sources_v6"
+NFT_GUARD_DNAT_TCP_SET_NAME="guard_dnat_fwd_tcp"
+NFT_GUARD_DNAT_UDP_SET_NAME="guard_dnat_fwd_udp"
 
 ## LuCI
 # Where the LuCI app keeps its views. The package installs them in a
