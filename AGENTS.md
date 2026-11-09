@@ -19,9 +19,10 @@ are ported manually — never merge or cherry-pick blindly.
 
 `luci-app-netshift` (LuCI UI: hand-written `.js` views + the generated
 `main.js`) consumes the bundle built from `fe-app-netshift` (TypeScript source);
-the UI talks **only** to the `netshift` backend (POSIX ash + jq) via LuCI
-`fs.exec` of `/usr/bin/netshift` and `/etc/init.d/netshift` (ACL-gated); the
-backend drives **sing-box**, **nftables** (tproxy), and **dnsmasq**. No layer
+the UI talks to the `netshift` backend (POSIX ash + jq) through ACL-gated LuCI
+`fs.exec` calls. Read-only RPC calls use `/usr/bin/netshift-read` from the LuCI
+package; all other backend calls use `/usr/bin/netshift` and `/etc/init.d/netshift`.
+The backend drives **sing-box**, **nftables** (tproxy), and **dnsmasq**; no layer
 skips another.
 
 ## The sacred runtime contract (never change casually)
@@ -50,8 +51,9 @@ constants, never hardcode.
 
 - **Backend** (`netshift/files/**`) and the build script
   `luci-app-netshift/cache-bust.sh`: ShellCheck at severity error
-  (`shellcheck -S error -s sh install.sh netshift/files/usr/bin/netshift
-  netshift/files/usr/lib/*.sh luci-app-netshift/cache-bust.sh`); smoke suite —
+  (`shellcheck -S error -s sh install.sh netshift/files/usr/bin/*
+  luci-app-netshift/root/usr/bin/* netshift/files/usr/lib/*.sh
+  luci-app-netshift/cache-bust.sh`); smoke suite —
   `docker compose -f tests/docker-compose.yml run --rm netshift-test all`
   (OpenWRT rootfs container; a run passes only with zero FAILs).
 - **Frontend** (`fe-app-netshift/**`): `yarn ci`, and the committed `main.js`

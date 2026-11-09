@@ -8,6 +8,7 @@ on:
     paths:
       - 'install.sh'
       - 'netshift/files/usr/bin/**'
+      - 'luci-app-netshift/root/usr/bin/**'
       - 'netshift/files/usr/lib/**'
       - 'luci-app-netshift/cache-bust.sh'
       - '.github/workflows/shellcheck.yml'
@@ -45,7 +46,8 @@ jobs:
         with:
           severity: error
           include-path: |
-            netshift/files/usr/bin/netshift
+            netshift/files/usr/bin/**
+            luci-app-netshift/root/usr/bin/**
             netshift/files/usr/lib/**.sh
             install.sh
             luci-app-netshift/cache-bust.sh

@@ -41,13 +41,11 @@ const READ_COMMANDS = new Set([
   'auto_update_status',
   'check_logs',
   'show_sing_box_config',
-  'get_config_warnings',
 ]);
 const READ_CLASH_COMMANDS = new Set([
   'get_proxies',
   'get_connections',
   'get_proxy_latency',
-  'get_group_latency',
 ]);
 
 function readOnlyCommand(command: string, args: string[]): string {
@@ -107,6 +105,6 @@ export async function executeShellCommand({
     // Callers only see an empty result, so keep the reason in the console.
     logger.warn('[SHELL]', `[${[command, ...args].join(' ')}]`, error?.message);
 
-    return { stdout: '', stderr: error?.message, code: 0 };
+    return { stdout: '', stderr: error?.message, code: 1 };
   }
 }

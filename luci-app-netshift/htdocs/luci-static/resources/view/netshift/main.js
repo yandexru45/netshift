@@ -1154,7 +1154,7 @@ async function callBaseMethod(method, args = [], command = "/usr/bin/netshift", 
   }
   return {
     success: false,
-    error: ""
+    error: response.stderr || ""
   };
 }
 
@@ -8658,14 +8658,12 @@ var READ_COMMANDS = /* @__PURE__ */ new Set([
   "get_pin_guard_events",
   "auto_update_status",
   "check_logs",
-  "show_sing_box_config",
-  "get_config_warnings"
+  "show_sing_box_config"
 ]);
 var READ_CLASH_COMMANDS = /* @__PURE__ */ new Set([
   "get_proxies",
   "get_connections",
-  "get_proxy_latency",
-  "get_group_latency"
+  "get_proxy_latency"
 ]);
 function readOnlyCommand(command, args) {
   if (command !== "/usr/bin/netshift") return command;
@@ -8703,7 +8701,7 @@ async function executeShellCommand({
   } catch (err) {
     const error = err;
     logger.warn("[SHELL]", `[${[command, ...args].join(" ")}]`, error?.message);
-    return { stdout: "", stderr: error?.message, code: 0 };
+    return { stdout: "", stderr: error?.message, code: 1 };
   }
 }
 

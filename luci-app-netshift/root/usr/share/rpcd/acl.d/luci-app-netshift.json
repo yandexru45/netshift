@@ -22,6 +22,7 @@
     "write": {
       "file": {
         "/etc/init.d/netshift": ["exec"],
+        "/usr/bin/netshift-read": ["exec"],
         "/usr/bin/netshift": ["exec"]
       },
       "uci": [

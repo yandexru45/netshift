@@ -30,6 +30,6 @@ export async function callBaseMethod<T>(
 
   return {
     success: false,
-    error: '',
+    error: response.stderr || '',
   };
 }

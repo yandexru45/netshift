@@ -71,7 +71,7 @@ describe('executeShellCommand', () => {
     await expect(result).resolves.toEqual({
       stdout: '',
       stderr: 'Operation timed out',
-      code: 0,
+      code: 1,
     });
     expect(logger.warn).toHaveBeenCalledWith(
       '[SHELL]',
@@ -87,6 +87,6 @@ describe('executeShellCommand', () => {
 
     await expect(
       executeShellCommand({ command: '/usr/bin/netshift', args: ['x'] }),
-    ).resolves.toEqual({ stdout: '', stderr: 'Access denied', code: 0 });
+    ).resolves.toEqual({ stdout: '', stderr: 'Access denied', code: 1 });
   });
 });

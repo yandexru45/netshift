@@ -25810,11 +25810,20 @@ LR
 
 test_readonly_acl() {
     header "Read-only RPC entry point rejects mutation"
-    local wrapper="${NETSHIFT_SRC}/usr/bin/netshift-read" work out rc
+    local wrapper="/luci-app-netshift/root/usr/bin/netshift-read" work out rc
     work="$(mktemp -d)" || return 1
-    if jq -e '."luci-app-netshift".read.file["/usr/bin/netshift-read"] == ["exec"] and (."luci-app-netshift".read.file | has("/usr/bin/netshift") | not) and (."luci-app-netshift".read.file | has("/etc/init.d/netshift") | not) and ."luci-app-netshift".write.file["/usr/bin/netshift"] == ["exec"] and ."luci-app-netshift".write.file["/etc/init.d/netshift"] == ["exec"]' /luci-app-netshift/root/usr/share/rpcd/acl.d/luci-app-netshift.json >/dev/null; then pass "read and write ACLs separate safe and unrestricted executables"; else fail "read and write ACLs separate safe and unrestricted executables"; fi
+    if jq -e '."luci-app-netshift".read.file["/usr/bin/netshift-read"] == ["exec"] and (."luci-app-netshift".read.file | keys) == ["/usr/bin/netshift-read"] and ."luci-app-netshift".write.file["/usr/bin/netshift-read"] == ["exec"] and ."luci-app-netshift".write.file["/usr/bin/netshift"] == ["exec"] and ."luci-app-netshift".write.file["/etc/init.d/netshift"] == ["exec"]' /luci-app-netshift/root/usr/share/rpcd/acl.d/luci-app-netshift.json >/dev/null; then pass "ACL exposes only the read wrapper to read roles and provides it to write roles"; else fail "ACL exposes only the read wrapper to read roles and provides it to write roles"; fi
+    for list in READ_COMMANDS READ_CLASH_COMMANDS; do
+        sed -n "/^const $list = new Set(/,/^]);/p" /fe-app-netshift/src/helpers/executeShellCommand.ts | sed -n "s/^[[:space:]]*'\\([^']*\\)',*$/\\1/p" | sort > "$work/frontend-$list"
+    done
+    sed -n '/^get_status |/p' "$wrapper" | tr '|' '\n' | sed -e 's/^[[:space:]]*//' -e 's/)$//' -e 's/[[:space:]]*$//' | sort > "$work/wrapper-READ_COMMANDS"
+    sed -n '/^    get_proxies |/,/^    \*)/p' "$wrapper" | grep -oE 'get_[a-z_]+' | sort > "$work/wrapper-READ_CLASH_COMMANDS"
+    for list in READ_COMMANDS READ_CLASH_COMMANDS; do
+        if cmp -s "$work/frontend-$list" "$work/wrapper-$list"; then pass "$list matches the RPC wrapper"; else fail "$list differs from the RPC wrapper"; fi
+    done
     printf '#!/bin/sh\nprintf "CALLED:%%s\\n" "$*"\n' > "$work/backend"
     chmod +x "$work/backend"
+    if ! grep -Fq 'exec /usr/bin/netshift "$@"' "$wrapper"; then fail "read wrapper contains expected backend call"; rm -rf "$work"; return; fi
     sed "s@exec /usr/bin/netshift @exec $work/backend @" "$wrapper" > "$work/wrapper"
     chmod +x "$work/wrapper"
     out="$("$work/wrapper" get_status)"
@@ -25823,7 +25832,7 @@ test_readonly_acl() {
     expect_line "$out" "reading proxies is forwarded" 'CALLED:clash_api get_proxies'
     out="$("$work/wrapper" show_sing_box_config)"
     expect_line "$out" "viewing sing-box config is forwarded" 'CALLED:show_sing_box_config'
-    for args in 'stop' 'subscription_update' 'component_action_async subscription clear_cache' 'clash_api set_group_proxy a b' 'config_snapshot restore 1' 'get_status extra'; do
+    for args in 'stop' 'subscription_update' 'component_action_async subscription clear_cache' 'clash_api set_group_proxy a b' 'config_snapshot restore 1' 'get_status extra' 'clash_api get_proxies extra' 'clash_api get_proxy_latency group timeout extra'; do
         # Intentional splitting: each test case is a fixed argument vector.
         # shellcheck disable=SC2086
         if "$work/wrapper" $args > "$work/out" 2>&1; then rc=0; else rc=$?; fi

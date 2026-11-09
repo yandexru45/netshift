@@ -64,7 +64,6 @@ define Package/netshift/install
 
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) ./files/usr/bin/netshift $(1)/usr/bin/netshift
-	$(INSTALL_BIN) ./files/usr/bin/netshift-read $(1)/usr/bin/netshift-read
 
 	$(INSTALL_DIR) $(1)/usr/lib/netshift
 	$(CP) ./files/usr/lib/* $(1)/usr/lib/netshift/
