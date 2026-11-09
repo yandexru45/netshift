@@ -26480,11 +26480,15 @@ test_readonly_acl() {
     if grep -Fq 'PKG_VERSION := $(if $(NETSHIFT_VERSION),$(NETSHIFT_VERSION),0.9.12.9)' /netshift/Makefile &&
         grep -Fq 'LUCI_EXTRA_DEPENDS:=netshift (>= 0.9.12.9-r1)' /luci-app-netshift/Makefile; then
         pass "LuCI package requires the backend version that installs netshift-read"
+    else
         fail "LuCI package requires the backend version that installs netshift-read"
+    fi
     if grep -Fq './files/usr/bin/netshift $(1)/usr/bin/netshift' /netshift/Makefile &&
         [ -f "$wrapper" ]; then
         pass "backend and LuCI packages retain their cross-package entry points"
+    else
         fail "backend and LuCI packages retain their cross-package entry points"
+    fi
     for list in READ_COMMANDS READ_CLASH_COMMANDS; do
         sed -n "/^const $list = new Set(/,/^]);/p" /fe-app-netshift/src/helpers/executeShellCommand.ts | sed -n "s/^[[:space:]]*'\\([^']*\\)',*$/\\1/p" | sort > "$work/frontend-$list"
     done
@@ -26495,7 +26499,9 @@ test_readonly_acl() {
     done
     if grep -Eq 'get_lan_info|get_config_warnings|get_group_latency' "$work/frontend-READ_COMMANDS" "$work/frontend-READ_CLASH_COMMANDS" "$work/wrapper-READ_COMMANDS" "$work/wrapper-READ_CLASH_COMMANDS"; then
         fail "unused read-only commands are not exposed"
+    else
         pass "unused read-only commands are not exposed"
+    fi
     printf '#!/bin/sh\nprintf "CALLED:%%s\\n" "$*"\n' > "$work/backend"
     chmod +x "$work/backend"
     if ! grep -Fq 'exec /usr/bin/netshift "$@"' "$wrapper"; then fail "read wrapper contains expected backend call"; rm -rf "$work"; return; fi
@@ -26517,6 +26523,9 @@ test_readonly_acl() {
         if "$work/wrapper" $args > "$work/out" 2>&1; then rc=0; else rc=$?; fi
         if [ "$rc" -ne 0 ] && [ ! -s "$work/out" ]; then pass "read-only rejects $args"; else fail "read-only allowed $args"; fi
     done
+    rm -rf "$work"
+}
+
 main() {
     printf "${BOLD}Netshift Evolution — Smoke Test Suite${NC}\n"
     printf "Source: %s\n" "$NETSHIFT_SRC"
