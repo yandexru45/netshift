@@ -1,4 +1,78 @@
 # shellcheck shell=ash
+
+# Signed offset in [-width, width], width = span * percent / 100.
+# percent is 15, 25 or 40; anything else (including 0 and "off") is no offset.
+# The same salt always gives the same offset, so a reload does not move the schedule.
+jitter_offset() {
+    local span="$1"
+    local salt="$2"
+    local percent="$3"
+    local width hex n
+
+    case "$percent" in
+    15 | 25 | 40) ;;
+    *)
+        printf '0\n'
+        return 0
+        ;;
+    esac
+    case "$span" in
+    '' | *[!0-9]*)
+        printf '0\n'
+        return 0
+        ;;
+    esac
+
+    width=$((span * percent / 100))
+    if [ "$width" -le 0 ]; then
+        printf '0\n'
+        return 0
+    fi
+
+    hex="$(printf '%s' "$salt" | md5sum 2>/dev/null | cut -c1-8)"
+    case "$hex" in
+    ???????? )
+        case "$hex" in *[!0123456789abcdefABCDEF]*) printf '0\n'; return 0 ;; esac
+        ;;
+    *)
+        printf '0\n'
+        return 0
+        ;;
+    esac
+    n=$((0x$hex))
+    printf '%s\n' "$((n % (width * 2 + 1) - width))"
+}
+
+# $1 duration ("3m", "90s"), $2 salt, $3 percent. Unset jitter returns $1 unchanged.
+# A jittered value is in seconds, inside ±percent of the original and at least 1s.
+jitter_duration() {
+    local duration="$1"
+    local salt="$2"
+    local percent="$3"
+    local seconds offset
+
+    case "$percent" in
+    15 | 25 | 40) ;;
+    *)
+        printf '%s' "$duration"
+        return 0
+        ;;
+    esac
+
+    seconds="$(_duration_to_seconds "$duration" 2> /dev/null)" || seconds=""
+    if [ -z "$seconds" ] || [ "$seconds" -le 0 ]; then
+        printf '%s' "$duration"
+        return 0
+    fi
+
+    offset="$(jitter_offset "$seconds" "$salt" "$percent")"
+    seconds=$((seconds + offset))
+    if [ "$seconds" -lt 1 ]; then
+        seconds=1
+    fi
+    printf '%ss' "$seconds"
+}
+
 # Check if string is valid IPv4
 is_ipv4() {
     local ip="$1"

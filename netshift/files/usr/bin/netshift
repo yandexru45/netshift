@@ -3067,36 +3067,153 @@ get_section_subscription_update_time() {
     echo "$subscription_update_time"
 }
 
+# 15, 25 or 40 when settings.check_jitter asks for that spread, otherwise 0.
+check_jitter_percent() {
+    local percent
+
+    config_get percent "settings" "check_jitter" "0"
+    case "$percent" in
+    15 | 25 | 40) printf '%s' "$percent" ;;
+    *) printf '0' ;;
+    esac
+}
+
+# Stable per router, so two routers do not refresh in the same minute.
+jitter_device_salt() {
+    local identity identity_file id_file tmp
+
+    identity_file="${NETSHIFT_MACHINE_ID_FILE:-/etc/machine-id}"
+    identity="$(cat "$identity_file" 2> /dev/null)"
+    if [ -z "$identity" ]; then
+        identity="$(uci -q get network.lan.macaddr 2> /dev/null)"
+    fi
+    [ -n "$identity" ] && { printf '%s' "$identity"; return 0; }
+
+    id_file="${NETSHIFT_JITTER_ID_FILE:-/etc/netshift/jitter-id}"
+    if [ -s "$id_file" ]; then
+        IFS= read -r identity < "$id_file"
+        [ -n "$identity" ] && { printf '%s' "$identity"; return 0; }
+    fi
+
+    # Persist a per-router random identity. A hostname fallback is not unique
+    # across factory-reset routers and br-lan can change after network setup.
+    identity="$(dd if=/dev/urandom bs=24 count=1 2>/dev/null | base64 | tr -d '\n=/+')"
+    [ -n "$identity" ] || return 0
+    tmp="${id_file}.tmp.$$"
+    if mkdir -p "${id_file%/*}" 2>/dev/null && (umask 077; printf '%s\n' "$identity" > "$tmp") && mv "$tmp" "$id_file"; then
+        printf '%s' "$identity"
+    else
+        rm -f "$tmp"
+        printf '%s' "$identity"
+    fi
+}
+
+# Move a minute by the jitter offset. The hour follows when the minute wraps.
+# Prints "minute hour".
+jitter_shift_clock() {
+    local minute="$1"
+    local hour="$2"
+    local offset="$3"
+
+    minute=$((minute + offset))
+    while [ "$minute" -lt 0 ]; do
+        minute=$((minute + 60))
+        hour=$((hour - 1))
+    done
+    while [ "$minute" -ge 60 ]; do
+        minute=$((minute - 60))
+        hour=$((hour + 1))
+    done
+    while [ "$hour" -lt 0 ]; do
+        hour=$((hour + 24))
+    done
+    while [ "$hour" -ge 24 ]; do
+        hour=$((hour - 24))
+    done
+    printf '%s %s' "$minute" "$hour"
+}
+
 get_subscription_cron_line_for_interval() {
-    local cron_hour cron_minute
+    local cron_hour cron_minute percent salt offset cron_time
+
+    # An empty or unknown answer is "off". A missing helper must not emit a cron
+    # line with a blank minute: the existing schedules stay exactly as written.
+    percent="$(check_jitter_percent 2> /dev/null)" || percent=0
+    case "$percent" in
+    15 | 25 | 40) ;;
+    *) percent=0 ;;
+    esac
+    salt="cron:$1:$(jitter_device_salt 2> /dev/null)"
 
     case "$1" in
     "30m")
-        echo "*/30 * * * * /usr/bin/netshift subscription_update 30m"
+        if [ "$percent" = "0" ]; then
+            echo "*/30 * * * * /usr/bin/netshift subscription_update 30m"
+        else
+            offset="$(jitter_offset 30 "$salt" "$percent")"
+            cron_minute=$(((0 + offset) % 60))
+            [ "$cron_minute" -lt 0 ] && cron_minute=$((cron_minute + 60))
+            echo "$cron_minute,$(((cron_minute + 30) % 60)) * * * * /usr/bin/netshift subscription_update 30m"
+        fi
         ;;
     "1h")
-        echo "17 * * * * /usr/bin/netshift subscription_update 1h"
+        if [ "$percent" = "0" ]; then
+            echo "17 * * * * /usr/bin/netshift subscription_update 1h"
+        else
+            offset="$(jitter_offset 60 "$salt" "$percent")"
+            # shellcheck disable=SC2086
+            set -- $(jitter_shift_clock 17 0 "$offset")
+            echo "$1 * * * * /usr/bin/netshift subscription_update 1h"
+        fi
         ;;
     "3h")
-        echo "7 */3 * * * /usr/bin/netshift subscription_update 3h"
+        if [ "$percent" = "0" ]; then
+            echo "7 */3 * * * /usr/bin/netshift subscription_update 3h"
+        else
+            offset="$(jitter_offset 60 "$salt" "$percent")"
+            # shellcheck disable=SC2086
+            set -- $(jitter_shift_clock 7 0 "$offset")
+            echo "$1 */3 * * * /usr/bin/netshift subscription_update 3h"
+        fi
         ;;
     "6h")
-        echo "24 */6 * * * /usr/bin/netshift subscription_update 6h"
+        if [ "$percent" = "0" ]; then
+            echo "24 */6 * * * /usr/bin/netshift subscription_update 6h"
+        else
+            offset="$(jitter_offset 60 "$salt" "$percent")"
+            # shellcheck disable=SC2086
+            set -- $(jitter_shift_clock 24 0 "$offset")
+            echo "$1 */6 * * * /usr/bin/netshift subscription_update 6h"
+        fi
         ;;
     "12h")
-        echo "40 */12 * * * /usr/bin/netshift subscription_update 12h"
+        if [ "$percent" = "0" ]; then
+            echo "40 */12 * * * /usr/bin/netshift subscription_update 12h"
+        else
+            offset="$(jitter_offset 60 "$salt" "$percent")"
+            # shellcheck disable=SC2086
+            set -- $(jitter_shift_clock 40 0 "$offset")
+            echo "$1 */12 * * * /usr/bin/netshift subscription_update 12h"
+        fi
         ;;
     "1d")
         # Optional $2: HH:MM to run at (default SUBSCRIPTION_UPDATE_TIME_DEFAULT).
         # The time is part of the job so it only refreshes the sections at that
         # time. cron wants plain numbers, and $((08)) is an octal error in ash,
         # so the leading zero is stripped textually instead.
-        local cron_time="${2:-$SUBSCRIPTION_UPDATE_TIME_DEFAULT}"
+        cron_time="${2:-$SUBSCRIPTION_UPDATE_TIME_DEFAULT}"
         is_valid_subscription_update_time "$cron_time" || return 1
         cron_hour="${cron_time%%:*}"
         cron_hour="${cron_hour#0}"
         cron_minute="${cron_time##*:}"
         cron_minute="${cron_minute#0}"
+        if [ "$percent" != "0" ]; then
+            offset="$(jitter_offset 60 "$salt:$cron_time" "$percent")"
+            # shellcheck disable=SC2086
+            set -- $(jitter_shift_clock "${cron_minute:-0}" "${cron_hour:-0}" "$offset")
+            cron_minute="$1"
+            cron_hour="$2"
+        fi
         echo "${cron_minute:-0} ${cron_hour:-0} * * * /usr/bin/netshift subscription_update 1d $cron_time"
         ;;
     *)
@@ -3159,12 +3276,18 @@ _collect_subscription_update_interval() {
 # legacy single job (`/usr/bin/netshift subscription_update`, no interval) that
 # an upgrade leaves in crontab and that used to drive every section.
 sync_subscription_cron_jobs() {
-    local subscription_job cron_job
+    local subscription_job cron_job current_crontab desired_crontab
 
     SUBSCRIPTION_UPDATE_INTERVALS=""
     foreach_active_section _collect_subscription_update_interval "section"
 
-    (crontab -l | grep -v "/usr/bin/netshift subscription_update") | crontab -
+    current_crontab="$(mktemp "${TMPDIR:-/tmp}/netshift-crontab-current.XXXXXX")" || return 1
+    desired_crontab="$(mktemp "${TMPDIR:-/tmp}/netshift-crontab-desired.XXXXXX")" || {
+        rm -f "$current_crontab"
+        return 1
+    }
+    crontab -l > "$current_crontab" 2>/dev/null || :
+    grep -v "/usr/bin/netshift subscription_update" "$current_crontab" > "$desired_crontab" || :
 
     # Sorted and deduplicated: sections sharing an interval share one job, and
     # the resulting crontab does not depend on the order the sections happen to
@@ -3176,12 +3299,16 @@ sync_subscription_cron_jobs() {
         *) cron_job="$(get_subscription_cron_line_for_interval "$subscription_job")" ;;
         esac
 
-        crontab -l | {
-            cat
-            echo "$cron_job"
-        } | crontab -
+        printf '%s\n' "$cron_job" >> "$desired_crontab"
         log "The subscription cron job has been created: $cron_job"
     done
+
+    # Do not rewrite the persistent crontab on every apply when its contents
+    # are already current. Some OpenWrt overlays are flash-backed.
+    if ! cmp -s "$current_crontab" "$desired_crontab"; then
+        crontab - < "$desired_crontab"
+    fi
+    rm -f "$current_crontab" "$desired_crontab"
 
     warn_daily_subscription_time_collisions
 }
@@ -3265,7 +3392,7 @@ suggest_free_daily_minute() {
 # update_interval is configured) are covered; the day-of-month field is ignored,
 # so the 3d list_update job can warn on a day it does not run.
 warn_daily_subscription_time_collisions() {
-    local subscription_job daily_time daily_hour daily_minute job_minute job_hour job_command job_name free_minute hint
+    local subscription_job daily_time daily_hour daily_minute shifted_cron job_minute job_hour job_command job_name free_minute hint
 
     for subscription_job in $(printf '%s\n' $SUBSCRIPTION_UPDATE_INTERVALS | sort -u); do
         case "$subscription_job" in
@@ -3274,13 +3401,12 @@ warn_daily_subscription_time_collisions() {
         esac
 
         daily_time="${subscription_job#*@}"
-        # No leading zeros: $((08)) is an octal error in ash.
-        daily_hour="${daily_time%%:*}"
-        daily_hour="${daily_hour#0}"
-        daily_hour="${daily_hour:-0}"
-        daily_minute="${daily_time##*:}"
-        daily_minute="${daily_minute#0}"
-        daily_minute="${daily_minute:-0}"
+        # Compare against the actual jittered cron time, including a shift
+        # across midnight. The command argument still carries the user value.
+        shifted_cron="$(get_subscription_cron_line_for_interval 1d "$daily_time")" || continue
+        daily_minute="${shifted_cron%% *}"
+        shifted_cron="${shifted_cron#* }"
+        daily_hour="${shifted_cron%% *}"
 
         crontab -l | grep -E "/usr/bin/netshift (list_update|subscription_update)" | {
             while read -r job_minute job_hour _ _ _ job_command; do
@@ -4896,6 +5022,7 @@ configure_outbound_handler() {
             config_get urltest_proxy_links "$section" "urltest_proxy_links"
             config_get udp_over_tcp "$section" "enable_udp_over_tcp"
             config_get urltest_check_interval "$section" "urltest_check_interval" "3m"
+            urltest_check_interval="$(jitter_duration "$urltest_check_interval" "urltest:${section}" "$(check_jitter_percent)")"
             config_get urltest_tolerance "$section" "urltest_tolerance" 50
             config_get urltest_testing_url "$section" "urltest_testing_url" "$LATENCY_TEST_URL_DEFAULT"
 
@@ -4949,6 +5076,7 @@ configure_outbound_handler() {
             config_get urltest_text_links "$section" "urltest_proxy_links_text"
             config_get udp_over_tcp "$section" "enable_udp_over_tcp"
             config_get urltest_check_interval "$section" "urltest_check_interval" "3m"
+            urltest_check_interval="$(jitter_duration "$urltest_check_interval" "urltest:${section}" "$(check_jitter_percent)")"
             config_get urltest_tolerance "$section" "urltest_tolerance" 50
             config_get urltest_testing_url "$section" "urltest_testing_url" "$LATENCY_TEST_URL_DEFAULT"
 
@@ -4985,6 +5113,7 @@ configure_outbound_handler() {
                 subscription_outbound_feeds_json
 
             config_get urltest_check_interval "$section" "urltest_check_interval" "3m"
+            urltest_check_interval="$(jitter_duration "$urltest_check_interval" "urltest:${section}" "$(check_jitter_percent)")"
             config_get urltest_tolerance "$section" "urltest_tolerance" 50
             config_get urltest_testing_url "$section" "urltest_testing_url" "$LATENCY_TEST_URL_DEFAULT"
             # Grouping mode (task-044): off | country | prefix. The new
