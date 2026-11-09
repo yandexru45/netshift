@@ -26472,6 +26472,106 @@ conn:refused" ]; then
     fi
 }
 
+test_happ_crypt4() {
+    header "A Happ crypt4 link decrypts to the subscription it wraps"
+
+    # shellcheck disable=SC1090
+    . "$NETSHIFT_LIB_DIR/helpers.sh"
+    local work plain secret key iv b64 urlsafe short_b64 out
+    work="/tmp/netshift-happ-$$"
+    mkdir -p "$work"
+    if (
+        eval "$(awk '/^wait_for_subscription_connectivity\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "$NETSHIFT_SRC/usr/bin/netshift")"
+        load_subscription_client_identity() { :; }
+        check_subscription_connectivity() { return 1; }
+        log() { :; }
+        wait_for_subscription_connectivity main 'happ://crypt4/example' '' 1 0 1 &&
+            ! wait_for_subscription_connectivity main 'https://example.com/feed' '' 1 0 1
+    ); then
+        pass "crypt4-bypasses-network-preflight"
+    else
+        fail "embedded crypt4 must not require connectivity; HTTP still must"
+    fi
+    plain="vless://00000000-0000-4000-8000-000000000001@example.com:443?encryption=none&security=tls&sni=example.com#HappNode"
+    secret="my-custom-device-hwid"
+    if ! command -v happ_decrypt_crypt4 > /dev/null 2>&1; then
+        fail "crypt4 decrypt function is present"
+        rm -rf "$work"
+        return
+    fi
+    if ! command -v openssl > /dev/null 2>&1 || ! command -v base64 > /dev/null 2>&1 || ! command -v sha256sum > /dev/null 2>&1; then
+        fail "OpenWrt smoke image has crypt4 crypto dependencies"
+        rm -rf "$work"
+        return
+    fi
+    key=$(printf '%s' "$secret" | sha256sum | awk '{print $1}')
+    iv="000102030405060708090a0b0c0d0e0f"
+    printf '%s' "$plain" | openssl enc -aes-256-cbc -K "$key" -iv "$iv" -out "$work/ct" || {
+        fail "openssl could not build the crypt4 vector"
+        rm -rf "$work"
+        return
+    }
+    printf '%b' '\000\001\002\003\004\005\006\007\010\011\012\013\014\015\016\017' > "$work/iv"
+    cat "$work/iv" "$work/ct" > "$work/raw"
+    b64=$(base64 < "$work/raw" | tr -d '\n')
+    printf '%s' "$plain" > "$work/plain"
+    if happ_decrypt_crypt4 "happ://crypt4/${b64}#main" "$work/out" "$secret" && cmp -s "$work/out" "$work/plain"; then
+        pass "hwid-crypt4-decrypts-with-fragment"
+    else
+        fail "crypt4 with a named fragment did not decrypt" "$(cat "$work/out" 2> /dev/null)"
+    fi
+    if [ "$(happ_link_kind "happ://crypt4")" = "crypt4" ] && [ "$(happ_link_kind "crypt4")" = "crypt4" ]; then
+        pass "crypt4-without-trailing-slash-is-recognized"
+    else
+        fail "crypt4 without a trailing slash was not recognized"
+    fi
+    urlsafe=$(printf '%s' "$b64" | tr '+/' '-_')
+    if happ_decrypt_crypt4 "crypt4/${urlsafe}" "$work/out" "$secret" && cmp -s "$work/out" "$work/plain"; then
+        pass "urlsafe-base64-crypt4-decrypts"
+    else
+        fail "URL-safe base64 crypt4 did not decrypt"
+    fi
+    key=$(printf '%s' "HappDefaultSalt" | sha256sum | awk '{print $1}')
+    printf '%s' "$plain" | openssl enc -aes-256-cbc -K "$key" -iv "$iv" -out "$work/ct"
+    cat "$work/iv" "$work/ct" > "$work/raw"
+    b64=$(base64 < "$work/raw" | tr -d '\n')
+    if happ_decrypt_crypt4 "crypt4/${b64}" "$work/out" "wrong-section-hwid" && cmp -s "$work/out" "$work/plain"; then
+        pass "default-salt-is-tried-after-wrong-section-hwid"
+    else
+        fail "default salt was not tried after an unrelated section HWID"
+    fi
+    if [ "$(happ_link_kind "happ://crypt5/aaaa")" = "crypt5" ] && [ "$(happ_link_kind "crypt2/aaaa")" = "crypt2" ] && [ "$(happ_link_kind "happ://crypt3/aaaa")" = "crypt3" ]; then
+        pass "unsupported-happ-encryption-kinds-are-distinguished"
+    else
+        fail "unsupported Happ encryption kinds were not distinguished"
+    fi
+    if happ_decrypt_crypt4 "happ://crypt4/A" "$work/out" "$secret"; then
+        fail "crypt4 accepted base64 with an impossible remainder"
+    else
+        pass "crypt4-rejects-base64-remainder-one"
+    fi
+    head -c 16 /dev/zero > "$work/raw"
+    short_b64=$(base64 < "$work/raw" | tr -d '\n')
+    if happ_decrypt_crypt4 "crypt4/${short_b64}" "$work/out" "$secret"; then
+        fail "crypt4 accepted a payload shorter than an IV and one block"
+    else
+        pass "crypt4-rejects-short-payload"
+    fi
+    head -c 17 /dev/zero > "$work/raw"
+    short_b64=$(base64 < "$work/raw" | tr -d '\n')
+    if happ_decrypt_crypt4 "crypt4/${short_b64}" "$work/out" "$secret"; then
+        fail "crypt4 accepted a payload whose length is not a block multiple"
+    else
+        pass "crypt4-rejects-non-block-payload"
+    fi
+    if happ_decrypt_crypt4 "https://example.com/sub" "$work/out" ""; then
+        fail "a plain subscription URL was treated as crypt4"
+    else
+        pass "plain-url-is-not-crypt4"
+    fi
+    rm -rf "$work"
+}
+
 main() {
     printf "${BOLD}Netshift Evolution — Smoke Test Suite${NC}\n"
     printf "Source: %s\n" "$NETSHIFT_SRC"

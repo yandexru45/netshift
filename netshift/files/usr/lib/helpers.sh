@@ -1553,6 +1553,97 @@ subscription_url_is_http() {
 #   $6 - timeout seconds (optional, default 10)
 #   $7 - User-Agent (optional; default "singbox/<version>")
 #   $8 - insecure (optional, default 0; when 1 adds --no-check-certificate)
+# happ://crypt4/ and crypt4/ are AES-256-CBC. The key is SHA-256 of the
+# section HWID, then of Happ's published default salt. The payload is base64
+# of a 16-byte IV plus the ciphertext. crypt5 is RSA plus ChaCha20 and needs
+# Happ's client key table, which this build does not ship.
+happ_link_kind() {
+    local low input
+
+    input="${1%%#*}"
+    low=$(printf '%s' "$input" | tr 'A-Z' 'a-z' | tr -d ' \t\r\n')
+    case "$low" in
+    happ://crypt4 | happ://crypt4/ | happ://crypt4/* | crypt4 | crypt4/ | crypt4/*) printf '%s\n' crypt4 ;;
+    happ://crypt5 | happ://crypt5/ | happ://crypt5/* | crypt5 | crypt5/ | crypt5/*) printf '%s\n' crypt5 ;;
+    happ://crypt3 | happ://crypt3/ | happ://crypt3/* | crypt3 | crypt3/ | crypt3/*) printf '%s\n' crypt3 ;;
+    happ://crypt2 | happ://crypt2/ | happ://crypt2/* | crypt2 | crypt2/ | crypt2/*) printf '%s\n' crypt2 ;;
+    happ://crypt | happ://crypt/ | happ://crypt/* | crypt | crypt/ | crypt/*) printf '%s\n' crypt ;;
+    *) printf '%s\n' plain ;;
+    esac
+}
+
+_happ_b64_decode() {
+    local payload rem pad
+
+    payload=$(printf '%s' "$1" | tr -d ' \t\r\n' | tr '_-' '/+')
+    rem=$((${#payload} % 4))
+    [ "$rem" -eq 1 ] && return 1
+    pad=""
+    [ "$rem" -eq 2 ] && pad="=="
+    [ "$rem" -eq 3 ] && pad="="
+    printf '%s' "${payload}${pad}" | base64 -d > "$2" 2> /dev/null || return 1
+    [ -s "$2" ]
+}
+
+_happ_plaintext_looks_like_subscription() {
+    local filepath="$1"
+    local decoded_filepath="$2"
+
+    if grep -Eq '^[[:space:]]*(vless|vmess|trojan|ss|hysteria2|hy2|tuic|socks5?|http|https)://' "$filepath" 2> /dev/null; then
+        return 0
+    fi
+    if jq -e 'type == "array" or (type == "object" and (.outbounds | type == "array"))' "$filepath" > /dev/null 2>&1; then
+        return 0
+    fi
+    if base64 -d "$filepath" > "$decoded_filepath" 2> /dev/null; then
+        if grep -Eq '^[[:space:]]*(vless|vmess|trojan|ss|hysteria2|hy2|tuic|socks5?|http|https)://' "$decoded_filepath" 2> /dev/null \
+            || jq -e 'type == "array" or (type == "object" and (.outbounds | type == "array"))' "$decoded_filepath" > /dev/null 2>&1; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# $1 link or one-line payload, $2 destination file, $3 optional HWID.
+# 0 plaintext written, 1 the value is not crypt4, 2 crypt4 that did not open,
+# 3 crypt4 but a required local crypto utility is missing.
+happ_decrypt_crypt4() {
+    local kind input payload work raw ivhex key secret ok
+
+    kind=$(happ_link_kind "$1")
+    [ "$kind" = "crypt4" ] || return 1
+    command -v openssl > /dev/null 2>&1 || return 3
+    command -v base64 > /dev/null 2>&1 || return 3
+    command -v sha256sum > /dev/null 2>&1 || return 3
+    command -v od > /dev/null 2>&1 || return 3
+    input="${1%%#*}"
+    payload=$(printf '%s' "$input" | sed -e 's/^[Hh][Aa][Pp][Pp]:\/\/[Cc][Rr][Yy][Pp][Tt]4\///' -e 's/^[Cc][Rr][Yy][Pp][Tt]4\///')
+    work=$(mktemp -d "${TMPDIR:-/tmp}/netshift-happ.XXXXXX") || return 2
+    ok=1
+    if _happ_b64_decode "$payload" "$work/raw"; then
+        raw=$(wc -c < "$work/raw" | tr -d ' ')
+        if [ "$raw" -ge 32 ] && [ "$raw" -le 8388608 ] && [ "$((raw % 16))" -eq 0 ]; then
+            dd if="$work/raw" of="$work/iv" bs=16 count=1 2> /dev/null
+            dd if="$work/raw" of="$work/ct" bs=16 skip=1 2> /dev/null
+            ivhex=$(od -An -tx1 "$work/iv" | tr -d ' \n')
+            for secret in "$3" "HappDefaultSalt"; do
+                [ -n "$secret" ] || continue
+                key=$(printf '%s' "$secret" | sha256sum | awk '{print $1}')
+                [ "${#key}" -eq 64 ] || continue
+                if openssl enc -d -aes-256-cbc -K "$key" -iv "$ivhex" -in "$work/ct" -out "$work/pt" 2> /dev/null \
+                    && _happ_plaintext_looks_like_subscription "$work/pt" "$work/decoded"; then
+                    cat "$work/pt" > "$2"
+                    ok=0
+                    break
+                fi
+            done
+        fi
+    fi
+    rm -rf "$work"
+    [ "$ok" -eq 0 ] && return 0
+    return 2
+}
+
 download_subscription() {
     # The #fragment only names the feed on the dashboard. uclient-fetch puts it
     # into the request line verbatim (checked on OpenWrt 25.12), where a panel

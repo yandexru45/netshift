@@ -79,7 +79,9 @@ RUN opkg update && \
         curl \
         jq \
         coreutils-base64 \
+        coreutils-od \
         bind-dig \
+        openssl-util \
         nftables \
     && rm -rf /var/opkg-lists/*
 
