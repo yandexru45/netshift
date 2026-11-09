@@ -29,7 +29,16 @@ jitter_offset() {
         return 0
     fi
 
-    hex="$(printf '%s' "$salt" | md5sum | cut -c1-8)"
+    hex="$(printf '%s' "$salt" | md5sum 2>/dev/null | cut -c1-8)"
+    case "$hex" in
+    ???????? )
+        case "$hex" in *[!0123456789abcdefABCDEF]*) printf '0\n'; return 0 ;; esac
+        ;;
+    *)
+        printf '0\n'
+        return 0
+        ;;
+    esac
     n=$((0x$hex))
     printf '%s\n' "$((n % (width * 2 + 1) - width))"
 }

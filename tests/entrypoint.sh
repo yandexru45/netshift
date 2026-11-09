@@ -9487,6 +9487,7 @@ WORK="/tmp/netshift-subcron-work-$$"
 rm -rf "$WORK"
 mkdir -p "$WORK"
 CRONTAB_FILE="$WORK/crontab"
+CRONTAB_WRITES=0
 : > "$CRONTAB_FILE"
 
 # The log is a file: the shipped code is expected to SAY that it fell back to
@@ -9509,6 +9510,7 @@ crontab() {
         return 0
         ;;
     -)
+        CRONTAB_WRITES=$((CRONTAB_WRITES + 1))
         cat > "$CRONTAB_FILE.new" || return 1
         mv "$CRONTAB_FILE.new" "$CRONTAB_FILE"
         ;;
@@ -9575,6 +9577,69 @@ if get_subscription_cron_line_for_interval '' > /dev/null 2>&1; then
 else
     echo 'subcron:schedule-empty-rejected:OK'
 fi
+
+# Jitter changes only the minute for hourly schedules. Shifting into the next
+# hour must not add an hour field to an */N cron expression.
+(
+    check_jitter_percent() { printf '25'; }
+    jitter_offset() { printf '15'; }
+    jitter_device_salt() { printf 'router-test'; }
+    for spec in "1h|32 * * * *" "3h|22 */3 * * *" "6h|39 */6 * * *" "12h|55 */12 * * *"; do
+        iv="${spec%%|*}"
+        want="${spec#*|} /usr/bin/netshift subscription_update $iv"
+        got="$(get_subscription_cron_line_for_interval "$iv")"
+        if [ "$got" = "$want" ]; then
+            echo "subcron:jitter-preserves-$iv-recurrence:OK"
+        else
+            echo "subcron:jitter-preserves-$iv-recurrence:FAIL [got '$got']"
+        fi
+    done
+    if [ "$(jitter_shift_clock 59 23 15)" = "14 0" ] &&
+        [ "$(jitter_shift_clock 0 0 -15)" = "45 23" ]; then
+        echo 'subcron:jitter-midnight-wrap:OK'
+    else
+        echo 'subcron:jitter-midnight-wrap:FAIL'
+    fi
+    SUBSCRIPTION_UPDATE_INTERVALS='1d@23:59'
+    printf '%s\n' '14 0 * * * /usr/bin/netshift subscription_update 1h' > "$CRONTAB_FILE"
+    : > "$LOG_FILE"
+    warn_daily_subscription_time_collisions
+    if grep -q 'daily subscription update at 23:59 runs at the same time' "$LOG_FILE"; then
+        echo 'subcron:jitter-midnight-collision-uses-shifted-time:OK'
+    else
+        echo 'subcron:jitter-midnight-collision-uses-shifted-time:FAIL'
+    fi
+
+    # With no machine-id or static LAN MAC, the generated identity is saved
+    # and remains stable for later config builds/reboots.
+    eval "$(awk '/^jitter_device_salt\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "$BIN")"
+    NETSHIFT_MACHINE_ID_FILE="$WORK/no-machine-id"
+    NETSHIFT_JITTER_ID_FILE="$WORK/jitter-id"
+    export NETSHIFT_MACHINE_ID_FILE NETSHIFT_JITTER_ID_FILE
+    uci() { return 1; }
+    first_identity="$(jitter_device_salt)"
+    second_identity="$(jitter_device_salt)"
+    if [ -n "$first_identity" ] && [ "$first_identity" = "$second_identity" ]; then
+        echo 'subcron:jitter-identity-persists-without-machine-id:OK'
+    else
+        echo "subcron:jitter-identity-persists-without-machine-id:FAIL [$first_identity / $second_identity]"
+    fi
+
+    # A missing digest must not pass an empty 0x value to ash arithmetic.
+    eval "$(awk '/^jitter_offset\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "$LIB/helpers.sh")"
+    mkdir -p "$WORK/no-md5"
+    printf '#!/bin/sh\nexit 127\n' > "$WORK/no-md5/md5sum"
+    chmod +x "$WORK/no-md5/md5sum"
+    PATH="$WORK/no-md5:$PATH"
+    export PATH
+    hash -r 2> /dev/null || :
+    missing_md5_offset="$(jitter_offset 60 salt 25)"
+    if [ "$missing_md5_offset" = "0" ]; then
+        echo 'subcron:jitter-missing-md5sum-safe:OK'
+    else
+        echo "subcron:jitter-missing-md5sum-safe:FAIL [got '$missing_md5_offset']"
+    fi
+)
 
 # ── The jobs never share a minute ─────────────────────────────────
 # Two jobs firing in the same minute would run two subscription_update processes
@@ -9772,12 +9837,18 @@ fi
 
 # ── Re-running adds nothing (the jobs are rebuilt, not appended) ──
 sync "$WORK/same_interval"
+writes_before="$CRONTAB_WRITES"
 sync "$WORK/same_interval" keep
 sync "$WORK/same_interval" keep
 if [ "$(job_count)" = "1" ]; then
     echo 'subcron:idempotent:OK'
 else
     echo "subcron:idempotent:FAIL [$(job_count)]"
+fi
+if [ "$CRONTAB_WRITES" -eq "$writes_before" ]; then
+    echo 'subcron:unchanged-crontab-not-rewritten:OK'
+else
+    echo 'subcron:unchanged-crontab-not-rewritten:FAIL'
 fi
 
 # ── A section without a usable interval must never lose its job ──
@@ -25819,7 +25890,7 @@ test_check_jitter() {
     # shellcheck disable=SC1090
     . "$NETSHIFT_LIB_DIR/sing_box_config_manager.sh"
 
-    local plain again seconds
+    local plain again seconds jittered urltest_json urltest_interval urltest_idle
     plain="$(jitter_duration 3m salt 0)"
     if [ "$plain" = "3m" ]; then
         pass "jitter-off-keeps-the-interval"
@@ -25839,6 +25910,16 @@ test_check_jitter() {
         pass "jitter-stays-within-a-quarter"
     else
         fail "25% of 3m is not 135-225s" "$plain"
+    fi
+    urltest_json="$(sing_box_cm_add_urltest_outbound '{"outbounds":[]}' jittered '[]' '' "$plain" 50)"
+    urltest_interval="$(printf '%s' "$urltest_json" | jq -r '.outbounds[0].interval')"
+    urltest_idle="$(printf '%s' "$urltest_json" | jq -r '.outbounds[0].idle_timeout // "30m"')"
+    seconds="${urltest_interval%s}"
+    if [ "$urltest_interval" = "$plain" ] && [ "$seconds" -ge 135 ] && [ "$seconds" -le 225 ] &&
+        [ "$(_duration_to_seconds "$urltest_idle")" -ge "$seconds" ]; then
+        pass "jittered-urltest-config-has-bounded-interval-and-safe-idle-timeout"
+    else
+        fail "jittered URLTest interval is not safe in the built outbound" "$urltest_json"
     fi
 
     plain="$(jitter_offset 60 "cron:1h:aa:bb:cc:dd:ee:ff" 25)"

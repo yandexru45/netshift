@@ -2977,11 +2977,32 @@ check_jitter_percent() {
 
 # Stable per router, so two routers do not refresh in the same minute.
 jitter_device_salt() {
-    local mac
+    local identity identity_file id_file tmp
 
-    mac="$(cat /sys/class/net/br-lan/address 2> /dev/null)"
-    [ -n "$mac" ] || mac="$(hostname 2> /dev/null)"
-    printf '%s' "${mac:-netshift}"
+    identity_file="${NETSHIFT_MACHINE_ID_FILE:-/etc/machine-id}"
+    identity="$(cat "$identity_file" 2> /dev/null)"
+    if [ -z "$identity" ]; then
+        identity="$(uci -q get network.lan.macaddr 2> /dev/null)"
+    fi
+    [ -n "$identity" ] && { printf '%s' "$identity"; return 0; }
+
+    id_file="${NETSHIFT_JITTER_ID_FILE:-/etc/netshift/jitter-id}"
+    if [ -s "$id_file" ]; then
+        IFS= read -r identity < "$id_file"
+        [ -n "$identity" ] && { printf '%s' "$identity"; return 0; }
+    fi
+
+    # Persist a per-router random identity. A hostname fallback is not unique
+    # across factory-reset routers and br-lan can change after network setup.
+    identity="$(dd if=/dev/urandom bs=24 count=1 2>/dev/null | base64 | tr -d '\n=/+')"
+    [ -n "$identity" ] || return 0
+    tmp="${id_file}.tmp.$$"
+    if mkdir -p "${id_file%/*}" 2>/dev/null && (umask 077; printf '%s\n' "$identity" > "$tmp") && mv "$tmp" "$id_file"; then
+        printf '%s' "$identity"
+    else
+        rm -f "$tmp"
+        printf '%s' "$identity"
+    fi
 }
 
 # Move a minute by the jitter offset. The hour follows when the minute wraps.
@@ -3039,7 +3060,7 @@ get_subscription_cron_line_for_interval() {
             offset="$(jitter_offset 60 "$salt" "$percent")"
             # shellcheck disable=SC2086
             set -- $(jitter_shift_clock 17 0 "$offset")
-            echo "$1 $2 * * * /usr/bin/netshift subscription_update 1h"
+            echo "$1 * * * * /usr/bin/netshift subscription_update 1h"
         fi
         ;;
     "3h")
@@ -3049,7 +3070,7 @@ get_subscription_cron_line_for_interval() {
             offset="$(jitter_offset 60 "$salt" "$percent")"
             # shellcheck disable=SC2086
             set -- $(jitter_shift_clock 7 0 "$offset")
-            echo "$1 $2 */3 * * /usr/bin/netshift subscription_update 3h"
+            echo "$1 */3 * * * /usr/bin/netshift subscription_update 3h"
         fi
         ;;
     "6h")
@@ -3059,7 +3080,7 @@ get_subscription_cron_line_for_interval() {
             offset="$(jitter_offset 60 "$salt" "$percent")"
             # shellcheck disable=SC2086
             set -- $(jitter_shift_clock 24 0 "$offset")
-            echo "$1 $2 */6 * * /usr/bin/netshift subscription_update 6h"
+            echo "$1 */6 * * * /usr/bin/netshift subscription_update 6h"
         fi
         ;;
     "12h")
@@ -3069,7 +3090,7 @@ get_subscription_cron_line_for_interval() {
             offset="$(jitter_offset 60 "$salt" "$percent")"
             # shellcheck disable=SC2086
             set -- $(jitter_shift_clock 40 0 "$offset")
-            echo "$1 $2 */12 * * /usr/bin/netshift subscription_update 12h"
+            echo "$1 */12 * * * /usr/bin/netshift subscription_update 12h"
         fi
         ;;
     "1d")
@@ -3152,12 +3173,18 @@ _collect_subscription_update_interval() {
 # legacy single job (`/usr/bin/netshift subscription_update`, no interval) that
 # an upgrade leaves in crontab and that used to drive every section.
 sync_subscription_cron_jobs() {
-    local subscription_job cron_job
+    local subscription_job cron_job current_crontab desired_crontab
 
     SUBSCRIPTION_UPDATE_INTERVALS=""
     foreach_active_section _collect_subscription_update_interval "section"
 
-    (crontab -l | grep -v "/usr/bin/netshift subscription_update") | crontab -
+    current_crontab="$(mktemp "${TMPDIR:-/tmp}/netshift-crontab-current.XXXXXX")" || return 1
+    desired_crontab="$(mktemp "${TMPDIR:-/tmp}/netshift-crontab-desired.XXXXXX")" || {
+        rm -f "$current_crontab"
+        return 1
+    }
+    crontab -l > "$current_crontab" 2>/dev/null || :
+    grep -v "/usr/bin/netshift subscription_update" "$current_crontab" > "$desired_crontab" || :
 
     # Sorted and deduplicated: sections sharing an interval share one job, and
     # the resulting crontab does not depend on the order the sections happen to
@@ -3169,12 +3196,16 @@ sync_subscription_cron_jobs() {
         *) cron_job="$(get_subscription_cron_line_for_interval "$subscription_job")" ;;
         esac
 
-        crontab -l | {
-            cat
-            echo "$cron_job"
-        } | crontab -
+        printf '%s\n' "$cron_job" >> "$desired_crontab"
         log "The subscription cron job has been created: $cron_job"
     done
+
+    # Do not rewrite the persistent crontab on every apply when its contents
+    # are already current. Some OpenWrt overlays are flash-backed.
+    if ! cmp -s "$current_crontab" "$desired_crontab"; then
+        crontab - < "$desired_crontab"
+    fi
+    rm -f "$current_crontab" "$desired_crontab"
 
     warn_daily_subscription_time_collisions
 }
@@ -3258,7 +3289,7 @@ suggest_free_daily_minute() {
 # update_interval is configured) are covered; the day-of-month field is ignored,
 # so the 3d list_update job can warn on a day it does not run.
 warn_daily_subscription_time_collisions() {
-    local subscription_job daily_time daily_hour daily_minute job_minute job_hour job_command job_name free_minute hint
+    local subscription_job daily_time daily_hour daily_minute shifted_cron job_minute job_hour job_command job_name free_minute hint
 
     for subscription_job in $(printf '%s\n' $SUBSCRIPTION_UPDATE_INTERVALS | sort -u); do
         case "$subscription_job" in
@@ -3267,13 +3298,12 @@ warn_daily_subscription_time_collisions() {
         esac
 
         daily_time="${subscription_job#*@}"
-        # No leading zeros: $((08)) is an octal error in ash.
-        daily_hour="${daily_time%%:*}"
-        daily_hour="${daily_hour#0}"
-        daily_hour="${daily_hour:-0}"
-        daily_minute="${daily_time##*:}"
-        daily_minute="${daily_minute#0}"
-        daily_minute="${daily_minute:-0}"
+        # Compare against the actual jittered cron time, including a shift
+        # across midnight. The command argument still carries the user value.
+        shifted_cron="$(get_subscription_cron_line_for_interval 1d "$daily_time")" || continue
+        daily_minute="${shifted_cron%% *}"
+        shifted_cron="${shifted_cron#* }"
+        daily_hour="${shifted_cron%% *}"
 
         crontab -l | grep -E "/usr/bin/netshift (list_update|subscription_update)" | {
             while read -r job_minute job_hour _ _ _ job_command; do
