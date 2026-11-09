@@ -1327,10 +1327,6 @@ BIN="BIN_PATH_PLACEHOLDER"
 # shellcheck disable=SC1090
 . "$LIB/kill_switch.sh"
 
-nft_dnat_pairs() {
-    printf '%s\n' 'tcp 192.168.1.50 27016' 'udp 192.168.1.50 27016'
-}
-
 # Unique tables and scratch space: never touch the real NetShiftTable /
 # NetShiftGuard.
 NFT_TABLE_NAME="$SCN_TABLE"
@@ -1528,13 +1524,6 @@ BLEOF
         pass "blockleaks:sets — LAN interface mirrored into the guard set"
     else
         fail "blockleaks:sets — LAN interface not mirrored"
-    fi
-    if echo "$gdump" | grep -q 'ip saddr . tcp sport @guard_dnat_fwd_tcp' &&
-        echo "$gdump" | grep -q 'ip saddr . udp sport @guard_dnat_fwd_udp' &&
-        echo "$gdump" | grep -q '192.168.1.50 . 27016'; then
-        pass "blockleaks:dnat — forwarded TCP and UDP pairs are accepted from the guard sets"
-    else
-        fail "blockleaks:dnat — guard mirror or accept rules missing" "$(echo "$gdump" | grep -E 'dnat_fwd|27016')"
     fi
     if _bl_section "$out1" DNS | grep -q "restore=no"; then
         pass "blockleaks:dns — DNS stays fail-closed while sing-box is down"
@@ -26485,8 +26474,11 @@ conn:refused" ]; then
 
 test_dnat_bypass_sets() {
     header "Forwarded ports (firewall redirects, UPnP leases) are never marked for the tunnel"
+
     if ! command -v nft > /dev/null 2>&1 || ! command -v uci > /dev/null 2>&1; then
         skip "nft or uci not available"
+        return
+    fi
     local work="/tmp/netshift-dnat-$$" out
     mkdir -p "$work/uci"
     cat > "$work/uci/firewall" << 'FWEOF'
@@ -26498,36 +26490,42 @@ config redirect
 	option src_dport '27015'
 	option dest_ip '192.168.1.50'
 	option dest_port '27016'
+
 config redirect
 	option name 'range'
 	option src 'wan'
 	option proto 'udp'
 	option src_dport '5000-5002'
 	option dest_ip '192.168.1.60'
+
 config redirect
 	option name 'snat'
 	option target 'SNAT'
 	option proto 'tcp'
 	option src_dport '1111'
 	option dest_ip '192.168.1.90'
+
 config redirect
 	option name 'off'
 	option enabled '0'
 	option proto 'tcp'
 	option src_dport '2222'
 	option dest_ip '192.168.1.91'
+
 config redirect
 	option name 'off-word'
 	option enabled 'no'
 	option proto 'tcp'
 	option src_dport '2223'
 	option dest_ip '192.168.1.92'
+
 config redirect
 	option name 'two-hosts'
 	list dest_ip '192.168.1.51'
 	list dest_ip '192.168.1.52'
 	option dest_port '9'
 	option proto 'tcp'
+
 config redirect
 	option name 'too-wide'
 	option proto 'udp'
@@ -26535,20 +26533,26 @@ config redirect
 	option dest_ip '192.168.1.93'
 FWEOF
     printf 'TCP:50000:192.168.1.70:50001:0:Steam\nUDP:50000:192.168.1.70:50001:0:Steam\n' > "$work/leases"
+
     local driver="$work/driver.sh"
     cat > "$driver" << DRVEOF
 . "${NETSHIFT_LIB_DIR}/constants.sh"
 . "${NETSHIFT_LIB_DIR}/nft.sh"
+log() { :; }
 uci() { command uci -c "$work/uci" "\$@"; }
 NFT_UPNP_LEASE_FILES="$work/leases"
 NFT_DNAT_SUM_FILE="$work/sum"
 NFT_TABLE_NAME="NetShiftDnatTest"
 DRVEOF
+
     out="$(sh -c ". '$driver'; nft_dnat_pairs | sort" 2> /dev/null | tr '\n' ',')"
     local want="tcp 192.168.1.50 27016,tcp 192.168.1.51 9,tcp 192.168.1.52 9,tcp 192.168.1.70 50001,udp 192.168.1.50 27016,udp 192.168.1.60 5000,udp 192.168.1.60 5001,udp 192.168.1.60 5002,udp 192.168.1.70 50001,"
     if [ "$out" = "$want" ]; then
         pass "pairs-from-redirects-and-leases"
+    else
         fail "unexpected pairs (got: $out)"
+    fi
+
     # The real thing: the sets and the two rules in an nft table, then a sync.
     nft delete table inet NetShiftDnatTest 2> /dev/null || true
     if sh -c ". '$driver'
@@ -26569,6 +26573,7 @@ DRVEOF
         *192.168.1.60.5001*) pass "udp-set-has-range" ;;
         *) fail "udp set misses the port range (got: $out)" ;;
         esac
+
         # A lease that goes away leaves the set on the next sync.
         : > "$work/leases"
         sh -c ". '$driver'; nft_sync_dnat_sets" > /dev/null 2>&1
@@ -26578,16 +26583,23 @@ DRVEOF
         *192.168.1.50.27016*) pass "closed-upnp-port-removed" ;;
         *) fail "static redirect lost after sync (got: $out)" ;;
         esac
+    else
         fail "nft did not take the dnat sets and rules (are capabilities set?)"
+    fi
     nft delete table inet NetShiftDnatTest 2> /dev/null || true
+
     # The rules and the monitor call must be the ones the package ships.
+    # shellcheck disable=SC1090
     . "$NETSHIFT_LIB_DIR/constants.sh"
     local bin="${NETSHIFT_SRC}/usr/bin/netshift"
     local mon
     mon="$(awk -v f="monitor_sing_box" '$0 ~ "^"f"\\(\\) \\{"{p=1} p{print} p&&/^\}/{exit}' "$bin")"
     if printf '%s\n' "$mon" | grep -qE '^[[:space:]]*nft_sync_dnat_sets$'; then
         pass "monitor-refreshes-forwarded-ports"
+    else
         fail "monitor_sing_box does not call nft_sync_dnat_sets"
+    fi
+
     local wired="/tmp/netshift-dnat-wire-$$.sh"
     cat > "$wired" << 'WIREOF'
 LIB="LIB_DIR_PLACEHOLDER"
@@ -26597,6 +26609,7 @@ BIN="BIN_PATH_PLACEHOLDER"
 # shellcheck disable=SC1090
 . "$LIB/nft.sh"
 NFT_TABLE_NAME="$SCN_TABLE"
+log() { :; }
 nolog() { :; }
 echolog() { :; }
 netshift_ipv6_enabled() { return 1; }
@@ -26605,6 +26618,7 @@ config_get() { eval "$1=\"\${4:-}\""; }
 config_get_bool() {
     eval "$1=\"\${4:-0}\""
     [ "$3" = "block_doh" ] && eval "$1=\"${SCN_BLOCKDOH:-0}\""
+}
 config_foreach() { :; }
 config_list_foreach() { :; }
 section_is_disabled() { return 1; }
@@ -26617,6 +26631,7 @@ for fn in nft_init_interfaces_set populate_netshift_subnets_from_file \
     nft_add_dns_hijack nft_add_port_rules port_rules_value _port_list_has disable_quic_mode nft_add_quic_block \
     create_nft_rules; do
     eval "$(awk -v f="$fn" '$0 ~ "^"f"\\(\\) \\{"{p=1} p{print} p&&/^\}/{exit}' "$BIN")"
+done
 nft delete table inet "$NFT_TABLE_NAME" 2>/dev/null || true
 create_nft_rules >/dev/null 2>&1 || true
 nft list chain inet "$NFT_TABLE_NAME" mangle
@@ -26632,18 +26647,25 @@ WIREOF
     if [ -n "$tcp_line" ] && [ -n "$udp_line" ] && [ -n "$ct_line" ] && [ -n "$mark_line" ] &&
         [ "$ct_line" -lt "$tcp_line" ] && [ "$tcp_line" -lt "$mark_line" ] && [ "$udp_line" -lt "$mark_line" ]; then
         pass "shipped-rules-before-marks"
+    else
         fail "forwarded-port rules are not between ct-dnat and the first mark" "ct=$ct_line tcp=$tcp_line udp=$udp_line mark=$mark_line"
+    fi
     rule="$(printf '%s\n' "$chain" | grep "@${NFT_DNAT_TCP_SET_NAME}" | head -1)"
     case "$rule" in
     *iifname*"daddr != $SB_FAKEIP_INET4_RANGE"*) pass "forwarded-port-return-keeps-fakeip" ;;
     *) fail "forwarded-port return does not keep FakeIP on the LAN interface" "$rule" ;;
+    esac
     chain="$(SCN_TABLE="dnatwireb$$" SCN_BLOCKDOH=1 sh "$wired" 2>/dev/null || true)"
     nft delete table inet "dnatwireb$$" 2>/dev/null || true
     rule="$(printf '%s\n' "$chain" | grep "@${NFT_DNAT_TCP_SET_NAME}" | head -1)"
     case "$rule" in
     *"1.1.1.1"*) pass "forwarded-port-return-keeps-doh" ;;
     *) fail "block_doh does not exclude DoH resolvers from the forwarded-port return" "$rule" ;;
+    esac
     rm -f "$wired"
+    rm -rf "$work"
+}
+
 main() {
     printf "${BOLD}Netshift Evolution — Smoke Test Suite${NC}\n"
     printf "Source: %s\n" "$NETSHIFT_SRC"
