@@ -8,6 +8,7 @@ PKG_RELEASE:=1
 
 LUCI_TITLE:=LuCI NetShift app
 LUCI_DEPENDS:=+luci-base +netshift
+LUCI_EXTRA_DEPENDS:=netshift (>= 0.9.12.9-r1)
 LUCI_PKGARCH:=all
 LUCI_LANG.ru:=Русский (Russian)
 LUCI_LANG.en:=English

@@ -3,10 +3,7 @@
     "description": "Grant UCI and RPC access to LuCI app NetShift",
     "read": {
       "file": {
-        "/etc/init.d/netshift": [
-          "exec"
-        ],
-        "/usr/bin/netshift": [
+        "/usr/bin/netshift-read": [
           "exec"
         ]
       },
@@ -23,6 +20,11 @@
       ]
     },
     "write": {
+      "file": {
+        "/etc/init.d/netshift": ["exec"],
+        "/usr/bin/netshift-read": ["exec"],
+        "/usr/bin/netshift": ["exec"]
+      },
       "uci": [
         "netshift"
       ]

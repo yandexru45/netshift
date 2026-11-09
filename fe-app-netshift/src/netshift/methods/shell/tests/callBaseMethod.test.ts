@@ -20,6 +20,19 @@ describe('callBaseMethod', () => {
     expect(executeShellCommand.mock.calls[0][0].timeout).toBe(15000);
   });
 
+  it('returns the backend error instead of an empty message', async () => {
+    executeShellCommand.mockResolvedValue({
+      stdout: '',
+      stderr: 'Access denied',
+      code: 1,
+    });
+
+    await expect(callBaseMethod('get_status' as never)).resolves.toEqual({
+      success: false,
+      error: 'Access denied',
+    });
+  });
+
   it('passes the timeout of a slow call to the shell command', async () => {
     await callBaseMethod('support_report' as never, [], undefined, {
       nobatch: true,

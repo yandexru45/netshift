@@ -26472,6 +26472,60 @@ conn:refused" ]; then
     fi
 }
 
+test_readonly_acl() {
+    header "Read-only RPC entry point rejects mutation"
+    local wrapper="/luci-app-netshift/root/usr/bin/netshift-read" work out rc
+    work="$(mktemp -d)" || return 1
+    if jq -e '."luci-app-netshift".read.file["/usr/bin/netshift-read"] == ["exec"] and (."luci-app-netshift".read.file | keys) == ["/usr/bin/netshift-read"] and ."luci-app-netshift".write.file["/usr/bin/netshift-read"] == ["exec"] and ."luci-app-netshift".write.file["/usr/bin/netshift"] == ["exec"] and ."luci-app-netshift".write.file["/etc/init.d/netshift"] == ["exec"]' /luci-app-netshift/root/usr/share/rpcd/acl.d/luci-app-netshift.json >/dev/null; then pass "ACL exposes only the read wrapper to read roles and provides it to write roles"; else fail "ACL exposes only the read wrapper to read roles and provides it to write roles"; fi
+    if grep -Fq 'PKG_VERSION := $(if $(NETSHIFT_VERSION),$(NETSHIFT_VERSION),0.9.12.9)' /netshift/Makefile &&
+        grep -Fq 'LUCI_EXTRA_DEPENDS:=netshift (>= 0.9.12.9-r1)' /luci-app-netshift/Makefile; then
+        pass "LuCI package requires the backend version that installs netshift-read"
+    else
+        fail "LuCI package requires the backend version that installs netshift-read"
+    fi
+    if grep -Fq './files/usr/bin/netshift $(1)/usr/bin/netshift' /netshift/Makefile &&
+        [ -f "$wrapper" ]; then
+        pass "backend and LuCI packages retain their cross-package entry points"
+    else
+        fail "backend and LuCI packages retain their cross-package entry points"
+    fi
+    for list in READ_COMMANDS READ_CLASH_COMMANDS; do
+        sed -n "/^const $list = new Set(/,/^]);/p" /fe-app-netshift/src/helpers/executeShellCommand.ts | sed -n "s/^[[:space:]]*'\\([^']*\\)',*$/\\1/p" | sort > "$work/frontend-$list"
+    done
+    sed -n '/^get_status |/p' "$wrapper" | tr '|' '\n' | sed -e 's/^[[:space:]]*//' -e 's/)$//' -e 's/[[:space:]]*$//' | sort > "$work/wrapper-READ_COMMANDS"
+    sed -n '/^    get_proxies |/,/^    \*)/p' "$wrapper" | grep -oE 'get_[a-z_]+' | sort > "$work/wrapper-READ_CLASH_COMMANDS"
+    for list in READ_COMMANDS READ_CLASH_COMMANDS; do
+        if cmp -s "$work/frontend-$list" "$work/wrapper-$list"; then pass "$list matches the RPC wrapper"; else fail "$list differs from the RPC wrapper"; fi
+    done
+    if grep -Eq 'get_lan_info|get_config_warnings|get_group_latency' "$work/frontend-READ_COMMANDS" "$work/frontend-READ_CLASH_COMMANDS" "$work/wrapper-READ_COMMANDS" "$work/wrapper-READ_CLASH_COMMANDS"; then
+        fail "unused read-only commands are not exposed"
+    else
+        pass "unused read-only commands are not exposed"
+    fi
+    printf '#!/bin/sh\nprintf "CALLED:%%s\\n" "$*"\n' > "$work/backend"
+    chmod +x "$work/backend"
+    if ! grep -Fq 'exec /usr/bin/netshift "$@"' "$wrapper"; then fail "read wrapper contains expected backend call"; rm -rf "$work"; return; fi
+    sed "s@exec /usr/bin/netshift @exec $work/backend @" "$wrapper" > "$work/wrapper"
+    chmod +x "$work/wrapper"
+    out="$("$work/wrapper" get_status)"
+    expect_line "$out" "status is forwarded" 'CALLED:get_status'
+    out="$("$work/wrapper" clash_api get_proxies)"
+    expect_line "$out" "reading proxies is forwarded" 'CALLED:clash_api get_proxies'
+    out="$("$work/wrapper" show_sing_box_config)"
+    expect_line "$out" "viewing sing-box config is forwarded" 'CALLED:show_sing_box_config'
+    printf '#!/bin/sh\nprintf "PATH=%%s TMPDIR=%%s\\n" "$PATH" "${TMPDIR-unset}"\n' > "$work/backend"
+    chmod +x "$work/backend"
+    out="$(PATH=/tmp/netshift-untrusted TMPDIR=/tmp/netshift-untrusted "$work/wrapper" get_status)"
+    expect_line "$out" "read wrapper sanitizes PATH and TMPDIR" 'PATH=/usr/sbin:/usr/bin:/sbin:/bin TMPDIR=unset'
+    for args in 'stop' 'subscription_update' 'component_action_async subscription clear_cache' 'clash_api set_group_proxy a b' 'config_snapshot restore 1' 'get_status extra' 'clash_api get_proxies extra' 'clash_api get_proxy_latency group timeout extra'; do
+        # Intentional splitting: each test case is a fixed argument vector.
+        # shellcheck disable=SC2086
+        if "$work/wrapper" $args > "$work/out" 2>&1; then rc=0; else rc=$?; fi
+        if [ "$rc" -ne 0 ] && [ ! -s "$work/out" ]; then pass "read-only rejects $args"; else fail "read-only allowed $args"; fi
+    done
+    rm -rf "$work"
+}
+
 main() {
     printf "${BOLD}Netshift Evolution — Smoke Test Suite${NC}\n"
     printf "Source: %s\n" "$NETSHIFT_SRC"
