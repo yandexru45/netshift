@@ -8650,7 +8650,6 @@ var READ_COMMANDS = /* @__PURE__ */ new Set([
   "get_status",
   "get_sing_box_status",
   "get_core_capabilities",
-  "get_lan_info",
   "get_geoip_flags",
   "get_update_notice",
   "get_system_info",
