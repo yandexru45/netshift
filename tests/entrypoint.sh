@@ -3228,6 +3228,200 @@ CHUNKEOF
 }
 
 # ─────────────────────────────────────────────────────────────────
+# Test: IPv6 subnet lists (issue #189)
+#
+# IPv6 entries in User, Local and Remote plain-text subnet lists used to be
+# dropped by the IPv4-only validators. They now pass only when
+# NETSHIFT_SUBNETS_ALLOW_IPV6=1 (set once per entry point from
+# netshift_ipv6_enabled). The test drives the shipped validators, parser,
+# nft v6 filler, JSON ip_cidr extractor and the user/local list builders with
+# IPv6 both on and off.
+# ─────────────────────────────────────────────────────────────────
+test_subnet_ipv6_lists() {
+    header "IPv6 subnet lists (issue #189)"
+
+    local lib="${NETSHIFT_LIB_DIR}"
+    local bin="${NETSHIFT_SRC}/usr/bin/netshift"
+    if [ ! -r "$lib/helpers.sh" ] || [ ! -r "$lib/rulesets.sh" ] || [ ! -r "$lib/nft.sh" ] || [ ! -r "$bin" ]; then
+        skip "helpers.sh / rulesets.sh / nft.sh / bin not found"
+        return
+    fi
+    if ! command -v jq > /dev/null 2>&1; then
+        skip "jq not available"
+        return
+    fi
+
+    local work="/tmp/netshift-subnetv6-$$"
+    rm -rf "$work"
+    mkdir -p "$work"
+
+    local drv="$work/driver.sh"
+    cat > "$drv" << 'SV6EOF'
+log() { :; }
+. "LIB_DIR/constants.sh"
+. "LIB_DIR/helpers.sh"
+. "LIB_DIR/rulesets.sh"
+. "LIB_DIR/nft.sh"
+
+extract() {
+    awk -v f="$1" '$0 ~ "^"f"\\(\\) \\{"{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH"
+}
+eval "$(extract configure_user_subnet_list)"
+eval "$(extract configure_local_subnet_lists)"
+eval "$(extract import_local_subnets_list_handler)"
+
+TMP_RULESET_FOLDER="WORK_DIR/rulesets"
+rm -rf "$TMP_RULESET_FOLDER"
+mkdir -p "$TMP_RULESET_FOLDER"
+
+sv_ok() {
+    if [ "$2" = "$3" ]; then
+        echo "$1:OK"
+    else
+        echo "# sv-detail $1: got [$2], want [$3]"
+        echo "$1:FAIL"
+    fi
+}
+
+sv_url_accept() {
+    if is_ipv6_ip_or_ipv6_cidr "$2"; then sv_ok "$1" accept accept; else sv_ok "$1" reject accept; fi
+}
+sv_url_reject() {
+    if is_ipv6_ip_or_ipv6_cidr "$2"; then sv_ok "$1" accept reject; else sv_ok "$1" reject reject; fi
+}
+
+# ── validators ──────────────────────────────────────────────────────────────
+sv_url_accept sv-v6-cidr "2001:db8::/32"
+sv_url_accept sv-v6-address "2001:db8::1"
+sv_url_accept sv-v6-loopback "::1"
+sv_url_accept sv-v6-default "::/0"
+sv_url_reject sv-v6-prefix-too-long "2001:db8::/129"
+sv_url_reject sv-v6-prefix-leading-zero "2001:db8::/064"
+sv_url_reject sv-v6-double-compression "1::2::3/64"
+sv_url_reject sv-v6-three-colons ":::/64"
+sv_url_reject sv-v6-bad-hex "2001:db8::zzzz"
+sv_url_reject sv-v4-is-not-v6 "10.0.0.0/8"
+
+# ── parser: on, off and invalid entries ─────────────────────────────────────
+NETSHIFT_SUBNETS_ALLOW_IPV6=1
+sv_ok sv-parse-v6-on \
+    "2001:db8::/32,2001:db8::1,::1,::/0,10.0.0.0/8" \
+    "$(parse_domain_or_subnet_string_to_commas_string '2001:db8::/32 2001:db8::1 ::1 ::/0 10.0.0.0/8' subnets)"
+sv_ok sv-parse-v6-invalid-on "10.0.0.0/8" \
+    "$(parse_domain_or_subnet_string_to_commas_string '2001:db8::/129 2001:db8::zzzz 10.0.0.0/8' subnets)"
+NETSHIFT_SUBNETS_ALLOW_IPV6=0
+sv_ok sv-parse-v6-off "10.0.0.0/8" \
+    "$(parse_domain_or_subnet_string_to_commas_string '2001:db8::/32 10.0.0.0/8' subnets)"
+sv_ok sv-parse-v4-unchanged "10.0.0.0/8,192.168.1.1" \
+    "$(parse_domain_or_subnet_string_to_commas_string '10.0.0.0/8 192.168.1.1' subnets)"
+
+# ── end to end: User (text and dynamic) and Local lists ─────────────────────
+config_get() {
+    local _k _v
+    _k="SV_$(printf '%s_%s' "$2" "$3" | tr -c 'a-zA-Z0-9_' '_')"
+    eval "_v=\"\${$_k:-}\""
+    [ -n "$_v" ] || _v="${4:-}"
+    eval "$1=\"\$_v\""
+    return 0
+}
+config_get_bool() {
+    local _v
+    _v="0"
+    eval "$1=\"\$_v\""
+    return 0
+}
+config_list_foreach() {
+    local _section="$1" _option="$2" _handler="$3" _list _item
+    shift 3
+    eval "_list=\"\${SV_$(printf '%s_%s' "$_section" "$_option" | tr -c 'a-zA-Z0-9_' '_'):-}\""
+    for _item in $_list; do
+        "$_handler" "$_item" "$@"
+    done
+}
+prepare_source_ruleset() {
+    ruleset_tag="$(get_ruleset_tag "$1" "$2" "$3")"
+    ruleset_filepath="$TMP_RULESET_FOLDER/$ruleset_tag.json"
+    rm -f "$ruleset_filepath"
+    create_source_rule_set "$ruleset_filepath"
+}
+populate_netshift_subnets_from_string() { :; }
+populate_netshift_subnets_from_file() { :; }
+nft_select_subnet_target() { :; }
+
+sv_keys() {
+    jq -r '[.rules[]? | .ip_cidr[]?] | sort | join(" ")' "$1" 2>/dev/null
+}
+
+NETSHIFT_SUBNETS_ALLOW_IPV6=1
+SV_main_user_subnet_list_type="text"
+SV_main_user_subnets_text="2001:db8::/32 10.0.0.0/8"
+configure_user_subnet_list "main" "main-route-rule"
+sv_ok sv-user-text-v6-on "10.0.0.0/8 2001:db8::/32" \
+    "$(sv_keys "$TMP_RULESET_FOLDER/main-user-subnets-ruleset.json")"
+
+SV_main_user_subnet_list_type="dynamic"
+SV_main_user_subnets="2001:db8:1::/48 192.0.2.0/24"
+configure_user_subnet_list "main" "main-route-rule"
+sv_ok sv-user-dynamic-v6-on "192.0.2.0/24 2001:db8:1::/48" \
+    "$(sv_keys "$TMP_RULESET_FOLDER/main-user-subnets-ruleset.json")"
+
+printf '198.51.100.0/24\n2001:db8:2::/48\n' > "WORK_DIR/local.txt"
+SV_main_local_subnet_lists="WORK_DIR/local.txt"
+configure_local_subnet_lists "main" "main-route-rule"
+sv_ok sv-local-v6-on "198.51.100.0/24 2001:db8:2::/48" \
+    "$(sv_keys "$TMP_RULESET_FOLDER/main-local-subnets-ruleset.json")"
+
+NETSHIFT_SUBNETS_ALLOW_IPV6=0
+SV_main_user_subnet_list_type="text"
+SV_main_user_subnets_text="2001:db8::/32 10.0.0.0/8"
+configure_user_subnet_list "main" "main-route-rule"
+sv_ok sv-user-v6-off "10.0.0.0/8" \
+    "$(sv_keys "$TMP_RULESET_FOLDER/main-user-subnets-ruleset.json")"
+configure_local_subnet_lists "main" "main-route-rule"
+sv_ok sv-local-v6-off "198.51.100.0/24" \
+    "$(sv_keys "$TMP_RULESET_FOLDER/main-local-subnets-ruleset.json")"
+
+# ── nft v6 filler drops malformed lines instead of failing the whole chunk ──
+printf '%s\n' '2001:db8::/32' 'not-an-ip' '2001:db8::zzzz' 'fe80::/10' '10.0.0.0/8' > "WORK_DIR/nftv6.txt"
+: > "WORK_DIR/nft.calls"
+nft_add_set_elements() { printf '%s|%s|%s\n' "$1" "$2" "$3" >> "WORK_DIR/nft.calls"; }
+nft_add_set_elements_from_file_chunked_v6 "WORK_DIR/nftv6.txt" "NetShiftTable" "netshift_subnets_v6"
+sv_ok sv-nft-v6-valid-only "NetShiftTable|netshift_subnets_v6|2001:db8::/32,fe80::/10" \
+    "$(cat "WORK_DIR/nft.calls")"
+
+# ── JSON ip_cidr extraction: domain-only rules and a string ip_cidr ─────────
+printf '%s\n' '{"version":3,"rules":[{"domain":["example.com"]},{"ip_cidr":["2001:db8::/32","10.0.0.0/8"]},{"ip_cidr":"192.0.2.1/32"}]}' > "WORK_DIR/ruleset.json"
+extract_ip_cidr_from_json_ruleset_to_file "WORK_DIR/ruleset.json" "WORK_DIR/extracted.txt"
+sv_ok sv-extract-ip-cidr "10.0.0.0/8 192.0.2.1/32 2001:db8::/32" \
+    "$(sort "WORK_DIR/extracted.txt" | tr '\n' ' ' | sed 's/ $//')"
+
+echo DONE
+SV6EOF
+    sed -i "s|LIB_DIR|$lib|g; s|BIN_PATH|$bin|g; s|WORK_DIR|$work|g" "$drv"
+
+    local out="$work/out"
+    sh "$drv" > "$out" 2> "$work/err" || true
+
+    local saw_done=0 line
+    while IFS= read -r line; do
+        case "$line" in
+            *:OK) pass "$line" ;;
+            *:FAIL*) fail "$line" ;;
+            DONE) saw_done=1 ;;
+            *) ;;
+        esac
+    done < "$out"
+    if [ "$saw_done" = "1" ]; then
+        pass "sv6-driver-completed:OK"
+    else
+        fail "sv6-driver-completed:FAIL (driver aborted early)" \
+            "$(grep '^# sv-detail' "$out" 2>/dev/null | head -5)"
+    fi
+
+    rm -rf "$work"
+}
+
+# ─────────────────────────────────────────────────────────────────
 # Test: Domain case normalization (issue #52)
 #
 # ROOT CAUSE: the LuCI validators accept [a-zA-Z] in a domain, but the backend
@@ -22125,10 +22319,14 @@ test_telegram_fallback() {
 
     local out
     out="$(
+        set +e
         . "$lib/constants.sh"
+        . "$lib/helpers.sh"
         TG_LOG="$work/log"; : > "$TG_LOG"
         log() { printf '[%s] %s\n' "${2:-info}" "$1" >> "$TG_LOG"; }
         eval "$(awk '/^import_community_service_subnet_list_handler\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "$bin")"
+        eval "$(awk '/^community_service_has_ipv6_list\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "$bin")"
+        eval "$(awk '/^community_service_ipv6_subnets_url\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "$bin")"
         get_service_proxy_address() { :; }
         TG_DOWNLOAD_RC=1
         download_to_file() { [ "$TG_DOWNLOAD_RC" = 0 ] && printf '10.0.0.0/8\n' > "$2"; return "$TG_DOWNLOAD_RC"; }
@@ -22159,6 +22357,257 @@ test_telegram_fallback() {
     _tg "the temporary file is removed" "telegram-tmp-removed=yes"
     _tg "a downloaded list is used as it is" "telegram-downloaded=10.0.0.0/8"
     _tg "another service whose list cannot be downloaded still fails" "twitter-failure-rc=1 populated=no logged=1"
+    rm -rf "$work"
+}
+
+# ─────────────────────────────────────────────────────────────────
+# Test: Community IPv6 subnet lists (issue #189)
+#
+# The community lists gain a Subnets/IPv6 source. Its entries go to the nft v6
+# union set (or the bypass set); Discord additionally fills
+# netshift_discord_subnets_v6 for its UDP port marker. The section's source rule
+# set gets one plain rule. Downloads and nft are stubbed; the shipped importers
+# and final jq writer are used.
+# ─────────────────────────────────────────────────────────────────
+test_community_ipv6_lists() {
+    header "Community IPv6 subnet lists (issue #189)"
+
+    local lib="${NETSHIFT_LIB_DIR}"
+    local bin="${NETSHIFT_SRC}/usr/bin/netshift"
+    if [ ! -r "$lib/helpers.sh" ] || [ ! -r "$lib/rulesets.sh" ] || [ ! -r "$lib/nft.sh" ] || [ ! -r "$bin" ]; then
+        skip "helpers.sh / rulesets.sh / nft.sh / bin not found"
+        return
+    fi
+    if ! command -v jq > /dev/null 2>&1; then
+        skip "jq not available"
+        return
+    fi
+
+    local work="/tmp/netshift-communityv6-$$"
+    rm -rf "$work"
+    mkdir -p "$work"
+
+    local drv="$work/driver.sh"
+    cat > "$drv" << 'CV6EOF'
+log() { printf '%s:%s\n' "${2:-info}" "$1" >> "$WORK/log"; }
+. "LIB_DIR/constants.sh"
+. "LIB_DIR/helpers.sh"
+. "LIB_DIR/rulesets.sh"
+. "LIB_DIR/nft.sh"
+
+extract() {
+    awk -v f="$1" '$0 ~ "^"f"\\(\\) \\{"{p=1} p{print} p&&/^\}/{exit}' "BIN_PATH"
+}
+for fn in import_community_subnet_lists import_community_service_subnet_list_handler \
+          import_community_service_ipv6_subnet_list _append_valid_ipv6_subnets_from_file \
+          write_community_ipv6_ruleset community_service_has_ipv6_list \
+          _community_service_ipv6_list_handler community_service_ipv6_subnets_url \
+          subnets_ipv6_flag_init; do
+    eval "$(extract "$fn")"
+done
+
+WORK="WORK_DIR"
+TMP_RULESET_FOLDER="$WORK/rulesets"
+mkdir -p "$TMP_RULESET_FOLDER"
+
+cv_ok() {
+    if [ "$2" = "$3" ]; then
+        echo "$1:OK"
+    else
+        echo "# cv-detail $1: got [$2], want [$3]"
+        echo "$1:FAIL"
+    fi
+}
+
+netshift_ipv6_enabled() { [ "${SV_IPV6:-0}" = "1" ]; }
+section_is_dns_rule() { return 1; }
+nft_select_subnet_target() {
+    NFT_SUBNET_SET="$NFT_COMMON_SET_NAME"
+    NFT_SUBNET_SET_V6="$NFT_COMMON_SET_NAME_V6"
+    NFT_SUBNET_IS_BYPASS=0
+}
+config_get() {
+    local _k _v
+    _k="SV_$(printf '%s_%s' "$2" "$3" | tr -c 'a-zA-Z0-9_' '_')"
+    eval "_v=\"\${$_k:-}\""
+    [ -n "$_v" ] || _v="${4:-}"
+    eval "$1=\"\$_v\""
+    return 0
+}
+config_list_foreach() {
+    local _section="$1" _option="$2" _handler="$3" _list _item
+    shift 3
+    eval "_list=\"\${SV_$(printf '%s_%s' "$_section" "$_option" | tr -c 'a-zA-Z0-9_' '_'):-}\""
+    for _item in $_list; do
+        "$_handler" "$_item" "$@"
+    done
+}
+get_service_proxy_address() { :; }
+
+# Downloads: the IPv4 list always succeeds; the IPv6 list fails for the
+# services named in SV_V6_FAIL_SERVICES. Every URL is recorded.
+download_to_file() {
+    local url="$1" out="$2" name service
+    printf '%s\n' "$url" >> "$WORK/downloads"
+    name="${url##*/}"
+    service="${name%.lst}"
+    case "$url" in
+    *"/Subnets/IPv4/"*)
+        case " ${SV_V4_FAIL_SERVICES:-} " in
+        *" $service "*) return 1 ;;
+        esac
+        case "$service" in
+        twitter) printf '10.1.0.0/16\n' > "$out" ;;
+        discord) printf '10.2.0.0/16\n' > "$out" ;;
+        telegram) printf '10.3.0.0/16\n' > "$out" ;;
+        roblox) printf '10.4.0.0/16\n' > "$out" ;;
+        *) return 1 ;;
+        esac
+        return 0
+        ;;
+    *"/Subnets/IPv6/"*)
+        case " ${SV_V6_FAIL_SERVICES:-} " in
+        *" $service "*) return 1 ;;
+        esac
+        case "$service" in
+        twitter) printf '2001:db8:1::/48\n' > "$out" ;;
+        discord) printf '2001:db8:2::/48\n' > "$out" ;;
+        telegram) printf '2001:db8:3::/48\n' > "$out" ;;
+        *) return 1 ;;
+        esac
+        return 0
+        ;;
+    esac
+    return 1
+}
+
+populate_netshift_subnets_from_file() {
+    tr '\n' ' ' < "$1" | sed 's/ $//' >> "$WORK/populated"
+    printf '\n' >> "$WORK/populated"
+}
+
+nft() {
+    case "$1 $2" in
+    "list set" | "list chain") return 1 ;;
+    esac
+    printf '%s\n' "$*" >> "$WORK/nft.calls"
+    return 0
+}
+
+cv_ruleset() { printf '%s' "$TMP_RULESET_FOLDER/svc-community-ipv6-subnets-ruleset.json"; }
+cv_plain() {
+    jq -r '[.rules[] | select(has("network") | not) | .ip_cidr[]] | sort | join(" ")' "$(cv_ruleset)" 2>/dev/null
+}
+# ── service predicate used by the config build ──────────────────────────────
+community_service_has_ipv6_list twitter
+cv_ok cv-has-v6-twitter 0 $?
+community_service_has_ipv6_list roblox
+cv_ok cv-has-v6-roblox 1 $?
+community_service_has_ipv6_list youtube
+cv_ok cv-has-v6-youtube 1 $?
+SECTION_COMMUNITY_IPV6=0
+_community_service_ipv6_list_handler twitter
+cv_ok cv-config-detect-twitter 1 "$SECTION_COMMUNITY_IPV6"
+
+# ── IPv6 on: plain + Discord rules, nft sets, Telegram fallback ─────────────
+SV_IPV6=1
+SV_svc_community_lists="twitter discord telegram roblox"
+SV_V6_FAIL_SERVICES="telegram"
+: > "$WORK/downloads"
+: > "$WORK/populated"
+: > "$WORK/nft.calls"
+import_community_subnet_lists svc
+cv_ok cv-import-rc 0 $?
+cv_ok cv-rules-count 1 "$(jq '.rules | length' "$(cv_ruleset)" 2>/dev/null)"
+cv_ok cv-plain-rule \
+    "2001:67c:4e8::/48 2001:b28:f23c::/47 2001:b28:f23d::/48 2001:b28:f23f::/48 2001:db8:1::/48 2001:db8:2::/48 2a0a:f280::/32" \
+    "$(cv_plain)"
+cv_ok cv-twitter-v6-in-union 1 "$(grep -Fc '2001:db8:1::/48' "$WORK/populated" || true)"
+cv_ok cv-discord-v6-in-union 1 "$(grep -Fc '2001:db8:2::/48' "$WORK/populated" || true)"
+cv_ok cv-telegram-v6-fallback 1 "$(grep -Fc '2a0a:f280::/32' "$WORK/populated" || true)"
+cv_ok cv-roblox-v6-not-requested 0 "$(grep -Fc '/Subnets/IPv6/roblox' "$WORK/downloads" || true)"
+cv_ok cv-discord-v6-rule-in-nft 1 "$(grep -Fc '@netshift_discord_subnets_v6 udp dport { 19000-20000, 50000-65535 }' "$WORK/nft.calls" || true)"
+
+# ── a failed non-Telegram IPv6 download preserves the previous rule set ─────
+rm -rf "$TMP_RULESET_FOLDER"
+mkdir -p "$TMP_RULESET_FOLDER"
+SV_svc_community_lists="twitter"
+SV_V6_FAIL_SERVICES="twitter"
+: > "$WORK/downloads"
+: > "$WORK/populated"
+import_community_subnet_lists svc
+cv_ok cv-v6-failure-rc 0 $?
+cv_ok cv-v6-failure-no-ruleset 0 "$([ -e "$(cv_ruleset)" ] && echo 1 || echo 0)"
+
+# A successful import creates the baseline that a later failed update must keep.
+SV_V6_FAIL_SERVICES=""
+import_community_subnet_lists svc
+cv_ok cv-v6-baseline-rc 0 $?
+cv_ok cv-v6-baseline-rule 1 "$(grep -Fc '2001:db8:1::/48' "$(cv_ruleset)" || true)"
+SV_V6_FAIL_SERVICES="twitter"
+: > "$WORK/log"
+import_community_subnet_lists svc
+cv_ok cv-v6-repeat-failure-rc 0 $?
+cv_ok cv-v6-previous-rule-kept 1 "$(grep -Fc '2001:db8:1::/48' "$(cv_ruleset)" || true)"
+cv_ok cv-v6-keep-warning 1 "$(grep -Fc "Some IPv6 community lists could not be downloaded" "$WORK/log" || true)"
+
+# ── IPv6 off: no v6 downloads, no v6 rule set, no v6 nft rules ──────────────
+rm -rf "$TMP_RULESET_FOLDER"
+mkdir -p "$TMP_RULESET_FOLDER"
+SV_IPV6=0
+SV_svc_community_lists="twitter discord"
+SV_V6_FAIL_SERVICES=""
+: > "$WORK/downloads"
+: > "$WORK/populated"
+: > "$WORK/nft.calls"
+import_community_subnet_lists svc
+cv_ok cv-v6-off-rc 0 $?
+cv_ok cv-v6-off-no-ruleset 0 "$([ -e "$(cv_ruleset)" ] && echo 1 || echo 0)"
+cv_ok cv-v6-off-no-download 0 "$(grep -Fc '/Subnets/IPv6/' "$WORK/downloads" || true)"
+cv_ok cv-v6-off-no-discord-set 0 "$(grep -Fc 'netshift_discord_subnets_v6' "$WORK/nft.calls" || true)"
+
+# IPv4 failures must survive later successful callbacks, with IPv6 on or off.
+SV_svc_community_lists="twitter discord"
+SV_V4_FAIL_SERVICES="twitter"
+import_community_subnet_lists svc
+cv_ok cv-v4-failure-v6-off 1 $?
+SV_IPV6=1
+import_community_subnet_lists svc
+cv_ok cv-v4-failure-v6-on 1 $?
+SV_V4_FAIL_SERVICES=""
+
+# A failed section must not poison a later successful import.
+import_community_subnet_lists svc
+cv_ok cv-success-after-failure 0 $?
+
+# A failed ruleset write must be reported even after the work directory is removed.
+TMP_RULESET_FOLDER="$WORK/missing-rulesets"
+import_community_subnet_lists svc
+cv_ok cv-ruleset-write-failure 1 $?
+
+echo DONE
+CV6EOF
+    sed -i "s|LIB_DIR|$lib|g; s|BIN_PATH|$bin|g; s|WORK_DIR|$work|g" "$drv"
+
+    local out="$work/out"
+    sh "$drv" > "$out" 2> "$work/err" || true
+
+    local saw_done=0 line
+    while IFS= read -r line; do
+        case "$line" in
+            *:OK) pass "$line" ;;
+            *:FAIL*) fail "$line" ;;
+            DONE) saw_done=1 ;;
+            *) ;;
+        esac
+    done < "$out"
+    if [ "$saw_done" = "1" ]; then
+        pass "cv6-driver-completed:OK"
+    else
+        fail "cv6-driver-completed:FAIL (driver aborted early)" \
+            "$(grep '^# cv-detail' "$out" 2>/dev/null | head -5)"
+    fi
+
     rm -rf "$work"
 }
 
@@ -23527,15 +23976,17 @@ test_list_update_checks() {
         get_service_proxy_address() { :; }
         ensure_nft_ready_for_list_update() { return 0; }
         foreach_active_section() { return 0; }
-        NS_OK_AT=1; CURL_OK_AT=1; NS_N=0; CURL_N=0
+        NS_OK_AT=1; CURL_OK_AT=1; NS_N=0; CURL_N=0; IMPORT_RC=0
         nslookup() { NS_N=$((NS_N + 1)); [ "$NS_N" -ge "$NS_OK_AT" ]; }
         curl() { CURL_N=$((CURL_N + 1)); [ "$CURL_N" -ge "$CURL_OK_AT" ]; }
-        run() { NS_N=0; CURL_N=0; list_update > /dev/null 2>&1; echo $?; }
+        foreach_active_section() { return "$IMPORT_RC"; }
+        run() { set +e; NS_N=0; CURL_N=0; list_update > /dev/null 2>&1; echo $?; }
         echo "first-attempt=$(run)"
         NS_OK_AT=10; echo "dns-on-last-attempt=$(run)"
         NS_OK_AT=1; CURL_OK_AT=10; echo "github-on-last-attempt=$(run)"
         NS_OK_AT=11; CURL_OK_AT=1; echo "dns-never=$(run)"
         NS_OK_AT=1; CURL_OK_AT=11; echo "github-never=$(run)"
+        NS_OK_AT=1; CURL_OK_AT=1; IMPORT_RC=1; echo "import-failure=$(run)"
     )"
 
     _lu() {
@@ -23546,6 +23997,7 @@ test_list_update_checks() {
     _lu "GitHub answers on the last attempt: the check has passed" "github-on-last-attempt=0"
     _lu "DNS never answers: the update fails" "dns-never=1"
     _lu "GitHub never answers: the update fails" "github-never=1"
+    _lu "a community list failure fails the update" "import-failure=1"
 }
 
 test_daemon_and_route_table() {

@@ -76,10 +76,11 @@ kill_switch_delete() {
 }
 
 # Mirror a batch that was just added to a NetShiftTable set ($2: the IPv4 set
-# name) into the matching guard set. No-op when the option is off, the guard
-# does not exist yet (first start) or a rebuild is about to replace it anyway.
+# name) into the matching guard set. $3 selects the families: "both" (default),
+# "4" or "6". No-op when the option is off, the guard does not exist yet (first
+# start) or a rebuild is about to replace it anyway.
 kill_switch_mirror_file() {
-    local filepath="$1" source_set="$2"
+    local filepath="$1" source_set="$2" families="${3:-both}"
     local guard_v4 guard_v6
 
     [ "${KILL_SWITCH_MIRROR_SUSPENDED:-0}" = "1" ] && return 0
@@ -97,11 +98,12 @@ kill_switch_mirror_file() {
     *) return 0 ;;
     esac
 
-    if nft list set inet "$NFT_GUARD_TABLE_NAME" "$guard_v4" > /dev/null 2>&1; then
+    if [ "$families" != "6" ] &&
+        nft list set inet "$NFT_GUARD_TABLE_NAME" "$guard_v4" > /dev/null 2>&1; then
         nft_add_set_elements_from_file_chunked "$filepath" "$NFT_GUARD_TABLE_NAME" "$guard_v4"
     fi
 
-    if netshift_ipv6_enabled &&
+    if [ "$families" != "4" ] && netshift_ipv6_enabled &&
         nft list set inet "$NFT_GUARD_TABLE_NAME" "$guard_v6" > /dev/null 2>&1; then
         nft_add_set_elements_from_file_chunked_v6 "$filepath" "$NFT_GUARD_TABLE_NAME" "$guard_v6"
     fi
