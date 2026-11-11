@@ -22348,10 +22348,10 @@ test_telegram_fallback() {
 # Test: Community IPv6 subnet lists (issue #189)
 #
 # The community lists gain a Subnets/IPv6 source. Its entries go to the nft v6
-# union set (or the bypass set), except Discord, which is UDP-only and fills
-# netshift_discord_subnets_v6; the section's source rule set gets one plain rule
-# and, for Discord, one UDP rule with the ports. Downloads and nft are stubbed;
-# the shipped importers and final jq writer are used.
+# union set (or the bypass set); Discord additionally fills
+# netshift_discord_subnets_v6 for its UDP port marker. The section's source rule
+# set gets one plain rule. Downloads and nft are stubbed; the shipped importers
+# and final jq writer are used.
 # ─────────────────────────────────────────────────────────────────
 test_community_ipv6_lists() {
     header "Community IPv6 subnet lists (issue #189)"
@@ -22373,7 +22373,7 @@ test_community_ipv6_lists() {
 
     local drv="$work/driver.sh"
     cat > "$drv" << 'CV6EOF'
-log() { :; }
+log() { printf '%s:%s\n' "${2:-info}" "$1" >> "$WORK/log"; }
 . "LIB_DIR/constants.sh"
 . "LIB_DIR/helpers.sh"
 . "LIB_DIR/rulesets.sh"
@@ -22482,13 +22482,6 @@ cv_ruleset() { printf '%s' "$TMP_RULESET_FOLDER/svc-community-ipv6-subnets-rules
 cv_plain() {
     jq -r '[.rules[] | select(has("network") | not) | .ip_cidr[]] | sort | join(" ")' "$(cv_ruleset)" 2>/dev/null
 }
-cv_discord() {
-    jq -r '[.rules[] | select(.network == ["udp"]) | .ip_cidr[]] | join(" ")' "$(cv_ruleset)" 2>/dev/null
-}
-cv_ports() {
-    jq -r '[.rules[] | select(.network == ["udp"]) | .port_range[]] | join(" ")' "$(cv_ruleset)" 2>/dev/null
-}
-
 # ── service predicate used by the config build ──────────────────────────────
 community_service_has_ipv6_list twitter
 cv_ok cv-has-v6-twitter 0 $?
@@ -22509,19 +22502,17 @@ SV_V6_FAIL_SERVICES="telegram"
 : > "$WORK/nft.calls"
 import_community_subnet_lists svc
 cv_ok cv-import-rc 0 $?
-cv_ok cv-rules-count 2 "$(jq '.rules | length' "$(cv_ruleset)" 2>/dev/null)"
+cv_ok cv-rules-count 1 "$(jq '.rules | length' "$(cv_ruleset)" 2>/dev/null)"
 cv_ok cv-plain-rule \
-    "2001:67c:4e8::/48 2001:b28:f23c::/47 2001:b28:f23d::/48 2001:b28:f23f::/48 2001:db8:1::/48 2a0a:f280::/32" \
+    "2001:67c:4e8::/48 2001:b28:f23c::/47 2001:b28:f23d::/48 2001:b28:f23f::/48 2001:db8:1::/48 2001:db8:2::/48 2a0a:f280::/32" \
     "$(cv_plain)"
-cv_ok cv-discord-rule "2001:db8:2::/48" "$(cv_discord)"
-cv_ok cv-discord-ports "19000:20000 50000:65535" "$(cv_ports)"
 cv_ok cv-twitter-v6-in-union 1 "$(grep -Fc '2001:db8:1::/48' "$WORK/populated" || true)"
-cv_ok cv-discord-v6-not-in-union 0 "$(grep -Fc '2001:db8:2::/48' "$WORK/populated" || true)"
+cv_ok cv-discord-v6-in-union 1 "$(grep -Fc '2001:db8:2::/48' "$WORK/populated" || true)"
 cv_ok cv-telegram-v6-fallback 1 "$(grep -Fc '2a0a:f280::/32' "$WORK/populated" || true)"
 cv_ok cv-roblox-v6-not-requested 0 "$(grep -Fc '/Subnets/IPv6/roblox' "$WORK/downloads" || true)"
 cv_ok cv-discord-v6-rule-in-nft 1 "$(grep -Fc '@netshift_discord_subnets_v6 udp dport { 19000-20000, 50000-65535 }' "$WORK/nft.calls" || true)"
 
-# ── a failed non-Telegram IPv6 download is not a list-update failure ────────
+# ── a failed non-Telegram IPv6 download preserves the previous rule set ─────
 rm -rf "$TMP_RULESET_FOLDER"
 mkdir -p "$TMP_RULESET_FOLDER"
 SV_svc_community_lists="twitter"
@@ -22530,7 +22521,19 @@ SV_V6_FAIL_SERVICES="twitter"
 : > "$WORK/populated"
 import_community_subnet_lists svc
 cv_ok cv-v6-failure-rc 0 $?
-cv_ok cv-v6-failure-empty-rules 0 "$(jq '.rules | length' "$(cv_ruleset)" 2>/dev/null)"
+cv_ok cv-v6-failure-no-ruleset 0 "$([ -e "$(cv_ruleset)" ] && echo 1 || echo 0)"
+
+# A successful import creates the baseline that a later failed update must keep.
+SV_V6_FAIL_SERVICES=""
+import_community_subnet_lists svc
+cv_ok cv-v6-baseline-rc 0 $?
+cv_ok cv-v6-baseline-rule 1 "$(grep -Fc '2001:db8:1::/48' "$(cv_ruleset)" || true)"
+SV_V6_FAIL_SERVICES="twitter"
+: > "$WORK/log"
+import_community_subnet_lists svc
+cv_ok cv-v6-repeat-failure-rc 0 $?
+cv_ok cv-v6-previous-rule-kept 1 "$(grep -Fc '2001:db8:1::/48' "$(cv_ruleset)" || true)"
+cv_ok cv-v6-keep-warning 1 "$(grep -Fc "Some IPv6 community lists could not be downloaded" "$WORK/log" || true)"
 
 # ── IPv6 off: no v6 downloads, no v6 rule set, no v6 nft rules ──────────────
 rm -rf "$TMP_RULESET_FOLDER"
@@ -23903,15 +23906,17 @@ test_list_update_checks() {
         get_service_proxy_address() { :; }
         ensure_nft_ready_for_list_update() { return 0; }
         foreach_active_section() { return 0; }
-        NS_OK_AT=1; CURL_OK_AT=1; NS_N=0; CURL_N=0
+        NS_OK_AT=1; CURL_OK_AT=1; NS_N=0; CURL_N=0; IMPORT_RC=0
         nslookup() { NS_N=$((NS_N + 1)); [ "$NS_N" -ge "$NS_OK_AT" ]; }
         curl() { CURL_N=$((CURL_N + 1)); [ "$CURL_N" -ge "$CURL_OK_AT" ]; }
-        run() { NS_N=0; CURL_N=0; list_update > /dev/null 2>&1; echo $?; }
+        foreach_active_section() { return "$IMPORT_RC"; }
+        run() { set +e; NS_N=0; CURL_N=0; list_update > /dev/null 2>&1; echo $?; }
         echo "first-attempt=$(run)"
         NS_OK_AT=10; echo "dns-on-last-attempt=$(run)"
         NS_OK_AT=1; CURL_OK_AT=10; echo "github-on-last-attempt=$(run)"
         NS_OK_AT=11; CURL_OK_AT=1; echo "dns-never=$(run)"
         NS_OK_AT=1; CURL_OK_AT=11; echo "github-never=$(run)"
+        NS_OK_AT=1; CURL_OK_AT=1; IMPORT_RC=1; echo "import-failure=$(run)"
     )"
 
     _lu() {
@@ -23922,6 +23927,7 @@ test_list_update_checks() {
     _lu "GitHub answers on the last attempt: the check has passed" "github-on-last-attempt=0"
     _lu "DNS never answers: the update fails" "dns-never=1"
     _lu "GitHub never answers: the update fails" "github-never=1"
+    _lu "a community list failure fails the update" "import-failure=1"
 }
 
 test_daemon_and_route_table() {

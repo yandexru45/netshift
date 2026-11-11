@@ -152,6 +152,8 @@ uci commit netshift
 
 IPv6-подсети из списков User, Local, Remote и Community используются только при включённом `enable_ipv6`; без него IPv6-записи пропускаются.
 
+Community IPv6 lists are updated together with the others via `list_update`; sing-box reloads a local source rule set automatically, so no restart is needed. If an IPv6 list is temporarily unavailable, the previous rule set is kept and the update is retried on the next `list_update`. Discord IPv6 is routed the same way as IPv4; the UDP ranges 19000–20000 and 50000–65535 remain as an additional marking rule.
+
 </details>
 
 <details>

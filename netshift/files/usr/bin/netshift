@@ -2158,23 +2158,28 @@ nft_init_interfaces_set() {
 # Add the IPv4/IPv6 CIDRs found in a file into the union destination set(s).
 populate_netshift_subnets_from_file() {
     local filepath="$1"
+    local families="${2:-both}"
     local set_v4="${NFT_SUBNET_SET:-$NFT_COMMON_SET_NAME}"
     local set_v6="${NFT_SUBNET_SET_V6:-$NFT_COMMON_SET_NAME_V6}"
 
     [ -f "$filepath" ] || return 0
 
-    if nft list set inet "$NFT_TABLE_NAME" "$set_v4" > /dev/null 2>&1; then
+    # Community IPv6 lists contain no IPv4 entries, so selecting "6" skips
+    # the v4 pass and its per-line debug noise. Existing callers use the
+    # default "both" and keep the historical behavior.
+    if [ "$families" != "6" ] &&
+        nft list set inet "$NFT_TABLE_NAME" "$set_v4" > /dev/null 2>&1; then
         nft_add_set_elements_from_file_chunked "$filepath" "$NFT_TABLE_NAME" "$set_v4"
     fi
 
-    if netshift_ipv6_enabled &&
+    if [ "$families" != "4" ] && netshift_ipv6_enabled &&
         nft list set inet "$NFT_TABLE_NAME" "$set_v6" > /dev/null 2>&1; then
         nft_add_set_elements_from_file_chunked_v6 "$filepath" "$NFT_TABLE_NAME" "$set_v6"
     fi
 
     # block_leaks: this is the ONLY place the union / bypass sets grow, so the
     # guard follows them from here and never depends on when it was rebuilt.
-    kill_switch_mirror_file "$filepath" "$set_v4"
+    kill_switch_mirror_file "$filepath" "$set_v4" "$families"
 }
 
 # Where the subnets of a section go. Normally the union set of destinations that are
@@ -6946,6 +6951,11 @@ configure_routing_for_section_lists() {
     # The .srs rule set above carries domains and IPv4; the community IPv6
     # lists are a separate source rule set attached to the same route rule.
     # Only services that actually have an IPv6 list are considered.
+    #
+    # On the first start this file is created empty (create_source_rule_set)
+    # and list_update fills it only after sing-box has started. sing-box >= 1.10
+    # watches local source rule sets and reloads them when the file is replaced,
+    # so the empty first read is expected and needs no restart or SIGHUP.
     if [ -n "$community_lists" ] && [ "$section_connection_type" != "dns" ] &&
         subnets_allow_ipv6; then
         SECTION_COMMUNITY_IPV6=0
@@ -7015,15 +7025,10 @@ configure_community_list_handler() {
 }
 
 # Community services that have a Subnets/IPv6 list in the allow-domains repo.
-# roblox is not among them (it has no IPv6 list), and the domain-only services
-# need no subnet source at all.
+# The URL table below is the single source of truth; an unknown service returns
+# 1 from there.
 community_service_has_ipv6_list() {
-    case "$1" in
-    twitter | meta | telegram | cloudflare | hetzner | ovh | digitalocean | cloudfront | discord)
-        return 0
-        ;;
-    esac
-    return 1
+    community_service_ipv6_subnets_url "$1" > /dev/null
 }
 
 _community_service_ipv6_list_handler() {
@@ -7459,11 +7464,11 @@ import_community_subnet_lists() {
         # and written to the section's rule set once, so a service removed from
         # the section does not survive in the file until the next restart.
         COMMUNITY_IPV6_WORK_DIR=""
+        COMMUNITY_IPV6_IMPORT_FAILED=0
         if subnets_allow_ipv6; then
             COMMUNITY_IPV6_WORK_DIR="$(mktemp -d)" || COMMUNITY_IPV6_WORK_DIR=""
             if [ -n "$COMMUNITY_IPV6_WORK_DIR" ]; then
                 : > "$COMMUNITY_IPV6_WORK_DIR/plain"
-                : > "$COMMUNITY_IPV6_WORK_DIR/discord"
             else
                 log "Failed to create the IPv6 community list work directory" "warn"
                 community_import_failed=1
@@ -7473,7 +7478,11 @@ import_community_subnet_lists() {
         config_list_foreach "$section" "community_lists" import_community_service_subnet_list_handler "$section" || community_import_failed=1
 
         if [ -n "$COMMUNITY_IPV6_WORK_DIR" ]; then
-            write_community_ipv6_ruleset "$section" "$COMMUNITY_IPV6_WORK_DIR" || community_import_failed=1
+            if [ "$COMMUNITY_IPV6_IMPORT_FAILED" -eq 1 ]; then
+                log "Some IPv6 community lists could not be downloaded; keeping the current IPv6 rule set for '$section' section" "warn"
+            else
+                write_community_ipv6_ruleset "$section" "$COMMUNITY_IPV6_WORK_DIR" || community_import_failed=1
+            fi
             rm -rf "$COMMUNITY_IPV6_WORK_DIR"
             COMMUNITY_IPV6_WORK_DIR=""
         fi
@@ -7500,8 +7509,9 @@ import_community_service_subnet_list_handler() {
     # dport rule) and the general union set (so TCP/other-UDP discord traffic
     # is marked too, without the dport restriction).
     #
-    # The IPv6 mirror has its own list, its own union/discord set and its own
-    # rule in the section's source rule set. It is used only with enable_ipv6.
+    # The IPv6 mirror has its own list and union/discord set. Discord follows
+    # the IPv4 path into the union set and kill-switch guard; its dport rule is
+    # only an additional marker. It is used only with enable_ipv6.
     local url url_v6 is_discord
     is_discord=0
     url_v6=""
@@ -7564,13 +7574,15 @@ import_community_service_subnet_list_handler() {
     rm -f "$tmpfile"
 
     if [ -n "$url_v6" ] && subnets_allow_ipv6; then
-        import_community_service_ipv6_subnet_list "$service" "$url_v6" "$is_discord"
+        import_community_service_ipv6_subnet_list "$service" "$url_v6" "$is_discord" ||
+            COMMUNITY_IPV6_IMPORT_FAILED=1
     fi
 }
 
 # Download one service's IPv6 list and feed the nft v6 set(s) plus the work
-# files of the section's IPv6 rule set. A failed download is not a list-update
-# failure (except Telegram, which has built-in ranges): IPv4 keeps working.
+# files of the section's IPv6 rule set. A failed download keeps the previous
+# complete rule set (except Telegram, which has built-in ranges): IPv4 keeps
+# working.
 import_community_service_ipv6_subnet_list() {
     local service="$1"
     local url="$2"
@@ -7591,16 +7603,16 @@ import_community_service_ipv6_subnet_list() {
             # shellcheck disable=SC2086
             printf '%s\n' $TELEGRAM_FALLBACK_SUBNETS_V6 > "$tmpfile"
         else
-            log "Download $service IPv6 list failed; continuing without it" "warn"
+            log "Download $service IPv6 list failed; keeping the current IPv6 rule set" "warn"
             rm -f "$tmpfile"
-            return 0
+            return 1
         fi
     fi
 
     if [ "$is_discord" -eq 1 ]; then
-        # Discord IPv6 is UDP-only and marks into sing-box with the same
-        # dport-restricted rule as IPv4; it deliberately never reaches the
-        # union set or the kill switch, so TCP/other UDP is not captured.
+        # The dport-restricted nft rule stays as an additional marker for the
+        # RTC ports. The addresses themselves are handled like IPv4 below, so
+        # TCP and other UDP to the same destinations are proxied too.
         if ! nft list set inet "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME_V6" > /dev/null 2>&1; then
             nft_create_ipv6_set "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME_V6"
         fi
@@ -7610,11 +7622,12 @@ import_community_service_ipv6_subnet_list() {
                 "@$NFT_DISCORD_SET_NAME_V6" udp dport '{ 19000-20000, 50000-65535 }' meta mark set "$NFT_FAKEIP_MARK" counter
         fi
         nft_add_set_elements_from_file_chunked_v6 "$tmpfile" "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME_V6"
-        _append_valid_ipv6_subnets_from_file "$tmpfile" "$COMMUNITY_IPV6_WORK_DIR/discord"
-    else
-        populate_netshift_subnets_from_file "$tmpfile"
-        _append_valid_ipv6_subnets_from_file "$tmpfile" "$COMMUNITY_IPV6_WORK_DIR/plain"
     fi
+
+    # Discord and non-Discord alike: the addresses reach the union set and,
+    # through kill_switch_mirror_file, the guard.
+    populate_netshift_subnets_from_file "$tmpfile" "6"
+    _append_valid_ipv6_subnets_from_file "$tmpfile" "$COMMUNITY_IPV6_WORK_DIR/plain"
 
     rm -f "$tmpfile"
 }
@@ -7643,29 +7656,30 @@ write_community_ipv6_ruleset() {
     local section="$1"
     local work="$2"
     local plain_file="$work/plain"
-    local discord_file="$work/discord"
     local ruleset_tag ruleset_filepath tmpfile
 
     ruleset_tag="$(get_ruleset_tag "$section" "community-ipv6" "subnets")"
     ruleset_filepath="$TMP_RULESET_FOLDER/$ruleset_tag.json"
     tmpfile="$(mktemp "$TMP_RULESET_FOLDER/.community-ipv6.XXXXXX")" || return 1
 
-    if ! jq -n --rawfile plain "$plain_file" --rawfile discord "$discord_file" '
+    if ! jq -n --rawfile plain "$plain_file" '
         def entries: split("\n") | map(select(length > 0)) | unique;
         {version: 3, rules: (
-            (($plain | entries) as $p |
-                if ($p | length) > 0 then [{ip_cidr: $p}] else [] end) +
-            (($discord | entries) as $d |
-                if ($d | length) > 0 then
-                    [{network: ["udp"], ip_cidr: $d, port_range: ["19000:20000", "50000:65535"]}]
-                else [] end)
+            ($plain | entries) as $p |
+            if ($p | length) > 0 then [{ip_cidr: $p}] else [] end
         )}' > "$tmpfile"; then
         rm -f "$tmpfile"
         log "Failed to write the IPv6 community rule set for '$section' section" "warn"
         return 1
     fi
 
-    mv "$tmpfile" "$ruleset_filepath"
+    if mv "$tmpfile" "$ruleset_filepath"; then
+        log "Updated the IPv6 community rule set for '$section' section; sing-box reloads local rule sets automatically" "info"
+    else
+        rm -f "$tmpfile"
+        log "Failed to install the IPv6 community rule set for '$section' section" "warn"
+        return 1
+    fi
 }
 
 import_domains_from_remote_domain_lists() {
