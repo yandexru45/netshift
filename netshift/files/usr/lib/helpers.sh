@@ -1455,6 +1455,7 @@ get_subscription_user_agent() {
 #     an explicit UA always outranks the format preference).
 #   - auto/empty/unrecognised: emit "singbox/<ver>", then the preferred one,
 #     then the whitelist (SUBSCRIPTION_USER_AGENT_CANDIDATES) — today's order.
+#     Exception: a preferred (cached) one that is an Xray client comes first.
 #   - xray: emit the Xray-JSON UAs (SUBSCRIPTION_USER_AGENT_XRAY_CANDIDATES)
 #     FIRST (outranking the cached winner + default), then "singbox/<ver>",
 #     then the preferred one, then the rest of the whitelist.
@@ -1483,6 +1484,12 @@ build_subscription_user_agent_candidates() {
     if [ "$format_preference" = "xray" ]; then
         # shellcheck disable=SC2086 # word-splitting of the candidate lists is intentional
         set -- $SUBSCRIPTION_USER_AGENT_XRAY_CANDIDATES "$default_user_agent" "$preferred_user_agent" $SUBSCRIPTION_USER_AGENT_CANDIDATES
+    elif [ "$format_preference" != "singbox" ] && [ -n "$preferred_user_agent" ] &&
+        case " $SUBSCRIPTION_USER_AGENT_XRAY_CANDIDATES " in *" $preferred_user_agent "*) true ;; *) false ;; esac; then
+        # The cached winner is an Xray client: the panel gave it the fuller list last time, so it goes
+        # first and the sing-box answer is not asked for at all.
+        # shellcheck disable=SC2086 # word-splitting of the candidate list is intentional
+        set -- "$preferred_user_agent" "$default_user_agent" $SUBSCRIPTION_USER_AGENT_CANDIDATES
     else
         # shellcheck disable=SC2086 # word-splitting of the candidate list is intentional
         set -- "$default_user_agent" "$preferred_user_agent" $SUBSCRIPTION_USER_AGENT_CANDIDATES
@@ -1561,6 +1568,15 @@ subscription_downloads_clean() {
     mkdir -p "$dir"
 }
 
+# Subscriptions are fetched over http(s) only: wget would also take ftp://, and curl file://
+# (a local file read as root). The scheme is not case-sensitive.
+subscription_url_is_http() {
+    case "$1" in
+    [Hh][Tt][Tt][Pp]://* | [Hh][Tt][Tt][Pp][Ss]://*) return 0 ;;
+    *) return 1 ;;
+    esac
+}
+
 # Downloads a subscription body from the given URL with client-mimicking headers
 # Arguments:
 #   $1 - subscription URL
@@ -1583,6 +1599,11 @@ download_subscription() {
     local timeout="${6:-10}"
     local user_agent="${7:-}"
     local insecure="${8:-0}"
+
+    if ! subscription_url_is_http "$url"; then
+        log "Subscription address is not http(s), not fetched: url=$(redact_url_for_log "$url")" "error"
+        return 1
+    fi
 
     local device_os device_model kernel_version hwid
     device_os="${SUBSCRIPTION_DEVICE_OS:-OpenWrt Linux}"
@@ -1683,7 +1704,7 @@ download_subscription() {
 
     rm -f "$tmpfile"
     rm -f "$errfile"
-    log "Subscription download failed after $retries attempts: host=$(url_host_for_log "$url"), url=$(redact_url_for_log "$url")" "error"
+    log "Subscription download failed after $retries attempts: host=$(url_host_for_log "$url"), url=$(redact_url_for_log "$url")" "${SUBSCRIPTION_DOWNLOAD_FAIL_LEVEL:-error}"
     return 1
 }
 
@@ -1694,6 +1715,8 @@ check_subscription_connectivity() {
     local retries="${3:-3}"
     local wait="${4:-2}"
     local timeout="${5:-5}"
+
+    subscription_url_is_http "$url" || return 1
 
     local user_agents device_os device_model kernel_version hwid
     device_os="${SUBSCRIPTION_DEVICE_OS:-OpenWrt Linux}"
@@ -1776,6 +1799,27 @@ _check_subscription_connectivity_once() {
     return 1
 }
 
+# Number of proxy outbounds (not groups or system ones) in a sing-box subscription file.
+subscription_proxy_count() {
+    jq -r '
+        [(.outbounds // [])[] | select(
+            .type != "selector" and .type != "urltest" and .type != "direct" and
+            .type != "dns" and .type != "block"
+        )] | length
+    ' "$1" 2> /dev/null || echo 0
+}
+
+# True when a new feed would replace a working cache with less than half the nodes.
+# A list shorter than 4 is not guarded: there is nothing established to protect.
+subscription_cache_shrunk() {
+    local old_count new_count
+
+    [ -s "$1" ] && [ -s "$2" ] || return 1
+    old_count="$(subscription_proxy_count "$1")"
+    new_count="$(subscription_proxy_count "$2")"
+    [ "$old_count" -ge 4 ] && [ "$new_count" -lt $((old_count / 2)) ]
+}
+
 validate_subscription_file() {
     local filepath="$1"
 
@@ -1784,6 +1828,7 @@ validate_subscription_file() {
     jq -e '
         type == "object" and
         (.outbounds | type == "array") and
+        all(.outbounds[]; type == "object" and (.type | type == "string" and length > 0)) and
         ([.outbounds[] | select(
             .type != "selector" and
             .type != "urltest" and
@@ -1954,11 +1999,16 @@ xray_json_to_uri_lines() {
           | ($ss.tlsSettings // $ss.realitySettings // {}) as $tls
           # Addressing: vnext (vless/vmess) vs servers (trojan/shadowsocks);
           # hysteria carries the peer directly in settings.address/settings.port
-          # (no vnext/servers), so branch the peer derivation on protocol.
+          # (no vnext/servers), so branch the peer derivation on protocol. Xray 26
+          # writes vless/vmess/trojan/shadowsocks the same flat way: address, port and
+          # the credentials (id, flow, encryption, password) sit in settings itself.
+          # An outbound that has both a non-empty vnext/servers and a flat address is read
+          # from vnext/servers: the older form wins and the flat fields are ignored.
           | (if $ob.protocol == "hysteria"
              then {address: $ob.settings.address, port: $ob.settings.port}
-             else ($ob.settings.vnext[0] // $ob.settings.servers[0] // {}) end) as $peer
-          | ($peer.users[0] // {}) as $user
+             else ($ob.settings.vnext[0] // $ob.settings.servers[0]
+                   // (if ($ob.settings.address // "") != "" then $ob.settings else {} end)) end) as $peer
+          | ($peer.users[0] // (if ($peer.id // "") != "" then $peer else {} end)) as $user
           | ($peer.address // "") as $host
           | ($peer.port // "") as $port
           | select($host != "" and ($port | tostring) != "")
@@ -2052,10 +2102,17 @@ xray_json_to_uri_lines() {
              + (if $alpn_str != "" then [ kv("alpn"; $alpn_str) ] else [] end)
              | map(select(. != null and . != ""))) as $query
           # Credential: uuid for vless, hysteriaSettings.auth for hysteria,
-          # password for trojan/shadowsocks.
+          # password for trojan, "<method>:<password>" (percent-encoded, as the
+          # ss:// link reader expects) for shadowsocks: a node without a cipher
+          # would be built with an empty one and never come up, so it is dropped.
           | (if $ob.protocol == "vless" then ($user.id // "")
              elif $ob.protocol == "hysteria" then
                ($ss.hysteriaSettings.auth // "")
+             elif $ob.protocol == "shadowsocks" then
+               (($peer.method // $ob.settings.method // "") as $method
+                | ($peer.password // $ob.settings.password // "") as $pass
+                | if $method == "" or $pass == "" then ""
+                  else ($method | @uri) + ":" + ($pass | @uri) end)
              else ($peer.password // $ob.settings.password // "") end) as $cred
           | select($cred != "")
           | ($ob.protocol
