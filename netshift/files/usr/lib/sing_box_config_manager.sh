@@ -1530,14 +1530,14 @@ sing_box_cm_set_tls_for_outbound() {
                             }
                         } else {} end)
                         + (if $reality_public_key != "" then {
-                            reality: {
+                            reality: ({
                                 enabled: true,
                                 public_key: $reality_public_key,
                                 short_id: $reality_short_id
                             }
                             + (if $reality_mlkem == "true" then {support_x25519mlkem768: true}
                                elif $reality_mlkem == "false" then {support_x25519mlkem768: false}
-                               else {} end)
+                               else {} end))
                         } else {} end)
                     )
                 }

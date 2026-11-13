@@ -1135,7 +1135,8 @@ sing_box_cf_prepare_subscription_batch() {
             else "none" end;
         def node_transport: (if ((.transport | type) == "object") then (.transport.type // "tcp") else "tcp" end | tostring | ascii_downcase);
         def param_ok($kind; $value):
-            (($param_filter.include[$kind] // []) as $inc
+            # "include" is a jq keyword: jq before 1.7 does not parse .include
+            (($param_filter["include"][$kind] // []) as $inc
               | ($inc | length) == 0 or any($inc[]; . == $value))
             and (($param_filter.exclude[$kind] // []) as $exc
               | all($exc[]; . != $value));
