@@ -303,9 +303,9 @@ def convert($opt):
            else ($userinfo | b64text) end) as $mp
         | if $mp == null or ($mp | contains(":") | not) then {s: "slow"}
           else {s: "ok", name: $name,
-                ob: {type: "shadowsocks", server: $host, server_port: ($port | tonumber),
+                ob: ({type: "shadowsocks", server: $host, server_port: ($port | tonumber),
                      method: ($mp | split(":")[0]), password: ($mp | split(":")[1:] | join(":"))}
-                     + (if $opt.udp_over_tcp == "1" then {udp_over_tcp: {enabled: true, version: 2}} else {} end)} end
+                     + (if $opt.udp_over_tcp == "1" then {udp_over_tcp: {enabled: true, version: 2}} else {} end))} end
       elif $scheme == "socks5" then
         # as the slow path cuts it: the user before the first ":" (all of it without one),
         # the password after it (all of it without a ":" too)
