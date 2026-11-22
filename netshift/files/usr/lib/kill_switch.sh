@@ -289,7 +289,7 @@ _kill_switch_emit_unmarked_accepts() {
 # $1: scope selector (as above), $2: global_proxy, $3: IPv6, $4: block_doh.
 _kill_switch_emit_drops() {
     local scope="$1" mark_all="$2" v6="$3" block_doh="$4"
-    local doh4 doh6
+    local doh4 doh6 doh_ports
 
     if [ "$mark_all" -eq 1 ]; then
         # global_proxy: every tcp/udp flow belongs in the tunnel.
@@ -304,15 +304,17 @@ _kill_switch_emit_drops() {
         echo "        ${scope}ip6 daddr $SB_FAKEIP_INET6_RANGE counter drop"
     fi
 
-    # block_doh marks the DoH resolvers into sing-box (which rejects them). With
-    # the interception gone a client's DoH would resolve the REAL addresses of
-    # proxied domains and connect to them directly, so hold those too.
+    # block_doh marks the DoH/DoT/DoQ resolver ports (443, 853) into sing-box
+    # (which rejects them). With the interception gone a client's DoH would
+    # resolve the REAL addresses of proxied domains and connect to them
+    # directly, so hold those ports too while leaving plain DNS (port 53) alone.
     if [ "$block_doh" -eq 1 ]; then
+        doh_ports="${DOH_BLOCK_PORTS_NFT:-443, 853}"
         doh4="$(printf '%s' "$DOH_BLOCK_IPV4_CIDRS" | tr -s ' \n\t' ',,,')"
-        [ -n "$doh4" ] && echo "        ${scope}ip daddr { $doh4 } counter drop"
+        [ -n "$doh4" ] && echo "        ${scope}ip daddr { $doh4 } meta l4proto { tcp, udp } th dport { $doh_ports } counter drop"
         if [ "$v6" -eq 1 ]; then
             doh6="$(printf '%s' "$DOH_BLOCK_IPV6_CIDRS" | tr -s ' \n\t' ',,,')"
-            [ -n "$doh6" ] && echo "        ${scope}ip6 daddr { $doh6 } counter drop"
+            [ -n "$doh6" ] && echo "        ${scope}ip6 daddr { $doh6 } meta l4proto { tcp, udp } th dport { $doh_ports } counter drop"
         fi
     fi
 

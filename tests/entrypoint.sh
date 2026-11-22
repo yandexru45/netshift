@@ -942,23 +942,24 @@ SELEOF
     # nft normalises /32 and /128 host CIDRs to the bare address in its output.
     doh_v4_first="$(echo "$DOH_BLOCK_IPV4_CIDRS" | awk '{print $1}')"
     doh_v4_first="${doh_v4_first%%/*}"
-    if echo "$mangle_doh" | grep -q "ip daddr $doh_v4_first meta mark set $NFT_FAKEIP_MARK counter"; then
-        pass "selective:doh — DoH CIDR marked in mangle ($doh_v4_first)"
+    if echo "$mangle_doh" | grep -q "ip daddr $doh_v4_first meta l4proto { tcp, udp } th dport { 443, 853 } meta mark set $NFT_FAKEIP_MARK counter"; then
+        pass "selective:doh — DoH CIDR marked on ports 443/853 in mangle ($doh_v4_first)"
     else
-        fail "selective:doh — DoH CIDR mark missing in mangle ($doh_v4_first)" "$(echo "$mangle_doh" | grep -i daddr || echo "$out_doh")"
+        fail "selective:doh — DoH CIDR port-scoped mark missing in mangle ($doh_v4_first)" "$(echo "$mangle_doh" | grep -i daddr || echo "$out_doh")"
     fi
-    if echo "$mout_doh" | grep -q "ip daddr $doh_v4_first meta mark set $NFT_FAKEIP_MARK counter"; then
-        pass "selective:doh-output — DoH CIDR marked in mangle_output ($doh_v4_first)"
+    if echo "$mout_doh" | grep -q "ip daddr $doh_v4_first meta l4proto { tcp, udp } th dport { 443, 853 } meta mark set $NFT_FAKEIP_MARK counter" &&
+        ! echo "$mout_doh" | grep -q "ip daddr $doh_v4_first meta mark set $NFT_FAKEIP_MARK counter"; then
+        pass "selective:doh-output — DoH CIDR marked on ports 443/853 only in mangle_output (port 53 dns_forward untouched)"
     else
-        fail "selective:doh-output — DoH CIDR mark missing in mangle_output (router DoH probe escapes rejection)" "$(echo "$mout_doh" | grep -i daddr || echo "$mout_doh")"
+        fail "selective:doh-output — DoH CIDR mark missing or un-scoped in mangle_output ($doh_v4_first)" "$(echo "$mout_doh" | grep -i daddr || echo "$mout_doh")"
     fi
     if echo "$mangle_doh" | grep -q "ip6 daddr @$NFT_COMMON_SET_NAME_V6"; then
         doh_v6_first="$(echo "$DOH_BLOCK_IPV6_CIDRS" | awk '{print $1}')"
         doh_v6_first="${doh_v6_first%%/*}"
-        if echo "$mout_doh" | grep -q "ip6 daddr $doh_v6_first meta mark set $NFT_FAKEIP_MARK counter"; then
-            pass "selective:doh-output — v6 DoH CIDR marked in mangle_output ($doh_v6_first)"
+        if echo "$mout_doh" | grep -q "ip6 daddr $doh_v6_first meta l4proto { tcp, udp } th dport { 443, 853 } meta mark set $NFT_FAKEIP_MARK counter"; then
+            pass "selective:doh-output — v6 DoH CIDR marked on ports 443/853 in mangle_output ($doh_v6_first)"
         else
-            fail "selective:doh-output — v6 DoH CIDR mark missing in mangle_output ($doh_v6_first)"
+            fail "selective:doh-output — v6 DoH CIDR port-scoped mark missing in mangle_output ($doh_v6_first)"
         fi
     else
         skip "selective:doh-output — v6 DoH mark not verified (kernel ip6 support?)"
@@ -1680,10 +1681,10 @@ BLEOF
         SCN_GLOBALPROXY="" SCN_FULLROUTED="" sh "$drv" 2>&1)"
     nft delete table inet "$t5" 2>/dev/null || true
     nft delete table inet "$g5" 2>/dev/null || true
-    if _bl_chain "$(_bl_section "$out5" GUARD)" forward_guard | grep -Eq "ip daddr \{.*8\.8\.8\.8.*\} $cnt\$"; then
-        pass "blockleaks:doh — DoH resolvers are held with block_doh (no direct DoH during the window)"
+    if _bl_chain "$(_bl_section "$out5" GUARD)" forward_guard | grep -Eq "ip daddr \{.*8\.8\.8\.8.*\} meta l4proto \{ tcp, udp \} th dport \{ 443, 853 \} $cnt\$"; then
+        pass "blockleaks:doh — DoH resolvers are held on ports 443/853 with block_doh (plain DNS port 53 untouched)"
     else
-        fail "blockleaks:doh — DoH resolvers are not held with block_doh" "$(_bl_section "$out5" GUARD | grep -i drop)"
+        fail "blockleaks:doh — DoH resolvers are not held on ports 443/853 with block_doh" "$(_bl_section "$out5" GUARD | grep -i drop)"
     fi
 
     # ── IPv6: the v6 half of the program is valid nft and mirrors v4 ──
@@ -4224,7 +4225,7 @@ doh_cfg='{"route":{"rules":[],"rule_set":[]}}'
 doh_out=$(sing_box_cm_add_doh_block_route_rule "$doh_cfg" "doh-block" "tproxy-in" \
     "1.1.1.1/32 8.8.8.8/32" "2606:4700:4700::1111/128 2001:4860:4860::8888/128")
 echo "$doh_out" | jq -e '.route.rule_set[0].rules[0].ip_cidr | (index("1.1.1.1/32") != null) and (index("2606:4700:4700::1111/128") != null)' >/dev/null 2>&1 && echo 'cm-doh-cidrs-v4-v6:OK' || echo 'cm-doh-cidrs-v4-v6:FAIL'
-echo "$doh_out" | jq -e '.route.rules[0].action == "reject" and .route.rules[0].rule_set == "doh-block-ruleset" and .route.rules[0].inbound == "tproxy-in"' >/dev/null 2>&1 && echo 'cm-doh-route-rule:OK' || echo 'cm-doh-route-rule:FAIL'
+echo "$doh_out" | jq -e '.route.rules[0].action == "reject" and .route.rules[0].rule_set == "doh-block-ruleset" and .route.rules[0].inbound == "tproxy-in" and .route.rules[0].port == [443, 853]' >/dev/null 2>&1 && echo 'cm-doh-route-rule:OK' || echo 'cm-doh-route-rule:FAIL'
 
 echo 'DONE'
 CMEOF
