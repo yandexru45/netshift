@@ -18245,7 +18245,10 @@ test_bypass() {
     out="$(
         . "${NETSHIFT_LIB_DIR}/constants.sh"
         for fn in nft_select_subnet_target populate_netshift_subnets_from_file _nft_bypass_section_handler \
-            nft_bypass_requested _nft_bypass_source_ip_handler nft_bypass_source_ips; do
+            nft_bypass_requested _nft_bypass_source_ip_handler nft_bypass_source_ips \
+            foreach_active_section _active_section_dispatch \
+            nft_mark_fully_routed_source_ips _nft_mark_fully_routed_ips_for_section _nft_mark_fully_routed_ip_handler \
+            create_nft_rules; do
             eval "$(awk -v f="$fn" '$0 ~ "^"f"\\(\\) \\{"{p=1} p{print} p&&/^\}/{exit}' "$bin")"
         done
         # nft_bypass_source_ips reads routing_excluded_ips through the scalar-aware
@@ -18277,7 +18280,14 @@ test_bypass() {
             case "$_v" in 1) eval "$1=1" ;; *) eval "$1=0" ;; esac
         }
         config_foreach() { local _s; for _s in $BP_SECTIONS; do "$1" "$_s"; done; }
-        config_list_foreach() { local _i _cb="$3"; for _i in $BP_EXCL_LIST; do "$_cb" "$_i"; done; }
+        config_list_foreach() {
+            local _i _cb="$3" _vals=""
+            case "$2" in
+            fully_routed_ips) eval "_vals=\"\${BP_${1}_fully_routed_ips:-}\"" ;;
+            *) _vals="$BP_EXCL_LIST" ;;
+            esac
+            for _i in $_vals; do "$_cb" "$_i"; done
+        }
 
         BP_SECTIONS="ex_bypass ex_plain prox"
         BP_ex_bypass_connection_type=exclusion; BP_ex_bypass_bypass_singbox=1
@@ -18352,6 +18362,36 @@ test_bypass() {
         BP_EXCL_LIST="192.168.1.30"; BP_settings_routing_excluded_ips="192.168.1.30"
         : > "$BP_LOGF"; nft_bypass_source_ips
         echo "source-list-no-warning:$(grep -c 'nothing to bypass' "$BP_LOGF")"
+
+        # create_nft_rules: @netshift_bypass return must precede fully_routed_ips source marks (IPv4 & IPv6)
+        # and NFT_FULLY_ROUTED_V4/V6 must still be populated before nft_add_port_rules runs.
+        nft_delete_table() { :; }
+        nft_create_table() { :; }
+        nft_create_ipv4_set() { :; }
+        nft_create_ipv6_set() { :; }
+        nft_init_interfaces_set() { :; }
+        BP_GP=""
+        get_global_proxy_section() { printf '%s' "$BP_GP"; }
+        nft_add_dns_hijack() { :; }
+        port_fr4=""; port_fr6=""
+        nft_add_port_rules() { port_fr4="$NFT_FULLY_ROUTED_V4"; port_fr6="$NFT_FULLY_ROUTED_V6"; }
+        nft_add_quic_block() { :; }
+        BP_SECTIONS="ex_bypass prox"
+        BP_ex_bypass_connection_type=exclusion; BP_ex_bypass_bypass_singbox=1
+        BP_prox_connection_type=proxy; BP_prox_fully_routed_ips="192.168.1.0/24 2001:db8::/64"
+        BP_settings_bypass_excluded_ips=0
+        V6=1; : > "$NFT_LOG"; create_nft_rules
+        byp4_ln="$(grep -n "^add rule inet $NFT_TABLE_NAME mangle .*ip daddr @$NFT_BYPASS_SET_NAME return" "$NFT_LOG" | head -1 | cut -d: -f1)"
+        fr4_ln="$(grep -n "^add rule inet $NFT_TABLE_NAME mangle .*ip saddr 192\.168\.1\.0/24 meta mark set" "$NFT_LOG" | head -1 | cut -d: -f1)"
+        byp6_ln="$(grep -n "^add rule inet $NFT_TABLE_NAME mangle .*ip6 daddr @$NFT_BYPASS_SET_NAME_V6 return" "$NFT_LOG" | head -1 | cut -d: -f1)"
+        fr6_ln="$(grep -n "^add rule inet $NFT_TABLE_NAME mangle .*ip6 saddr 2001:db8::/64 meta mark set" "$NFT_LOG" | head -1 | cut -d: -f1)"
+        echo "fully-routed-after-bypass-v4:$([ -n "$byp4_ln" ] && [ -n "$fr4_ln" ] && [ "$byp4_ln" -lt "$fr4_ln" ] && echo yes || echo "no($byp4_ln/$fr4_ln)")"
+        echo "fully-routed-after-bypass-v6:$([ -n "$byp6_ln" ] && [ -n "$fr6_ln" ] && [ "$byp6_ln" -lt "$fr6_ln" ] && echo yes || echo "no($byp6_ln/$fr6_ln)")"
+        echo "fully-routed-before-port-rules:$port_fr4|$port_fr6"
+        BP_GP="prox"; : > "$NFT_LOG"; create_nft_rules
+        echo "fully-routed-skipped-under-global-proxy:$(grep -c "^add rule inet $NFT_TABLE_NAME mangle .*saddr " "$NFT_LOG")"
+        BP_GP=""; V6=0
+
         rm -f "$NFT_LOG" "$BP_LOGF"
     )"
 
@@ -18388,6 +18428,10 @@ test_bypass() {
     _bp_check "a non-empty device list: no warning" "source-list-no-warning:0"
     _bp_check "a disabled bypass section requests nothing" "requested-disabled-section:no"
     _bp_check "an enabled bypass section requests the bypass" "requested-enabled-section:yes"
+    _bp_check "create_nft_rules: bypass return precedes fully_routed_ips (IPv4)" "fully-routed-after-bypass-v4:yes"
+    _bp_check "create_nft_rules: bypass return precedes fully_routed_ips (IPv6)" "fully-routed-after-bypass-v6:yes"
+    _bp_check "create_nft_rules: fully_routed_ips still populate before port rules" "fully-routed-before-port-rules:192.168.1.0/24|2001:db8::/64"
+    _bp_check "create_nft_rules: fully_routed_ips skipped under global_proxy" "fully-routed-skipped-under-global-proxy:0"
 }
 
 
