@@ -2034,6 +2034,7 @@ sing_box_cm_add_doh_block_route_rule() {
             action: "reject",
             inbound: $inbound,
             rule_set: $ruleset_tag,
+            port: [443, 853],
             $service_tag: $tag
         }]'
 }

@@ -189,16 +189,18 @@ nft_add_selective_marking_rules() {
         nft add rule inet "$NFT_TABLE_NAME" "$chain" "$@" ip6 daddr "$SB_FAKEIP_INET6_RANGE" meta mark set "$NFT_FAKEIP_MARK" counter
     fi
 
-    # DoH-block CIDRs (when enabled): force well-known DoH resolver IPs into
-    # sing-box so the route-level DoH reject rule can drop them.
+    # DoH-block CIDRs (when enabled): force well-known DoH/DoT/DoQ resolver
+    # ports (443, 853) into sing-box so the route-level DoH reject rule can
+    # drop them, without intercepting plain DNS on port 53 (such as dnsmasq
+    # dns_forward to 77.88.8.8/77.88.8.1/1.1.1.1/8.8.8.8) or ICMP.
     if [ "$block_doh" = "1" ]; then
-        local doh_cidr
+        local doh_cidr doh_ports="${DOH_BLOCK_PORTS_NFT:-443, 853}"
         for doh_cidr in $DOH_BLOCK_IPV4_CIDRS; do
-            nft add rule inet "$NFT_TABLE_NAME" "$chain" "$@" ip daddr "$doh_cidr" meta mark set "$NFT_FAKEIP_MARK" counter
+            nft add rule inet "$NFT_TABLE_NAME" "$chain" "$@" ip daddr "$doh_cidr" meta l4proto "{ tcp, udp }" th dport "{ $doh_ports }" meta mark set "$NFT_FAKEIP_MARK" counter
         done
         if netshift_ipv6_enabled; then
             for doh_cidr in $DOH_BLOCK_IPV6_CIDRS; do
-                nft add rule inet "$NFT_TABLE_NAME" "$chain" "$@" ip6 daddr "$doh_cidr" meta mark set "$NFT_FAKEIP_MARK" counter
+                nft add rule inet "$NFT_TABLE_NAME" "$chain" "$@" ip6 daddr "$doh_cidr" meta l4proto "{ tcp, udp }" th dport "{ $doh_ports }" meta mark set "$NFT_FAKEIP_MARK" counter
             done
         fi
     fi

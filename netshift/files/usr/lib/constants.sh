@@ -423,6 +423,9 @@ SB_CLASH_API_CONTROLLER_PORT=9090
 ## DoH blocking
 DOH_BLOCK_IPV4_CIDRS="1.1.1.1/32 1.0.0.1/32 8.8.8.8/32 8.8.4.4/32 9.9.9.9/32 9.9.9.11/32 149.112.112.112/32 208.67.222.222/32 208.67.220.220/32 94.140.14.14/32 94.140.15.15/32 77.88.8.8/32 77.88.8.1/32"
 DOH_BLOCK_IPV6_CIDRS="2606:4700:4700::1111/128 2606:4700:4700::1001/128 2001:4860:4860::8888/128 2001:4860:4860::8844/128 2620:fe::fe/128 2620:fe::9/128 2620:119:35::35/128 2620:119:53::53/128 2a10:50c0::ad1:ff/128 2a10:50c0::ad2:ff/128 2a02:6b8::feed:0ff/128 2a02:6b8:0:1::feed:0ff/128"
+# Ports used by DoH (443) and DoT/DoQ (853); plain DNS on port 53 (e.g. dnsmasq
+# dns_forward to 77.88.8.8 / 1.1.1.1 / 8.8.8.8) and ICMP must NOT be intercepted.
+DOH_BLOCK_PORTS_NFT="443, 853"
 
 ## Lists
 GITHUB_RAW_URL="https://raw.githubusercontent.com/itdoginfo/allow-domains/main"
