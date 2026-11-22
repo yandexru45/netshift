@@ -2705,16 +2705,19 @@ create_nft_rules() {
     if [ -n "$nft_global_proxy_section" ]; then
         nft_mark_all=1
         log "Global proxy section '$nft_global_proxy_section' active: marking ALL traffic into sing-box" "info"
-    else
-        # Source-based mark-all for fully_routed_ips clients (regardless of dest).
-        nft_mark_fully_routed_source_ips
-
-        if [ "$nft_block_doh" -eq 1 ]; then
-            log "DoH blocking enabled: marking DoH resolver CIDRs into sing-box" "info"
-        fi
+    elif [ "$nft_block_doh" -eq 1 ]; then
+        log "DoH blocking enabled: marking DoH resolver CIDRs into sing-box" "info"
     fi
 
     nft_add_selective_marking_rules mangle "$nft_mark_all" "$nft_block_doh" iifname "@$NFT_INTERFACE_SET_NAME"
+
+    if [ "$nft_mark_all" -eq 0 ]; then
+        # Source-based mark-all for fully_routed_ips clients (regardless of dest),
+        # emitted AFTER nft_add_selective_marking_rules so @netshift_bypass returns
+        # unmarked before source marking (matching global_proxy, kill_switch, and
+        # sing-box exclusion route precedence).
+        nft_mark_fully_routed_source_ips
+    fi
 
     nft_add_dns_hijack
 
